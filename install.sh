@@ -1,21 +1,17 @@
 #!/usr/bin/env bash
 # singbox-cli installer
 #
-# 一键安装（推荐）：
+# 一键安装：
 #   sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/Alan-IFT/singbox-cli/main/install.sh)"
 #
 # 本地仓库安装：
 #   sudo ./install.sh
-#
-# 可用环境变量：
-#   SINGBOX_CLI_REPO  默认 Alan-IFT/singbox-cli，用于安装 fork
-#   SINGBOX_CLI_REF   默认 main，用于锁定到某个 tag/commit
-#   FORCE_ROOT=1      非交互式下若检测不到普通用户，跳过确认直接装为 root
 set -euo pipefail
 
-REPO="${SINGBOX_CLI_REPO:-Alan-IFT/singbox-cli}"
-REF="${SINGBOX_CLI_REF:-main}"
+REPO="Alan-IFT/singbox-cli"
+REF="main"
 RAW_BASE="https://raw.githubusercontent.com/$REPO/$REF"
+LIB_DIR="/usr/local/lib/singbox-cli"
 
 # ----------------- pre-flight -----------------
 if [ "$EUID" -ne 0 ]; then
@@ -35,25 +31,16 @@ fi
 
 INSTALL_USER="${SUDO_USER:-$(logname 2>/dev/null || echo "")}"
 if [ -z "$INSTALL_USER" ] || [ "$INSTALL_USER" = "root" ]; then
-    if [ "${FORCE_ROOT:-0}" = "1" ]; then
-        INSTALL_USER="root"
-    elif [ -t 0 ]; then
-        echo "⚠️  检测不到普通用户身份。建议先 sudo 切到普通用户再运行。"
-        echo "   当前将为 root 安装（继续? [y/N]）"
-        read -r ans
-        [ "$ans" = "y" ] || [ "$ans" = "Y" ] || exit 1
-        INSTALL_USER="root"
-    else
-        echo "⚠️  检测不到普通用户身份且非交互式运行。"
-        echo "   若确认要为 root 安装，请加 FORCE_ROOT=1 重试："
-        echo "   FORCE_ROOT=1 sudo bash -c \"\$(curl -fsSL $RAW_BASE/install.sh)\""
-        exit 1
-    fi
+    echo "⚠️  检测不到普通用户身份。建议先 sudo 切到普通用户再运行。"
+    echo "   当前将为 root 安装（继续? [y/N]）"
+    read -r ans
+    [ "$ans" = "y" ] || [ "$ans" = "Y" ] || exit 1
+    INSTALL_USER="root"
 fi
 
 # 确定安装文件来源：本地 clone 或远程下载
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" 2>/dev/null && pwd || echo "")"
-if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/bin/proxy" ]; then
+if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/bin/sc" ]; then
     ARTIFACT_DIR="$SCRIPT_DIR"
     SOURCE_DESC="本地仓库 ($ARTIFACT_DIR)"
 else
@@ -63,14 +50,15 @@ else
     echo "● 从 $SOURCE_DESC 下载安装文件 ..."
     mkdir -p "$ARTIFACT_DIR/bin" "$ARTIFACT_DIR/systemd"
     for rel in \
-        bin/proxy \
+        bin/sc \
+        uninstall.sh \
         systemd/sing-box.service \
         systemd/sing-box-rules-update.service \
         systemd/sing-box-rules-update.timer
     do
         if ! curl -fsSL "$RAW_BASE/$rel" -o "$ARTIFACT_DIR/$rel"; then
             echo "✗ 下载失败：$RAW_BASE/$rel"
-            echo "  请检查网络或确认 REPO/REF 设置是否正确"
+            echo "  请检查网络后重试"
             exit 1
         fi
     done
@@ -109,10 +97,11 @@ EOF
     echo "  已安装：$(sing-box version | head -1)"
 fi
 
-# ----------------- step 3: dirs + proxy CLI -----------------
-echo "▶ [3/7] 安装 proxy CLI ..."
-mkdir -p /etc/sing-box/rules /var/lib/sing-box
-install -m 755 "$ARTIFACT_DIR/bin/proxy" /usr/local/bin/proxy
+# ----------------- step 3: dirs + sc CLI + uninstall.sh -----------------
+echo "▶ [3/7] 安装 sc CLI ..."
+mkdir -p /etc/sing-box/rules /var/lib/sing-box "$LIB_DIR"
+install -m 755 "$ARTIFACT_DIR/bin/sc" /usr/local/bin/sc
+install -m 755 "$ARTIFACT_DIR/uninstall.sh" "$LIB_DIR/uninstall.sh"
 
 # ----------------- step 4: systemd units -----------------
 echo "▶ [4/7] 安装 systemd 服务 ..."
@@ -122,24 +111,24 @@ install -m 644 "$ARTIFACT_DIR/systemd/sing-box-rules-update.timer" /etc/systemd/
 systemctl daemon-reload
 
 # ----------------- step 5: sudoers -----------------
-echo "▶ [5/7] 配置免密 sudo（仅针对 /usr/local/bin/proxy）..."
-cat > /etc/sudoers.d/proxy <<EOF
-$INSTALL_USER ALL=(ALL) NOPASSWD: /usr/local/bin/proxy
+echo "▶ [5/7] 配置免密 sudo（仅针对 /usr/local/bin/sc）..."
+cat > /etc/sudoers.d/sc <<EOF
+$INSTALL_USER ALL=(ALL) NOPASSWD: /usr/local/bin/sc
 EOF
-chmod 440 /etc/sudoers.d/proxy
-visudo -c -f /etc/sudoers.d/proxy >/dev/null
+chmod 440 /etc/sudoers.d/sc
+visudo -c -f /etc/sudoers.d/sc >/dev/null
 
 # ----------------- step 6: rulesets -----------------
 echo "▶ [6/7] 下载规则集 (.srs) ..."
-if /usr/local/bin/proxy update-rules >/dev/null 2>&1; then
+if /usr/local/bin/sc update-rules >/dev/null 2>&1; then
     echo "  下载完成"
 else
-    echo "  ⚠️ 下载失败（可能是网络问题），稍后用 'proxy update-rules' 重试"
+    echo "  ⚠️ 下载失败（可能是网络问题），稍后用 'sc update-rules' 重试"
 fi
 
 # ----------------- step 7: enable + start -----------------
 echo "▶ [7/7] 生成初始配置并启动服务 ..."
-/usr/local/bin/proxy reload >/dev/null
+/usr/local/bin/sc reload >/dev/null
 systemctl enable --now sing-box >/dev/null 2>&1
 systemctl enable --now sing-box-rules-update.timer >/dev/null 2>&1
 
@@ -149,8 +138,9 @@ echo "  ✅ 安装完成"
 echo "═══════════════════════════════════════════════════════"
 echo ""
 echo "下一步："
-echo "  1. 添加节点：    proxy add 'vless://...'"
-echo "  2. 查看状态：    proxy status"
-echo "  3. 查看帮助：    proxy help"
+echo "  1. 添加节点：    sc add 'vless://...'"
+echo "  2. 查看状态：    sc status"
+echo "  3. 查看帮助：    sc help"
+echo "  4. 卸载：        sc uninstall"
 echo ""
 echo "（初始没有节点时，TUN 已建立但流量走 direct，加节点后自动切换）"

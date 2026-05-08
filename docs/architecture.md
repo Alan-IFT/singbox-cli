@@ -52,7 +52,7 @@
 ```
 nodes.json + settings.json
          │
-         │  proxy reload / proxy add / proxy use ...
+         │  sc reload / sc add / sc use ...
          ↓
    generate_config()
          │
@@ -73,7 +73,7 @@ nodes.json + settings.json
 
 ## 切节点为什么不需要重启
 
-selector 出站类型支持运行时切换默认节点。`proxy use <name>` 实际做的是：
+selector 出站类型支持运行时切换默认节点。`sc use <name>` 实际做的是：
 
 1. 修改 `nodes.json` 的 `active` 字段（持久化）
 2. 通过 Clash API `PUT /proxies/proxy {"name": "<tag>"}` 通知 sing-box
@@ -85,7 +85,7 @@ selector 出站类型支持运行时切换默认节点。`proxy use <name>` 实�
 
 ## 加节点为什么需要重启
 
-加新节点意味着 outbound 列表里多一个条目，selector 可选项也要扩展。这两个都是启动时确定的结构，sing-box 目前没有暴露「热加入 outbound」的 API。所以 `proxy add` 会：
+加新节点意味着 outbound 列表里多一个条目，selector 可选项也要扩展。这两个都是启动时确定的结构，sing-box 目前没有暴露「热加入 outbound」的 API。所以 `sc add` 会：
 
 1. 把节点写入 `nodes.json`
 2. 重新生成 `config.json`
@@ -105,7 +105,7 @@ selector 出站类型支持运行时切换默认节点。`proxy use <name>` 实�
 
 `.srs` 是 sing-box 自创的二进制规则集格式，比 v2ray 的 `.dat` 体积小、加载快、按需编译。来源是 [MetaCubeX/meta-rules-dat](https://github.com/MetaCubeX/meta-rules-dat) 的 `sing` 分支。
 
-`proxy update-rules` 会从 GitHub raw 下载这些文件到 `/etc/sing-box/rules/`：
+`sc update-rules` 会从 GitHub raw 下载这些文件到 `/etc/sing-box/rules/`：
 
 - `geoip-cn.srs` — 中国大陆 IP 段
 - `geosite-cn.srs` — 中国大陆域名（含主流站点）
@@ -117,14 +117,14 @@ selector 出站类型支持运行时切换默认节点。`proxy use <name>` 实�
 | 资产 | 保护手段 |
 |---|---|
 | `nodes.json`（含密码/UUID） | mode 600，仅 root 可读 |
-| `proxy` CLI 自身 | mode 755 root:root，普通用户改不动 |
-| sudoers NOPASSWD | 范围限定为 `/usr/local/bin/proxy`，不是 ALL |
+| `sc` CLI 自身 | mode 755 root:root，普通用户改不动 |
+| sudoers NOPASSWD | 范围限定为 `/usr/local/bin/sc`，不是 ALL |
 | sing-box 进程 | systemd 启动，root 权限运行（TUN 需要 CAP_NET_ADMIN） |
 
 如果是多用户环境，建议把 NOPASSWD 改回有密码模式：
 
 ```bash
-sudo rm /etc/sudoers.d/proxy
+sudo rm /etc/sudoers.d/sc
 ```
 
-之后每次跑 `proxy ...` 会要密码。
+之后每次跑 `sc ...` 会要密码。

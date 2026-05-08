@@ -9,17 +9,17 @@ v2rayN 是优秀的 GUI 客户端，但有两个限制无法满足某些场景�
 
 singbox-cli 直接用 systemd 跑 sing-box，绕过 GUI 限制。
 
-## Q: 加节点后 `proxy status` 显示出口 IP 还是本机 IP？
+## Q: 加节点后 `sc status` 显示出口 IP 还是本机 IP？
 
 可能性：
 
-1. **节点本身有问题**：用 `proxy log -f` 看日志，如果有 `connection failed` 就是节点连不通
+1. **节点本身有问题**：用 `sc log -f` 看日志，如果有 `connection failed` 就是节点连不通
 2. **路由规则把目标 IP 当国内**：`api.ipify.org` 偶尔被 geosite-cn 误判，换个测试域名（如 `ifconfig.me`）
-3. **mode 不是 rule 或 global**：`proxy mode rule`
+3. **mode 不是 rule 或 global**：`sc mode rule`
 
 ## Q: 装完之后 SSH 连不上了，怎么办？
 
-按 `Ctrl+Alt+F3` 切到 tty3，本地登录后跑 `proxy off`，然后排查：
+按 `Ctrl+Alt+F3` 切到 tty3，本地登录后跑 `sc off`，然后排查：
 
 - 通常是 `strict_route` 把入站 SSH 流量也劫持了。检查路由表 `ip route show table all`
 - 或者节点 IP 解析回了 SSH 同一个网段，导致路由冲突
@@ -32,18 +32,18 @@ sudo ip route add <节点IP>/32 dev <你的物理网卡>
 
 ## Q: 想换 sing-box 配置（DNS、规则等）怎么办？
 
-`proxy reload` 会从 `bin/proxy` 里的 `generate_config()` 函数重新生成 `config.json`，所以你**不能**直接改 `config.json`（会被覆盖）。
+`sc reload` 会从 `bin/sc` 里的 `generate_config()` 函数重新生成 `config.json`，所以你**不能**直接改 `config.json`（会被覆盖）。
 
 正确做法：
 
-- 改路由规则、DNS 等模板：直接编辑 `bin/proxy` 里的 `generate_config()` 函数，然后 `proxy reload`
-- 改节点参数：编辑 `/etc/sing-box/nodes.json`，然后 `proxy reload`
+- 改路由规则、DNS 等模板：直接编辑 `bin/sc` 里的 `generate_config()` 函数，然后 `sc reload`
+- 改节点参数：编辑 `/etc/sing-box/nodes.json`，然后 `sc reload`
 
 ## Q: 想用自己的 .srs 规则集？
 
-把文件放到 `/etc/sing-box/rules/` 下，文件名照 `geoip-cn.srs` 这样的现有规则命名（覆盖掉默认下载的）。然后 `proxy reload` 让 sing-box 加载。
+把文件放到 `/etc/sing-box/rules/` 下，文件名照 `geoip-cn.srs` 这样的现有规则命名（覆盖掉默认下载的）。然后 `sc reload` 让 sing-box 加载。
 
-如果想加全新的规则集 tag，需要改 `bin/proxy` 里的 `generate_config()` 把它注册到 `route.rule_set` 里。
+如果想加全新的规则集 tag，需要改 `bin/sc` 里的 `generate_config()` 把它注册到 `route.rule_set` 里。
 
 ## Q: 流量统计、节点测速？
 
@@ -67,7 +67,7 @@ sudo unzip gh-pages.zip
 }
 ```
 
-`proxy reload` 之后浏览器打开 `http://127.0.0.1:9090/ui/`，就能看到流量、延迟、节点切换等图形界面。
+`sc reload` 之后浏览器打开 `http://127.0.0.1:9090/ui/`，就能看到流量、延迟、节点切换等图形界面。
 
 ## Q: TUN 模式下 BT/PT 下载会出问题吗？
 
@@ -75,11 +75,11 @@ TUN 默认会代理所有 UDP，BT 大量 UDP 包会占满代理流量。建议�
 
 - BT 应用绑定到非默认接口（如 `eth0`），绕过 TUN
 - 或者通过 routing 规则把 BT 端口（一般 6881-6889）排除到 direct
-- 或者临时 `proxy off`，下完再 `proxy on`
+- 或者临时 `sc off`，下完再 `sc on`
 
 ## Q: 升级 sing-box 后规则失效？
 
-`proxy update-rules` 重新拉一次。sing-box 1.10+ 之后 .srs 格式偶有调整，对应 ruleset 仓库会同步更新。
+`sc update-rules` 重新拉一次。sing-box 1.10+ 之后 .srs 格式偶有调整，对应 ruleset 仓库会同步更新。
 
 ## Q: 多机共享一份配置？
 
