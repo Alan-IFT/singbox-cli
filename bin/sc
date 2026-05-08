@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""sc —— sing-box 命令行管理工具。运行 `sc help` 查看用法。"""
+"""sc — sing-box CLI manager. Run `sc help` for usage."""
 import argparse
 import base64
 import json
@@ -20,7 +20,7 @@ RULES_DIR = CFG_DIR / "rules"
 LIB_DIR = Path("/usr/local/lib/singbox-cli")
 SERVICE = "sing-box"
 CLASH = "http://127.0.0.1:9090"
-SB_BIN = "sing-box"  # 走 PATH 解析（apt 装的在 /usr/bin/sing-box）
+SB_BIN = "sing-box"  # PATH lookup; apt installs to /usr/bin/sing-box
 
 RULESET_URLS = {
     "geoip-cn.srs":        "https://github.com/MetaCubeX/meta-rules-dat/raw/sing/geo/geoip/cn.srs",
@@ -34,6 +34,81 @@ if os.geteuid() != 0:
     os.execvp("sudo", ["sudo", "/usr/local/bin/sc"] + sys.argv[1:])
 
 
+# ============ i18n ============
+# Source code uses English. TRANSLATIONS maps English → other languages.
+# Missing translations fall back to the English key, so partial coverage never breaks the UI.
+TRANSLATIONS = {
+    "zh": {
+        # errors
+        "Unsupported share-link protocol: {url}": "不支持的链接协议：{url}",
+        "Config check failed:\n{stderr}": "配置检查失败：\n{stderr}",
+        "Error: no nodes added yet — use `sc add <link>` first": "错误：尚未添加任何节点 —— 先用 `sc add <分享链接>` 添加",
+        "Error: '{spec}' matches multiple nodes:\n  {names}": "错误：'{spec}' 匹配多个节点：\n  {names}",
+        "Error: no node matches '{spec}' (try `sc ls`)": "错误：未找到匹配 '{spec}' 的节点（请运行 `sc ls`）",
+        "Error: {e}": "错误：{e}",
+        "Error: mode must be one of rule / global / direct": "错误：模式必须是 rule / global / direct 之一",
+        "Error: argument must be on or off": "错误：参数必须为 on 或 off",
+        "Error: cannot determine target user": "错误：无法确定目标用户",
+        "Error: applying timer failed: {err}": "错误：应用 timer 失败：{err}",
+        "Error: language must be 'en' or 'zh'": "错误：语言必须是 'en' 或 'zh'",
+        "Reload failed": "重新加载失败",
+        "{n} ruleset(s) failed to update": "{n} 个规则集更新失败",
+        # status / output
+        "(no nodes — use `sc add <link>` to add)": "（暂无节点 —— 使用 `sc add <分享链接>` 添加）",
+        "(none)": "（无）",
+        "(unavailable)": "（不可用）",
+        "(error: {e})": "（错误：{e}）",
+        "Switched to: {tag}": "已切换到：{tag}",
+        "Switched to: {tag} (service restarted)": "已切换到：{tag}（服务已重启）",
+        "Usage: sc add '<vless://...|vmess://...|trojan://...|ss://...|hysteria2://...|tuic://...>'\nHint: wrap the share link in single quotes": "用法：sc add '<vless://...|vmess://...|trojan://...|ss://...|hysteria2://...|tuic://...>'\n提示：分享链接必须用单引号包起来",
+        "Added: {tag} ({type} → {server}:{port})": "已添加：{tag}（{type} → {server}:{port}）",
+        "Added: {tag} (⚠️ config check failed — see `sc log`)": "已添加：{tag}（⚠️ 配置检查失败 —— 用 `sc log` 查看详情）",
+        "Removed: {tag}": "已删除：{tag}",
+        "sing-box started + boot autostart enabled": "sing-box 已启动 + 已设置开机自启",
+        "sing-box stopped + boot autostart disabled": "sing-box 已停止 + 已取消开机自启",
+        "=== Service status ===": "=== 服务状态 ===",
+        "=== TUN interface ===": "=== TUN 接口 ===",
+        "=== Current node ===": "=== 当前节点 ===",
+        "=== Route mode ===": "=== 路由模式 ===",
+        "=== Egress IP ===": "=== 出口 IP ===",
+        "=== Next run ===": "=== 下次执行 ===",
+        "Route mode → {mode}": "路由模式 → {mode}",
+        "Boot autostart → {val}": "开机自启 → {val}",
+        "GNOME system proxy → {val}": "GNOME 系统代理 → {val}",
+        "Ruleset auto-update cadence → {val} (OnCalendar={oc})": "规则集自动更新频率 → {val}（OnCalendar={oc}）",
+        "Language → {val}": "语言 → {val}",
+        "OK ({size} bytes)": "成功（{size} 字节）",
+        "failed: {e}": "失败：{e}",
+        "→ Restarting sing-box ...": "→ 重启 sing-box ...",
+        "Done": "完成",
+        "Reloaded": "已重新加载",
+        # ls table headers
+        "ls.idx": "序号",
+        "ls.active": "激活",
+        "ls.type": "协议",
+        "ls.name": "名称",
+        "ls.address": "地址",
+        # cmd_uninstall fallback
+        "Uninstall script not found: {script}\nUse the one-line command to uninstall:\n  sudo bash -c \"$(curl -fsSL https://raw.githubusercontent.com/Alan-IFT/singbox-cli/main/uninstall.sh)\"":
+            "卸载脚本不存在：{script}\n请用一行命令卸载：\n  sudo bash -c \"$(curl -fsSL https://raw.githubusercontent.com/Alan-IFT/singbox-cli/main/uninstall.sh)\"",
+    },
+}
+
+LANG = "en"  # populated in main() after _init_files()
+
+
+def _load_lang():
+    try:
+        return json.loads(SETTINGS_PATH.read_text()).get("lang", "en")
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return "en"
+
+
+def t(s, **kwargs):
+    msg = TRANSLATIONS.get(LANG, {}).get(s, s)
+    return msg.format(**kwargs) if kwargs else msg
+
+
 # ============ State files ============
 
 def _init_files():
@@ -44,7 +119,8 @@ def _init_files():
         NODES_PATH.write_text(json.dumps({"active": None, "nodes": []}, indent=2))
         os.chmod(NODES_PATH, 0o600)
     if not SETTINGS_PATH.exists():
-        SETTINGS_PATH.write_text(json.dumps({"default_tun": True, "mode": "rule"}, indent=2))
+        SETTINGS_PATH.write_text(json.dumps(
+            {"default_tun": True, "mode": "rule", "lang": "en"}, indent=2))
 
 
 def load_nodes():
@@ -306,7 +382,7 @@ def parse_share_url(url):
     for scheme, fn in handlers.items():
         if url.startswith(scheme):
             return fn(url)
-    raise ValueError(f"不支持的链接协议：{url[:30]}")
+    raise ValueError(t("Unsupported share-link protocol: {url}", url=url[:30]))
 
 
 # ============ Config generation ============
@@ -411,7 +487,7 @@ def generate_config():
     r = subprocess.run([SB_BIN, "check", "-c", str(CFG_PATH)],
                        capture_output=True, text=True)
     if r.returncode != 0:
-        sys.stderr.write(f"⚠️  配置检查失败：\n{r.stderr}\n")
+        sys.stderr.write("⚠️  " + t("Config check failed:\n{stderr}", stderr=r.stderr) + "\n")
         return False
     return True
 
@@ -453,7 +529,7 @@ def _resolve_node(spec):
     nodes_data = load_nodes()
     nodes = nodes_data["nodes"]
     if not nodes:
-        sys.exit("错误：尚未添加任何节点 —— 先用 `sc add <分享链接>` 添加")
+        sys.exit(t("Error: no nodes added yet — use `sc add <link>` first"))
     try:
         idx = int(spec)
         if 1 <= idx <= len(nodes):
@@ -468,8 +544,8 @@ def _resolve_node(spec):
         return nodes_data, matches[0]
     if len(matches) > 1:
         names = "\n  ".join(n["tag"] for n in matches)
-        sys.exit(f"错误：'{spec}' 匹配多个节点：\n  {names}")
-    sys.exit(f"错误：未找到匹配 '{spec}' 的节点（请运行 `sc ls`）")
+        sys.exit(t("Error: '{spec}' matches multiple nodes:\n  {names}", spec=spec, names=names))
+    sys.exit(t("Error: no node matches '{spec}' (try `sc ls`)", spec=spec))
 
 
 def _unique_tag(tag, existing):
@@ -488,9 +564,9 @@ def cmd_ls(args):
     nodes = nodes_data["nodes"]
     active = nodes_data.get("active")
     if not nodes:
-        print("（暂无节点 —— 使用 `sc add <分享链接>` 添加）")
+        print(t("(no nodes — use `sc add <link>` to add)"))
         return
-    print(f"{'序号':>4}  {'激活':2}  {'协议':10}  {'名称':30}  {'地址':25}")
+    print(f"{t('ls.idx'):>4}  {t('ls.active'):2}  {t('ls.type'):10}  {t('ls.name'):30}  {t('ls.address'):25}")
     for i, n in enumerate(nodes, 1):
         marker = "●" if n["tag"] == active else " "
         addr = f"{n['server']}:{n['server_port']}"
@@ -499,7 +575,7 @@ def cmd_ls(args):
 
 def cmd_now(args):
     nodes_data = load_nodes()
-    print(nodes_data.get("active") or "（无）")
+    print(nodes_data.get("active") or t("(none)"))
 
 
 def cmd_use(args):
@@ -509,20 +585,19 @@ def cmd_use(args):
     if is_running():
         r = clash_api("PUT", "/proxies/proxy", {"name": node["tag"]})
         if r is not None:
-            print(f"已切换到：{node['tag']}")
+            print(t("Switched to: {tag}", tag=node["tag"]))
             return
     if reload_or_restart():
-        print(f"已切换到：{node['tag']}（服务已重启）")
+        print(t("Switched to: {tag} (service restarted)", tag=node["tag"]))
 
 
 def cmd_add(args):
     if not args.url:
-        sys.exit("用法：sc add '<vless://...|vmess://...|trojan://...|ss://...|hysteria2://...|tuic://...>'\n"
-                 "提示：分享链接必须用单引号包起来")
+        sys.exit(t("Usage: sc add '<vless://...|vmess://...|trojan://...|ss://...|hysteria2://...|tuic://...>'\nHint: wrap the share link in single quotes"))
     try:
         outbound = parse_share_url(args.url)
     except Exception as e:
-        sys.exit(f"错误：{e}")
+        sys.exit(t("Error: {e}", e=e))
     nodes_data = load_nodes()
     existing = {n["tag"] for n in nodes_data["nodes"]}
     outbound["tag"] = _unique_tag(outbound["tag"], existing)
@@ -531,10 +606,11 @@ def cmd_add(args):
         nodes_data["active"] = outbound["tag"]
     save_nodes(nodes_data)
     if reload_or_restart():
-        print(f"已添加：{outbound['tag']}（{outbound['type']} → "
-              f"{outbound['server']}:{outbound['server_port']}）")
+        print(t("Added: {tag} ({type} → {server}:{port})",
+                tag=outbound["tag"], type=outbound["type"],
+                server=outbound["server"], port=outbound["server_port"]))
     else:
-        print(f"已添加：{outbound['tag']}（⚠️ 配置检查失败 —— 用 `sc log` 查看详情）")
+        print(t("Added: {tag} (⚠️ config check failed — see `sc log`)", tag=outbound["tag"]))
 
 
 def cmd_rm(args):
@@ -544,7 +620,7 @@ def cmd_rm(args):
         nodes_data["active"] = nodes_data["nodes"][0]["tag"] if nodes_data["nodes"] else None
     save_nodes(nodes_data)
     reload_or_restart()
-    print(f"已删除：{node['tag']}")
+    print(t("Removed: {tag}", tag=node["tag"]))
 
 
 def cmd_on(args):
@@ -552,7 +628,7 @@ def cmd_on(args):
     settings = load_settings()
     settings["default_tun"] = True
     save_settings(settings)
-    print("sing-box 已启动 + 已设置开机自启")
+    print(t("sing-box started + boot autostart enabled"))
 
 
 def cmd_off(args):
@@ -560,43 +636,45 @@ def cmd_off(args):
     settings = load_settings()
     settings["default_tun"] = False
     save_settings(settings)
-    print("sing-box 已停止 + 已取消开机自启")
+    print(t("sing-box stopped + boot autostart disabled"))
 
 
 def cmd_status(args):
-    print("=== 服务状态 ===")
+    print(t("=== Service status ==="))
     subprocess.run(["systemctl", "status", "--no-pager", "-n", "5", SERVICE])
-    print("\n=== TUN 接口 ===")
+    print("\n" + t("=== TUN interface ==="))
     subprocess.run(["ip", "-br", "addr", "show", "sb-tun"])
     if is_running():
         nodes_data = load_nodes()
-        print(f"\n=== 当前节点 ===\n{nodes_data.get('active') or '（无）'}")
+        print("\n" + t("=== Current node ==="))
+        print(nodes_data.get("active") or t("(none)"))
         r = clash_api("GET", "/configs")
-        print(f"\n=== 路由模式 ===\n{(r or {}).get('mode', '（不可用）')}")
-        print("\n=== 出口 IP ===")
+        print("\n" + t("=== Route mode ==="))
+        print((r or {}).get("mode", t("(unavailable)")))
+        print("\n" + t("=== Egress IP ==="))
         try:
             with urllib.request.urlopen("https://api.ipify.org", timeout=8) as resp:
                 print(resp.read().decode())
         except Exception as e:
-            print(f"（错误：{e}）")
+            print(t("(error: {e})", e=e))
 
 
 def cmd_mode(args):
     mode = args.mode.lower()
     if mode not in ("rule", "global", "direct"):
-        sys.exit("错误：模式必须是 rule / global / direct 之一")
+        sys.exit(t("Error: mode must be one of rule / global / direct"))
     settings = load_settings()
     settings["mode"] = mode
     save_settings(settings)
     if is_running():
         clash_api("PATCH", "/configs", {"mode": mode})
-    print(f"路由模式 → {mode}")
+    print(t("Route mode → {mode}", mode=mode))
 
 
 def cmd_default_tun(args):
     val = args.value.lower()
     if val not in ("on", "off"):
-        sys.exit("错误：参数必须为 on 或 off")
+        sys.exit(t("Error: argument must be on or off"))
     if val == "on":
         subprocess.run(["systemctl", "enable", SERVICE], check=False)
     else:
@@ -604,16 +682,16 @@ def cmd_default_tun(args):
     settings = load_settings()
     settings["default_tun"] = (val == "on")
     save_settings(settings)
-    print(f"开机自启 → {val}")
+    print(t("Boot autostart → {val}", val=val))
 
 
 def cmd_sysproxy(args):
     val = args.value.lower()
     if val not in ("on", "off"):
-        sys.exit("错误：参数必须为 on 或 off")
+        sys.exit(t("Error: argument must be on or off"))
     user = os.environ.get("SUDO_USER") or os.environ.get("USER")
     if not user:
-        sys.exit("错误：无法确定目标用户")
+        sys.exit(t("Error: cannot determine target user"))
     if val == "on":
         cmds = [
             ["gsettings", "set", "org.gnome.system.proxy", "mode", "manual"],
@@ -628,7 +706,7 @@ def cmd_sysproxy(args):
         cmds = [["gsettings", "set", "org.gnome.system.proxy", "mode", "none"]]
     for c in cmds:
         subprocess.run(["sudo", "-u", user] + c, check=False)
-    print(f"GNOME 系统代理 → {val}")
+    print(t("GNOME system proxy → {val}", val=val))
 
 
 def cmd_update_rules(args):
@@ -642,17 +720,17 @@ def cmd_update_rules(args):
             with urllib.request.urlopen(url, timeout=30) as r:
                 tmp.write_bytes(r.read())
             tmp.replace(target)
-            print(f"成功（{target.stat().st_size} 字节）")
+            print(t("OK ({size} bytes)", size=target.stat().st_size))
         except Exception as e:
-            print(f"失败：{e}")
+            print(t("failed: {e}", e=e))
             failed.append(fname)
             tmp.unlink(missing_ok=True)
     if failed:
-        sys.exit(f"\n{len(failed)} 个规则集更新失败")
+        sys.exit("\n" + t("{n} ruleset(s) failed to update", n=len(failed)))
     if is_running():
-        print("\n→ 重启 sing-box ...")
+        print("\n" + t("→ Restarting sing-box ..."))
         restart_service()
-    print("完成")
+    print(t("Done"))
 
 
 def cmd_update_interval(args):
@@ -686,14 +764,14 @@ def cmd_update_interval(args):
         capture_output=True, text=True,
     )
     if r.returncode != 0:
-        sys.exit(f"错误：应用 timer 失败：{r.stderr.strip()}")
+        sys.exit(t("Error: applying timer failed: {err}", err=r.stderr.strip()))
 
     settings = load_settings()
     settings["update_interval"] = val
     save_settings(settings)
 
-    print(f"规则集自动更新频率 → {val}（OnCalendar={on_calendar}）")
-    print("\n=== 下次执行 ===")
+    print(t("Ruleset auto-update cadence → {val} (OnCalendar={oc})", val=val, oc=on_calendar))
+    print("\n" + t("=== Next run ==="))
     subprocess.run(
         ["systemctl", "list-timers", "sing-box-rules-update.timer", "--no-pager"],
         check=False,
@@ -709,25 +787,81 @@ def cmd_log(args):
 
 def cmd_reload(args):
     if reload_or_restart():
-        print("已重新加载")
+        print(t("Reloaded"))
     else:
-        sys.exit("重新加载失败")
+        sys.exit(t("Reload failed"))
+
+
+def cmd_lang(args):
+    val = args.value.lower()
+    if val not in ("en", "zh"):
+        sys.exit(t("Error: language must be 'en' or 'zh'"))
+    settings = load_settings()
+    settings["lang"] = val
+    save_settings(settings)
+    global LANG
+    LANG = val
+    print(t("Language → {val}", val=val))
 
 
 def cmd_uninstall(args):
     script = LIB_DIR / "uninstall.sh"
     if script.exists():
         os.execvp("bash", ["bash", str(script)])
-    sys.exit(
-        f"卸载脚本不存在：{script}\n"
-        "请用一行命令卸载：\n"
-        "  sudo bash -c \"$(curl -fsSL "
-        "https://raw.githubusercontent.com/Alan-IFT/singbox-cli/main/uninstall.sh)\""
-    )
+    sys.exit(t(
+        "Uninstall script not found: {script}\n"
+        "Use the one-line command to uninstall:\n"
+        "  sudo bash -c \"$(curl -fsSL https://raw.githubusercontent.com/Alan-IFT/singbox-cli/main/uninstall.sh)\"",
+        script=script,
+    ))
 
 
-def cmd_help(args):
-    print("""sc —— sing-box 命令行管理工具
+HELP_EN = """sc — sing-box CLI manager
+
+USAGE
+  sc <command> [args]
+
+COMMANDS
+  ls                          List all nodes (● = currently active)
+  now                         Show the currently active node
+  use <name|index>            Switch active node (instant via Clash API, no restart)
+  add <share-link>            Add a node from a share link
+                              Supports vless / vmess / trojan / ss / hysteria2 / tuic
+  rm <name|index>             Remove a node
+  on                          Start sing-box and enable on boot
+  off                         Stop sing-box and disable on boot
+  status                      Show service status, TUN interface, active node, egress IP
+  mode <rule|global|direct>   Switch route mode (live)
+                                rule   = rule-based routing (default)
+                                global = everything via proxy
+                                direct = everything direct
+  default-tun <on|off>        Toggle boot autostart of sing-box independently
+  sysproxy <on|off>           Toggle GNOME system proxy (HTTP/SOCKS 7890; usually unneeded with TUN)
+  update-rules                Update .srs rulesets now
+  update-interval <freq|show>  Set the auto-update cadence
+                                presets: hourly / daily / weekly / monthly
+                                custom: any systemd OnCalendar expression
+                                show: print current cadence and next run
+  log [-f]                    Show logs (-f to follow, Ctrl+C to exit)
+  reload                      Regenerate config and restart the service
+  lang <en|zh>                Switch CLI language
+  uninstall                   Uninstall singbox-cli (optionally remove sing-box + APT source)
+  help                        Show this help
+
+EXAMPLES
+  sc add 'vless://uuid@host:443?security=reality&pbk=...&sni=...&fp=chrome&flow=xtls-rprx-vision#LosAngeles-US'
+  sc ls
+  sc use US                   # or: sc use 1
+  sc mode global
+  sc update-interval daily             # update rulesets every day
+  sc update-interval 'Mon *-*-* 04:00:00'   # every Monday at 04:00
+  sc update-interval show              # show current cadence
+  sc status
+
+Hint: share links contain ? & # — wrap the entire link in single quotes
+"""
+
+HELP_ZH = """sc —— sing-box 命令行管理工具
 
 用法
   sc <命令> [参数]
@@ -755,6 +889,7 @@ def cmd_help(args):
                                 show：查看当前频率和下次执行时间
   log [-f]                    查看日志（-f 实时跟随，Ctrl+C 退出）
   reload                      重新生成配置并重启服务
+  lang <en|zh>                切换 CLI 语言
   uninstall                   卸载 singbox-cli（可选移除 sing-box 与 APT 源）
   help                        显示本帮助
 
@@ -769,11 +904,17 @@ def cmd_help(args):
   sc status
 
 提示：分享链接中含有 ? & # 等字符，整个链接必须用单引号包起来
-""")
+"""
+
+
+def cmd_help(args):
+    print(HELP_ZH if LANG == "zh" else HELP_EN)
 
 
 def main():
+    global LANG
     _init_files()
+    LANG = _load_lang()
     parser = argparse.ArgumentParser(prog="sc", add_help=False)
     sub = parser.add_subparsers(dest="cmd")
     sub.add_parser("ls"); sub.add_parser("now")
@@ -787,7 +928,9 @@ def main():
     sub.add_parser("update-rules")
     p = sub.add_parser("update-interval"); p.add_argument("value")
     p = sub.add_parser("log"); p.add_argument("-f", "--follow", action="store_true")
-    sub.add_parser("reload"); sub.add_parser("uninstall"); sub.add_parser("help")
+    sub.add_parser("reload"); sub.add_parser("uninstall")
+    p = sub.add_parser("lang"); p.add_argument("value")
+    sub.add_parser("help")
 
     args = parser.parse_args()
     handlers = {
@@ -796,6 +939,7 @@ def main():
         "default-tun": cmd_default_tun, "sysproxy": cmd_sysproxy,
         "update-rules": cmd_update_rules, "update-interval": cmd_update_interval,
         "log": cmd_log, "reload": cmd_reload, "uninstall": cmd_uninstall,
+        "lang": cmd_lang,
         "help": cmd_help, None: cmd_help,
     }
     handlers.get(args.cmd, cmd_help)(args)

@@ -12,7 +12,7 @@
 - **节点切换不重启**：通过 sing-box 的 Clash API 即时生效
 - **路由模式即时切换**：`rule` / `global` / `direct` 一条命令搞定
 - **规则集自动更新**：systemd timer 定期拉 `.srs`，频率可配
-- **中文友好**：所有命令输出和帮助都是中文
+- **中英双语**：默认英文，安装时可选中文；任何时候 `sc lang en|zh` 切换
 
 ## 🛠 系统要求
 
@@ -30,12 +30,15 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/Alan-IFT/singbox-cl
 
 安装脚本会自动：
 
-1. 添加 sing-box 官方 APT 源并安装 sing-box 内核
-2. 安装 `sc` CLI 到 `/usr/local/bin/`
-3. 创建 systemd 服务 + 规则集自动更新 timer
-4. 配置免密 sudo（仅针对 `sc` 命令）
-5. 下载 `.srs` 规则集
-6. 启动 sing-box 并设置开机自启
+1. 提示选择 CLI 语言——英文（默认）或简体中文
+2. 添加 sing-box 官方 APT 源并安装 sing-box 内核
+3. 安装 `sc` CLI 到 `/usr/local/bin/`
+4. 创建 systemd 服务 + 规则集自动更新 timer
+5. 配置免密 sudo（仅针对 `sc` 命令）
+6. 下载 `.srs` 规则集
+7. 启动 sing-box 并设置开机自启
+
+> 语言默认根据 `$LANG` 推断（中文 locale → `zh`，否则 `en`）。提示出现时直接回车即采用默认，或输入 `1`/`2` 显式选择。
 
 ### 升级
 
@@ -105,6 +108,15 @@ sc update-interval weekly             # 每周（默认）
 sc update-interval 'Mon *-*-* 04:00:00'   # 每周一凌晨 4 点
 sc update-interval show               # 查看当前频率和下次执行时间
 ```
+
+### 切换 CLI 语言
+
+```bash
+sc lang en   # English
+sc lang zh   # 简体中文
+```
+
+设置持久化到 `/etc/sing-box/settings.json`，对后续所有 `sc` 输出（错误、状态、帮助）生效。
 
 ### 完整命令列表
 

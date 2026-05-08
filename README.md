@@ -12,7 +12,7 @@
 - **Hot node switch**: applied instantly via sing-box's Clash API, no service restart.
 - **Live route mode switch**: `rule` / `global` / `direct` with one command.
 - **Auto ruleset update**: systemd timer pulls `.srs` rulesets at a configurable cadence.
-- **Chinese-friendly UI**: all CLI output and help text is in Simplified Chinese (English/i18n contributions welcome).
+- **Bilingual**: English (default) and Simplified Chinese; pick at install time, switch any time with `sc lang en|zh`.
 
 ## 🛠 Requirements
 
@@ -30,12 +30,15 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/Alan-IFT/singbox-cl
 
 The installer will:
 
-1. Add the official sing-box APT source and install the sing-box core
-2. Install the `sc` CLI to `/usr/local/bin/`
-3. Create the systemd service + ruleset auto-update timer
-4. Configure password-less sudo (scoped to the `sc` command only)
-5. Download `.srs` rulesets
-6. Start sing-box and enable boot autostart
+1. Prompt you to choose CLI language — English (default) or Simplified Chinese
+2. Add the official sing-box APT source and install the sing-box core
+3. Install the `sc` CLI to `/usr/local/bin/`
+4. Create the systemd service + ruleset auto-update timer
+5. Configure password-less sudo (scoped to the `sc` command only)
+6. Download `.srs` rulesets
+7. Start sing-box and enable boot autostart
+
+> The language defaults to whatever your `$LANG` env var suggests (Chinese locale → `zh`, otherwise `en`). Just hit Enter at the prompt to accept, or pick `1`/`2`.
 
 ### Upgrade
 
@@ -105,6 +108,15 @@ sc update-interval weekly             # update every week (default)
 sc update-interval 'Mon *-*-* 04:00:00'   # every Monday at 04:00
 sc update-interval show               # show current cadence + next run
 ```
+
+### Switch CLI language
+
+```bash
+sc lang en   # English
+sc lang zh   # 简体中文
+```
+
+The setting is persisted in `/etc/sing-box/settings.json` and applies to all subsequent `sc` output (errors, status, help).
 
 ### Full command list
 
@@ -179,7 +191,3 @@ PRs welcome. Top priorities:
 ## 📄 License
 
 MIT — see [LICENSE](LICENSE).
-
----
-
-> CLI output and `sc help` are in Simplified Chinese. The full project documentation in Chinese: [README.zh-CN.md](README.zh-CN.md).
