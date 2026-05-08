@@ -1,0 +1,791 @@
+#!/usr/bin/env python3
+"""proxy —— sing-box 命令行管理工具。运行 `proxy help` 查看用法。"""
+import argparse
+import base64
+import json
+import os
+import subprocess
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+# ============ Paths ============
+CFG_DIR = Path("/etc/sing-box")
+CFG_PATH = CFG_DIR / "config.json"
+NODES_PATH = CFG_DIR / "nodes.json"
+SETTINGS_PATH = CFG_DIR / "settings.json"
+RULES_DIR = CFG_DIR / "rules"
+SERVICE = "sing-box"
+CLASH = "http://127.0.0.1:9090"
+SB_BIN = "/usr/local/bin/sing-box"
+
+RULESET_URLS = {
+    "geoip-cn.srs":        "https://github.com/MetaCubeX/meta-rules-dat/raw/sing/geo/geoip/cn.srs",
+    "geosite-cn.srs":      "https://github.com/MetaCubeX/meta-rules-dat/raw/sing/geo/geosite/cn.srs",
+    "geosite-google.srs":  "https://github.com/MetaCubeX/meta-rules-dat/raw/sing/geo/geosite/google.srs",
+    "geosite-private.srs": "https://github.com/MetaCubeX/meta-rules-dat/raw/sing/geo/geosite/private.srs",
+}
+
+# ============ Auto-elevate ============
+if os.geteuid() != 0:
+    os.execvp("sudo", ["sudo", "/usr/local/bin/proxy"] + sys.argv[1:])
+
+
+# ============ State files ============
+
+def _init_files():
+    CFG_DIR.mkdir(parents=True, exist_ok=True)
+    RULES_DIR.mkdir(parents=True, exist_ok=True)
+    Path("/var/lib/sing-box").mkdir(parents=True, exist_ok=True)
+    if not NODES_PATH.exists():
+        NODES_PATH.write_text(json.dumps({"active": None, "nodes": []}, indent=2))
+        os.chmod(NODES_PATH, 0o600)
+    if not SETTINGS_PATH.exists():
+        SETTINGS_PATH.write_text(json.dumps({"default_tun": True, "mode": "rule"}, indent=2))
+
+
+def load_nodes():
+    return json.loads(NODES_PATH.read_text())
+
+
+def save_nodes(d):
+    NODES_PATH.write_text(json.dumps(d, indent=2, ensure_ascii=False))
+    os.chmod(NODES_PATH, 0o600)
+
+
+def load_settings():
+    return json.loads(SETTINGS_PATH.read_text())
+
+
+def save_settings(d):
+    SETTINGS_PATH.write_text(json.dumps(d, indent=2))
+
+
+# ============ Share-URL parsers ============
+
+def _q(qs, key, default=None):
+    return qs.get(key, [default])[0] if qs else default
+
+
+def _b64dec(s):
+    s = s + "=" * ((4 - len(s) % 4) % 4)
+    return base64.urlsafe_b64decode(s).decode("utf-8", errors="replace")
+
+
+def _name(frag, host, port):
+    return urllib.parse.unquote(frag) if frag else f"{host}:{port}"
+
+
+def _attach_transport(out, qs):
+    net = _q(qs, "type", "tcp")
+    if net == "ws":
+        out["transport"] = {"type": "ws", "path": _q(qs, "path", "/")}
+        h = _q(qs, "host")
+        if h:
+            out["transport"]["headers"] = {"Host": h}
+    elif net == "grpc":
+        out["transport"] = {
+            "type": "grpc",
+            "service_name": _q(qs, "serviceName", _q(qs, "path", "")),
+        }
+    elif net in ("h2", "http"):
+        out["transport"] = {"type": "http"}
+        h = _q(qs, "host")
+        if h:
+            out["transport"]["host"] = h.split(",")
+        p = _q(qs, "path")
+        if p:
+            out["transport"]["path"] = p
+    elif net == "httpupgrade":
+        out["transport"] = {"type": "httpupgrade", "path": _q(qs, "path", "/")}
+        h = _q(qs, "host")
+        if h:
+            out["transport"]["host"] = h
+
+
+def _attach_tls(out, qs, host, default_sni=None):
+    sec = _q(qs, "security", "none")
+    if sec not in ("tls", "reality"):
+        return
+    sni = _q(qs, "sni") or _q(qs, "host") or default_sni or host
+    tls = {"enabled": True, "server_name": sni}
+    alpn = _q(qs, "alpn")
+    if alpn:
+        tls["alpn"] = alpn.split(",")
+    fp = _q(qs, "fp")
+    if fp:
+        tls["utls"] = {"enabled": True, "fingerprint": fp}
+    if _q(qs, "allowInsecure") in ("1", "true"):
+        tls["insecure"] = True
+    if sec == "reality":
+        if not fp:
+            tls["utls"] = {"enabled": True, "fingerprint": "chrome"}
+        tls["reality"] = {"enabled": True, "public_key": _q(qs, "pbk", "")}
+        sid = _q(qs, "sid")
+        if sid:
+            tls["reality"]["short_id"] = sid
+    out["tls"] = tls
+
+
+def parse_vless(url):
+    p = urllib.parse.urlparse(url)
+    qs = urllib.parse.parse_qs(p.query)
+    out = {
+        "type": "vless",
+        "tag": _name(p.fragment, p.hostname, p.port),
+        "server": p.hostname,
+        "server_port": p.port,
+        "uuid": p.username,
+    }
+    flow = _q(qs, "flow")
+    if flow:
+        out["flow"] = flow
+    pe = _q(qs, "packetEncoding", "xudp")
+    if pe and pe != "none":
+        out["packet_encoding"] = pe
+    _attach_transport(out, qs)
+    _attach_tls(out, qs, p.hostname)
+    return out
+
+
+def parse_vmess(url):
+    payload = url[len("vmess://"):]
+    cfg = json.loads(_b64dec(payload))
+    host = cfg["add"]
+    port = int(cfg["port"])
+    out = {
+        "type": "vmess",
+        "tag": cfg.get("ps") or f"{host}:{port}",
+        "server": host,
+        "server_port": port,
+        "uuid": cfg["id"],
+        "alter_id": int(cfg.get("aid", 0)),
+        "security": cfg.get("scy", "auto"),
+    }
+    net = cfg.get("net", "tcp")
+    if net == "ws":
+        out["transport"] = {"type": "ws", "path": cfg.get("path", "/")}
+        if cfg.get("host"):
+            out["transport"]["headers"] = {"Host": cfg["host"]}
+    elif net == "grpc":
+        out["transport"] = {"type": "grpc", "service_name": cfg.get("path", "")}
+    elif net in ("h2", "http"):
+        out["transport"] = {"type": "http"}
+        if cfg.get("host"):
+            out["transport"]["host"] = cfg["host"].split(",")
+        if cfg.get("path"):
+            out["transport"]["path"] = cfg["path"]
+    if cfg.get("tls") == "tls":
+        sni = cfg.get("sni") or cfg.get("host") or host
+        tls = {"enabled": True, "server_name": sni}
+        if cfg.get("alpn"):
+            tls["alpn"] = cfg["alpn"].split(",")
+        if cfg.get("fp"):
+            tls["utls"] = {"enabled": True, "fingerprint": cfg["fp"]}
+        out["tls"] = tls
+    return out
+
+
+def parse_trojan(url):
+    p = urllib.parse.urlparse(url)
+    qs = urllib.parse.parse_qs(p.query)
+    out = {
+        "type": "trojan",
+        "tag": _name(p.fragment, p.hostname, p.port or 443),
+        "server": p.hostname,
+        "server_port": p.port or 443,
+        "password": urllib.parse.unquote(p.username or ""),
+    }
+    if "security" not in qs:
+        qs["security"] = ["tls"]
+    _attach_tls(out, qs, p.hostname)
+    _attach_transport(out, qs)
+    return out
+
+
+def parse_ss(url):
+    body = url[len("ss://"):]
+    name = ""
+    if "#" in body:
+        body, frag = body.split("#", 1)
+        name = urllib.parse.unquote(frag)
+    if "@" in body:
+        userinfo, hostpart = body.rsplit("@", 1)
+        try:
+            decoded = _b64dec(userinfo)
+            method, password = decoded.split(":", 1)
+        except Exception:
+            method, password = userinfo.split(":", 1)
+        if "?" in hostpart:
+            hostpart = hostpart.split("?", 1)[0]
+        host, port = hostpart.rsplit(":", 1)
+    else:
+        decoded = _b64dec(body)
+        method_pwd, hostpart = decoded.rsplit("@", 1)
+        method, password = method_pwd.split(":", 1)
+        host, port = hostpart.rsplit(":", 1)
+    return {
+        "type": "shadowsocks",
+        "tag": name or f"{host}:{port}",
+        "server": host,
+        "server_port": int(port),
+        "method": method,
+        "password": urllib.parse.unquote(password),
+    }
+
+
+def parse_hy2(url):
+    p = urllib.parse.urlparse(url)
+    qs = urllib.parse.parse_qs(p.query)
+    out = {
+        "type": "hysteria2",
+        "tag": _name(p.fragment, p.hostname, p.port or 443),
+        "server": p.hostname,
+        "server_port": p.port or 443,
+        "password": urllib.parse.unquote(p.username or ""),
+    }
+    sni = _q(qs, "sni") or p.hostname
+    tls = {"enabled": True, "server_name": sni, "alpn": ["h3"]}
+    alpn = _q(qs, "alpn")
+    if alpn:
+        tls["alpn"] = alpn.split(",")
+    if _q(qs, "insecure") in ("1", "true"):
+        tls["insecure"] = True
+    out["tls"] = tls
+    obfs = _q(qs, "obfs")
+    if obfs:
+        out["obfs"] = {"type": obfs, "password": _q(qs, "obfs-password", "")}
+    return out
+
+
+def parse_tuic(url):
+    p = urllib.parse.urlparse(url)
+    qs = urllib.parse.parse_qs(p.query)
+    userinfo = p.username or ""
+    if ":" in userinfo:
+        uuid, password = userinfo.split(":", 1)
+        password = urllib.parse.unquote(password)
+    else:
+        uuid, password = userinfo, ""
+    out = {
+        "type": "tuic",
+        "tag": _name(p.fragment, p.hostname, p.port or 443),
+        "server": p.hostname,
+        "server_port": p.port or 443,
+        "uuid": uuid,
+        "password": password,
+    }
+    cc = _q(qs, "congestion_control")
+    if cc:
+        out["congestion_control"] = cc
+    udp_mode = _q(qs, "udp_relay_mode", "native")
+    if udp_mode:
+        out["udp_relay_mode"] = udp_mode
+    sni = _q(qs, "sni") or p.hostname
+    tls = {"enabled": True, "server_name": sni, "alpn": _q(qs, "alpn", "h3").split(",")}
+    if _q(qs, "allow_insecure") in ("1", "true"):
+        tls["insecure"] = True
+    out["tls"] = tls
+    return out
+
+
+def parse_share_url(url):
+    url = url.strip()
+    handlers = {
+        "vless://": parse_vless,
+        "vmess://": parse_vmess,
+        "trojan://": parse_trojan,
+        "ss://": parse_ss,
+        "hysteria2://": parse_hy2,
+        "hy2://": parse_hy2,
+        "tuic://": parse_tuic,
+    }
+    for scheme, fn in handlers.items():
+        if url.startswith(scheme):
+            return fn(url)
+    raise ValueError(f"不支持的链接协议：{url[:30]}")
+
+
+# ============ Config generation ============
+
+def generate_config():
+    nodes_data = load_nodes()
+    nodes = nodes_data["nodes"]
+    active = nodes_data.get("active")
+
+    node_tags = [n["tag"] for n in nodes]
+    if active not in node_tags:
+        active = node_tags[0] if node_tags else None
+        nodes_data["active"] = active
+        save_nodes(nodes_data)
+
+    selector = {
+        "type": "selector",
+        "tag": "proxy",
+        "outbounds": (node_tags or []) + ["direct"],
+        "default": active or "direct",
+        "interrupt_exist_connections": True,
+    }
+
+    config = {
+        "log": {"level": "warn", "timestamp": True},
+        "dns": {
+            "servers": [
+                {"server": "119.29.29.29", "type": "udp", "tag": "local_local"},
+                {"server": "cloudflare-dns.com", "domain_resolver": "hosts_dns",
+                 "path": "/dns-query", "type": "https", "tag": "remote_dns", "detour": "proxy"},
+                {"server": "119.29.29.29", "domain_resolver": "local_local",
+                 "type": "udp", "tag": "direct_dns"},
+                {"predefined": {
+                    "dns.google": ["8.8.8.8", "8.8.4.4"],
+                    "cloudflare-dns.com": ["104.16.249.249", "104.16.248.249"],
+                    "one.one.one.one": ["1.1.1.1", "1.0.0.1"],
+                    "dns.alidns.com": ["223.5.5.5", "223.6.6.6"],
+                    "doh.pub": ["1.12.12.12", "120.53.53.53"],
+                    "dot.pub": ["1.12.12.12", "120.53.53.53"],
+                }, "type": "hosts", "tag": "hosts_dns"},
+            ],
+            "rules": [
+                {"server": "hosts_dns", "ip_accept_any": True},
+                {"server": "remote_dns", "clash_mode": "Global"},
+                {"server": "direct_dns", "clash_mode": "Direct"},
+                {"action": "predefined", "rcode": "NOERROR", "query_type": [64, 65]},
+                {"server": "remote_dns", "rule_set": ["geosite-google"]},
+                {"server": "direct_dns", "rule_set": ["geosite-private"]},
+                {"server": "direct_dns", "domain_suffix": [
+                    "alidns.com", "doh.pub", "dot.pub", "360.cn", "onedns.net"]},
+                {"server": "direct_dns", "rule_set": ["geosite-cn"]},
+            ],
+            "final": "remote_dns",
+            "independent_cache": True,
+        },
+        "inbounds": [
+            {"type": "tun", "tag": "tun-in", "interface_name": "sb-tun",
+             "address": ["172.19.0.1/30"], "mtu": 9000,
+             "auto_route": True, "strict_route": True, "stack": "gvisor"},
+        ],
+        "outbounds": [selector] + nodes + [{"type": "direct", "tag": "direct"}],
+        "route": {
+            "default_domain_resolver": {"server": "direct_dns"},
+            "auto_detect_interface": True,
+            "rules": [
+                {"outbound": "direct", "process_name": ["sing-box"]},
+                {"action": "sniff"},
+                {"protocol": ["dns"], "action": "hijack-dns"},
+                {"outbound": "direct", "clash_mode": "Direct"},
+                {"outbound": "proxy",  "clash_mode": "Global"},
+                {"network": ["udp"], "port": [443], "action": "reject"},
+                {"outbound": "proxy",  "rule_set": ["geosite-google"]},
+                {"outbound": "direct", "ip_is_private": True},
+                {"outbound": "direct", "rule_set": ["geosite-private"]},
+                {"outbound": "direct", "domain_suffix": [
+                    "alidns.com", "doh.pub", "dot.pub", "360.cn", "onedns.net"]},
+                {"outbound": "direct", "rule_set": ["geoip-cn"]},
+                {"outbound": "direct", "rule_set": ["geosite-cn"]},
+            ],
+            "rule_set": [
+                {"tag": "geoip-cn", "type": "local", "format": "binary",
+                 "path": str(RULES_DIR / "geoip-cn.srs")},
+                {"tag": "geosite-cn", "type": "local", "format": "binary",
+                 "path": str(RULES_DIR / "geosite-cn.srs")},
+                {"tag": "geosite-google", "type": "local", "format": "binary",
+                 "path": str(RULES_DIR / "geosite-google.srs")},
+                {"tag": "geosite-private", "type": "local", "format": "binary",
+                 "path": str(RULES_DIR / "geosite-private.srs")},
+            ],
+            "final": "proxy",
+        },
+        "experimental": {
+            "cache_file": {"enabled": True, "path": "/var/lib/sing-box/cache.db",
+                           "store_fakeip": False},
+            "clash_api": {"external_controller": "127.0.0.1:9090"},
+        },
+    }
+
+    CFG_PATH.write_text(json.dumps(config, indent=2, ensure_ascii=False))
+    os.chmod(CFG_PATH, 0o600)
+
+    r = subprocess.run([SB_BIN, "check", "-c", str(CFG_PATH)],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        sys.stderr.write(f"⚠️  配置检查失败：\n{r.stderr}\n")
+        return False
+    return True
+
+
+def restart_service():
+    subprocess.run(["systemctl", "restart", SERVICE], check=False)
+
+
+def reload_or_restart():
+    if not generate_config():
+        return False
+    restart_service()
+    return True
+
+
+# ============ Clash API ============
+
+def clash_api(method, path, data=None):
+    url = CLASH + path
+    body = json.dumps(data).encode() if data is not None else None
+    req = urllib.request.Request(url, data=body, method=method)
+    if body:
+        req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=3) as r:
+            text = r.read().decode()
+            return json.loads(text) if text else {}
+    except (urllib.error.URLError, urllib.error.HTTPError):
+        return None
+
+
+def is_running():
+    return subprocess.run(["systemctl", "is-active", "--quiet", SERVICE]).returncode == 0
+
+
+# ============ Helpers ============
+
+def _resolve_node(spec):
+    nodes_data = load_nodes()
+    nodes = nodes_data["nodes"]
+    if not nodes:
+        sys.exit("错误：尚未添加任何节点 —— 先用 `proxy add <分享链接>` 添加")
+    try:
+        idx = int(spec)
+        if 1 <= idx <= len(nodes):
+            return nodes_data, nodes[idx - 1]
+    except ValueError:
+        pass
+    for n in nodes:
+        if n["tag"] == spec:
+            return nodes_data, n
+    matches = [n for n in nodes if spec.lower() in n["tag"].lower()]
+    if len(matches) == 1:
+        return nodes_data, matches[0]
+    if len(matches) > 1:
+        names = "\n  ".join(n["tag"] for n in matches)
+        sys.exit(f"错误：'{spec}' 匹配多个节点：\n  {names}")
+    sys.exit(f"错误：未找到匹配 '{spec}' 的节点（请运行 `proxy ls`）")
+
+
+def _unique_tag(tag, existing):
+    if tag not in existing:
+        return tag
+    i = 2
+    while f"{tag} #{i}" in existing:
+        i += 1
+    return f"{tag} #{i}"
+
+
+# ============ Commands ============
+
+def cmd_ls(args):
+    nodes_data = load_nodes()
+    nodes = nodes_data["nodes"]
+    active = nodes_data.get("active")
+    if not nodes:
+        print("（暂无节点 —— 使用 `proxy add <分享链接>` 添加）")
+        return
+    print(f"{'序号':>4}  {'激活':2}  {'协议':10}  {'名称':30}  {'地址':25}")
+    for i, n in enumerate(nodes, 1):
+        marker = "●" if n["tag"] == active else " "
+        addr = f"{n['server']}:{n['server_port']}"
+        print(f"{i:>4}  {marker:2}  {n['type']:10}  {n['tag'][:30]:30}  {addr[:25]:25}")
+
+
+def cmd_now(args):
+    nodes_data = load_nodes()
+    print(nodes_data.get("active") or "（无）")
+
+
+def cmd_use(args):
+    nodes_data, node = _resolve_node(args.spec)
+    nodes_data["active"] = node["tag"]
+    save_nodes(nodes_data)
+    if is_running():
+        r = clash_api("PUT", "/proxies/proxy", {"name": node["tag"]})
+        if r is not None:
+            print(f"已切换到：{node['tag']}")
+            return
+    if reload_or_restart():
+        print(f"已切换到：{node['tag']}（服务已重启）")
+
+
+def cmd_add(args):
+    if not args.url:
+        sys.exit("用法：proxy add '<vless://...|vmess://...|trojan://...|ss://...|hysteria2://...|tuic://...>'\n"
+                 "提示：分享链接必须用单引号包起来")
+    try:
+        outbound = parse_share_url(args.url)
+    except Exception as e:
+        sys.exit(f"错误：{e}")
+    nodes_data = load_nodes()
+    existing = {n["tag"] for n in nodes_data["nodes"]}
+    outbound["tag"] = _unique_tag(outbound["tag"], existing)
+    nodes_data["nodes"].append(outbound)
+    if not nodes_data.get("active"):
+        nodes_data["active"] = outbound["tag"]
+    save_nodes(nodes_data)
+    if reload_or_restart():
+        print(f"已添加：{outbound['tag']}（{outbound['type']} → "
+              f"{outbound['server']}:{outbound['server_port']}）")
+    else:
+        print(f"已添加：{outbound['tag']}（⚠️ 配置检查失败 —— 用 `proxy log` 查看详情）")
+
+
+def cmd_rm(args):
+    nodes_data, node = _resolve_node(args.spec)
+    nodes_data["nodes"] = [n for n in nodes_data["nodes"] if n["tag"] != node["tag"]]
+    if nodes_data.get("active") == node["tag"]:
+        nodes_data["active"] = nodes_data["nodes"][0]["tag"] if nodes_data["nodes"] else None
+    save_nodes(nodes_data)
+    reload_or_restart()
+    print(f"已删除：{node['tag']}")
+
+
+def cmd_on(args):
+    subprocess.run(["systemctl", "enable", "--now", SERVICE], check=False)
+    settings = load_settings()
+    settings["default_tun"] = True
+    save_settings(settings)
+    print("sing-box 已启动 + 已设置开机自启")
+
+
+def cmd_off(args):
+    subprocess.run(["systemctl", "disable", "--now", SERVICE], check=False)
+    settings = load_settings()
+    settings["default_tun"] = False
+    save_settings(settings)
+    print("sing-box 已停止 + 已取消开机自启")
+
+
+def cmd_status(args):
+    print("=== 服务状态 ===")
+    subprocess.run(["systemctl", "status", "--no-pager", "-n", "5", SERVICE])
+    print("\n=== TUN 接口 ===")
+    subprocess.run(["ip", "-br", "addr", "show", "sb-tun"])
+    if is_running():
+        nodes_data = load_nodes()
+        print(f"\n=== 当前节点 ===\n{nodes_data.get('active') or '（无）'}")
+        r = clash_api("GET", "/configs")
+        print(f"\n=== 路由模式 ===\n{(r or {}).get('mode', '（不可用）')}")
+        print("\n=== 出口 IP ===")
+        try:
+            with urllib.request.urlopen("https://api.ipify.org", timeout=8) as resp:
+                print(resp.read().decode())
+        except Exception as e:
+            print(f"（错误：{e}）")
+
+
+def cmd_mode(args):
+    mode = args.mode.lower()
+    if mode not in ("rule", "global", "direct"):
+        sys.exit("错误：模式必须是 rule / global / direct 之一")
+    settings = load_settings()
+    settings["mode"] = mode
+    save_settings(settings)
+    if is_running():
+        clash_api("PATCH", "/configs", {"mode": mode})
+    print(f"路由模式 → {mode}")
+
+
+def cmd_default_tun(args):
+    val = args.value.lower()
+    if val not in ("on", "off"):
+        sys.exit("错误：参数必须为 on 或 off")
+    if val == "on":
+        subprocess.run(["systemctl", "enable", SERVICE], check=False)
+    else:
+        subprocess.run(["systemctl", "disable", SERVICE], check=False)
+    settings = load_settings()
+    settings["default_tun"] = (val == "on")
+    save_settings(settings)
+    print(f"开机自启 → {val}")
+
+
+def cmd_sysproxy(args):
+    val = args.value.lower()
+    if val not in ("on", "off"):
+        sys.exit("错误：参数必须为 on 或 off")
+    user = os.environ.get("SUDO_USER") or os.environ.get("USER")
+    if not user:
+        sys.exit("错误：无法确定目标用户")
+    if val == "on":
+        cmds = [
+            ["gsettings", "set", "org.gnome.system.proxy", "mode", "manual"],
+            ["gsettings", "set", "org.gnome.system.proxy.http", "host", "127.0.0.1"],
+            ["gsettings", "set", "org.gnome.system.proxy.http", "port", "7890"],
+            ["gsettings", "set", "org.gnome.system.proxy.https", "host", "127.0.0.1"],
+            ["gsettings", "set", "org.gnome.system.proxy.https", "port", "7890"],
+            ["gsettings", "set", "org.gnome.system.proxy.socks", "host", "127.0.0.1"],
+            ["gsettings", "set", "org.gnome.system.proxy.socks", "port", "7890"],
+        ]
+    else:
+        cmds = [["gsettings", "set", "org.gnome.system.proxy", "mode", "none"]]
+    for c in cmds:
+        subprocess.run(["sudo", "-u", user] + c, check=False)
+    print(f"GNOME 系统代理 → {val}")
+
+
+def cmd_update_rules(args):
+    RULES_DIR.mkdir(parents=True, exist_ok=True)
+    failed = []
+    for fname, url in RULESET_URLS.items():
+        target = RULES_DIR / fname
+        tmp = RULES_DIR / (fname + ".tmp")
+        try:
+            print(f"  ↓ {fname} ... ", end="", flush=True)
+            with urllib.request.urlopen(url, timeout=30) as r:
+                tmp.write_bytes(r.read())
+            tmp.replace(target)
+            print(f"成功（{target.stat().st_size} 字节）")
+        except Exception as e:
+            print(f"失败：{e}")
+            failed.append(fname)
+            tmp.unlink(missing_ok=True)
+    if failed:
+        sys.exit(f"\n{len(failed)} 个规则集更新失败")
+    if is_running():
+        print("\n→ 重启 sing-box ...")
+        restart_service()
+    print("完成")
+
+
+def cmd_update_interval(args):
+    val = args.value.strip()
+    if val == "show":
+        subprocess.run(
+            ["systemctl", "list-timers", "--all",
+             "sing-box-rules-update.timer", "--no-pager"],
+            check=False,
+        )
+        return
+
+    presets = {"hourly": "hourly", "daily": "daily",
+               "weekly": "weekly", "monthly": "monthly"}
+    if val.lower() in presets:
+        on_calendar = presets[val.lower()]
+    elif val.startswith("OnCalendar="):
+        on_calendar = val[len("OnCalendar="):]
+    else:
+        on_calendar = val
+
+    override_dir = Path("/etc/systemd/system/sing-box-rules-update.timer.d")
+    override_dir.mkdir(parents=True, exist_ok=True)
+    (override_dir / "override.conf").write_text(
+        f"[Timer]\nOnCalendar=\nOnCalendar={on_calendar}\n"
+    )
+
+    subprocess.run(["systemctl", "daemon-reload"], check=False)
+    r = subprocess.run(
+        ["systemctl", "restart", "sing-box-rules-update.timer"],
+        capture_output=True, text=True,
+    )
+    if r.returncode != 0:
+        sys.exit(f"错误：应用 timer 失败：{r.stderr.strip()}")
+
+    settings = load_settings()
+    settings["update_interval"] = val
+    save_settings(settings)
+
+    print(f"规则集自动更新频率 → {val}（OnCalendar={on_calendar}）")
+    print("\n=== 下次执行 ===")
+    subprocess.run(
+        ["systemctl", "list-timers", "sing-box-rules-update.timer", "--no-pager"],
+        check=False,
+    )
+
+
+def cmd_log(args):
+    if args.follow:
+        subprocess.run(["journalctl", "-u", SERVICE, "-f"])
+    else:
+        subprocess.run(["journalctl", "-u", SERVICE, "-n", "100", "--no-pager"])
+
+
+def cmd_reload(args):
+    if reload_or_restart():
+        print("已重新加载")
+    else:
+        sys.exit("重新加载失败")
+
+
+def cmd_help(args):
+    print("""proxy —— sing-box 命令行管理工具
+
+用法
+  proxy <命令> [参数]
+
+命令
+  ls                          列出所有节点（● 表示当前激活）
+  now                         显示当前激活节点
+  use <名称|序号>             切换激活节点（通过 Clash API 即时生效，不重启）
+  add <分享链接>              从分享链接添加节点
+                              支持 vless / vmess / trojan / ss / hysteria2 / tuic
+  rm <名称|序号>              删除节点
+  on                          启动 sing-box 并设置开机自启
+  off                         停止 sing-box 并取消开机自启
+  status                      查看服务状态、TUN 接口、当前节点、出口 IP
+  mode <rule|global|direct>   切换路由模式（即时生效）
+                                rule   = 按规则分流（默认）
+                                global = 全部走代理
+                                direct = 全部直连
+  default-tun <on|off>        单独控制开机是否自启 sing-box
+  sysproxy <on|off>           开关 GNOME 系统代理（HTTP/SOCKS 7890，TUN 模式下一般不用）
+  update-rules                立即更新 .srs 规则集文件
+  update-interval <频率|show>  设置规则集自动更新频率
+                                预设：hourly / daily / weekly / monthly
+                                自定义：任意 systemd OnCalendar 表达式
+                                show：查看当前频率和下次执行时间
+  log [-f]                    查看日志（-f 实时跟随，Ctrl+C 退出）
+  reload                      重新生成配置并重启服务
+  help                        显示本帮助
+
+示例
+  proxy add 'vless://uuid@host:443?security=reality&pbk=...&sni=...&fp=chrome&flow=xtls-rprx-vision#美国洛杉矶'
+  proxy ls
+  proxy use 美国              # 或 proxy use 1
+  proxy mode global
+  proxy update-interval daily          # 改为每天更新规则集
+  proxy update-interval 'Mon *-*-* 04:00:00'   # 每周一凌晨 4 点
+  proxy update-interval show           # 查看当前频率
+  proxy status
+
+提示：分享链接中含有 ? & # 等字符，整个链接必须用单引号包起来
+""")
+
+
+def main():
+    _init_files()
+    parser = argparse.ArgumentParser(prog="proxy", add_help=False)
+    sub = parser.add_subparsers(dest="cmd")
+    sub.add_parser("ls"); sub.add_parser("now")
+    p = sub.add_parser("use"); p.add_argument("spec")
+    p = sub.add_parser("add"); p.add_argument("url", nargs="?")
+    p = sub.add_parser("rm"); p.add_argument("spec")
+    sub.add_parser("on"); sub.add_parser("off"); sub.add_parser("status")
+    p = sub.add_parser("mode"); p.add_argument("mode")
+    p = sub.add_parser("default-tun"); p.add_argument("value")
+    p = sub.add_parser("sysproxy"); p.add_argument("value")
+    sub.add_parser("update-rules")
+    p = sub.add_parser("update-interval"); p.add_argument("value")
+    p = sub.add_parser("log"); p.add_argument("-f", "--follow", action="store_true")
+    sub.add_parser("reload"); sub.add_parser("help")
+
+    args = parser.parse_args()
+    handlers = {
+        "ls": cmd_ls, "now": cmd_now, "use": cmd_use, "add": cmd_add, "rm": cmd_rm,
+        "on": cmd_on, "off": cmd_off, "status": cmd_status, "mode": cmd_mode,
+        "default-tun": cmd_default_tun, "sysproxy": cmd_sysproxy,
+        "update-rules": cmd_update_rules, "update-interval": cmd_update_interval,
+        "log": cmd_log, "reload": cmd_reload,
+        "help": cmd_help, None: cmd_help,
+    }
+    handlers.get(args.cmd, cmd_help)(args)
+
+
+if __name__ == "__main__":
+    main()
