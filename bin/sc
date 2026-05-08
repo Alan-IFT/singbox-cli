@@ -20,7 +20,7 @@ RULES_DIR = CFG_DIR / "rules"
 LIB_DIR = Path("/usr/local/lib/singbox-cli")
 SERVICE = "sing-box"
 CLASH = "http://127.0.0.1:9090"
-SB_BIN = "/usr/local/bin/sing-box"
+SB_BIN = "sing-box"  # 走 PATH 解析（apt 装的在 /usr/bin/sing-box）
 
 RULESET_URLS = {
     "geoip-cn.srs":        "https://github.com/MetaCubeX/meta-rules-dat/raw/sing/geo/geoip/cn.srs",
