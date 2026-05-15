@@ -67,33 +67,29 @@ BASE_DEPS="curl $PYTHON_PKG ca-certificates $EXTRA_DEPS"
 
 # ----------------- pkg_install helper -----------------
 pkg_install() {
-    local missing=""
-    for p in $*; do
-        command -v "$p" >/dev/null 2>&1 || missing="$missing $p"
-    done
-    # Always run to handle package-name vs binary-name mismatches (e.g. python3)
+    # Always run to handle package-name vs binary-name mismatches (e.g. python3 vs python)
     case "$PKG_MGR" in
         */apt-get)
             apt-get update -qq
             # shellcheck disable=SC2086
-            apt-get install -y -qq $* >/dev/null
+            apt-get install -y -qq $* >/dev/null || return 1
             ;;
         */dnf|*/yum)
             # shellcheck disable=SC2086
-            $PKG_MGR install -y -q $* >/dev/null
+            $PKG_MGR install -y -q $* >/dev/null || return 1
             ;;
         */pacman)
             # shellcheck disable=SC2086
-            pacman -Sy --noconfirm --needed $* >/dev/null
+            pacman -Sy --noconfirm --needed $* >/dev/null || return 1
             ;;
         */zypper)
             # shellcheck disable=SC2086
-            zypper --non-interactive install --no-recommends $* >/dev/null
+            zypper --non-interactive install --no-recommends $* >/dev/null || return 1
             ;;
         */apk)
             apk update >/dev/null
             # shellcheck disable=SC2086
-            apk add --no-cache $* >/dev/null
+            apk add --no-cache $* >/dev/null || return 1
             ;;
     esac
 }
@@ -256,7 +252,7 @@ echo ""
 # ----------------- step 1: deps -----------------
 t step1
 # shellcheck disable=SC2086
-pkg_install $BASE_DEPS
+pkg_install $BASE_DEPS || { echo "ERROR: Failed to install dependencies ($BASE_DEPS)"; exit 1; }
 
 # ----------------- step 2: sing-box binary -----------------
 if command -v sing-box >/dev/null 2>&1; then
@@ -268,7 +264,8 @@ else
     SB_VER=$(curl -fsSL "https://api.github.com/repos/${SB_REPO}/releases/latest" \
         | grep '"tag_name"' | head -1 \
         | sed 's/.*"v\([^"]*\)".*/\1/')
-    if [ -z "$SB_VER" ]; then
+    # Validate that we got a semver-like string (e.g. "1.10.0")
+    if [ -z "$SB_VER" ] || ! echo "$SB_VER" | grep -qE '^[0-9]+\.[0-9]+'; then
         t download_failed "GitHub API (sing-box version)"
         t check_network
         exit 1
