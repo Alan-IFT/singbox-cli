@@ -12,6 +12,97 @@ REPO="Alan-IFT/singbox-cli"
 REF="main"
 RAW_BASE="https://raw.githubusercontent.com/$REPO/$REF"
 LIB_DIR="/usr/local/lib/singbox-cli"
+SB_BIN="/usr/local/bin/sing-box"
+SB_REPO="SagerNet/sing-box"
+
+# ----------------- pre-flight: root -----------------
+if [ "$EUID" -ne 0 ]; then
+    echo "Run as root (sudo bash install.sh, or use the one-line install from the README)"
+    echo "请以 root 身份运行（sudo bash install.sh 或参考 README 的一行安装命令）"
+    exit 1
+fi
+
+# ----------------- detect package manager -----------------
+PKG_MGR=$(type -P apt-get || type -P dnf || type -P yum || type -P pacman || type -P zypper || type -P apk || true)
+if [ -z "$PKG_MGR" ]; then
+    echo "ERROR: No supported package manager found."
+    echo "Supported: apt (Debian/Ubuntu/Mint), dnf/yum (Fedora/RHEL/CentOS/Rocky/Alma),"
+    echo "           pacman (Arch/Manjaro), zypper (openSUSE), apk (Alpine)"
+    echo "错误：未检测到受支持的包管理器。"
+    echo "支持：apt（Debian/Ubuntu/Mint）、dnf/yum（Fedora/RHEL/CentOS/Rocky/Alma）、"
+    echo "      pacman（Arch/Manjaro）、zypper（openSUSE）、apk（Alpine）"
+    exit 1
+fi
+
+# ----------------- detect cpu architecture -----------------
+case "$(uname -m)" in
+    amd64|x86_64)          ARCH="amd64" ;;
+    aarch64|arm64|*armv8*) ARCH="arm64" ;;
+    *)
+        echo "ERROR: Only amd64 (x86_64) and arm64 (aarch64) are supported."
+        echo "错误：仅支持 amd64 (x86_64) 和 arm64 (aarch64) 架构。"
+        exit 1 ;;
+esac
+
+# ----------------- detect init system -----------------
+IS_SYSTEMD=$(type -P systemctl || true)
+IS_OPENRC=$(type -P rc-service || true)
+if [ -z "$IS_SYSTEMD" ] && [ -z "$IS_OPENRC" ]; then
+    echo "ERROR: Neither systemd (systemctl) nor OpenRC (rc-service) found — cannot install service."
+    echo "错误：未找到 systemd（systemctl）或 OpenRC（rc-service）—— 无法安装服务。"
+    exit 1
+fi
+INIT_SYS="systemd"
+[ -z "$IS_SYSTEMD" ] && INIT_SYS="openrc"
+
+# ----------------- python package name varies by distro -----------------
+case "$PKG_MGR" in
+    */pacman) PYTHON_PKG="python" ;;
+    *)        PYTHON_PKG="python3" ;;
+esac
+# Alpine needs gcompat for glibc-linked binaries
+EXTRA_DEPS=""
+case "$PKG_MGR" in */apk) EXTRA_DEPS="gcompat" ;; esac
+BASE_DEPS="curl $PYTHON_PKG ca-certificates $EXTRA_DEPS"
+
+# ----------------- pkg_install helper -----------------
+pkg_install() {
+    local missing=""
+    for p in $*; do
+        command -v "$p" >/dev/null 2>&1 || missing="$missing $p"
+    done
+    # Always run to handle package-name vs binary-name mismatches (e.g. python3)
+    case "$PKG_MGR" in
+        */apt-get)
+            apt-get update -qq
+            # shellcheck disable=SC2086
+            apt-get install -y -qq $* >/dev/null
+            ;;
+        */dnf|*/yum)
+            # shellcheck disable=SC2086
+            $PKG_MGR install -y -q $* >/dev/null
+            ;;
+        */pacman)
+            # shellcheck disable=SC2086
+            pacman -Sy --noconfirm --needed $* >/dev/null
+            ;;
+        */zypper)
+            # shellcheck disable=SC2086
+            zypper --non-interactive install --no-recommends $* >/dev/null
+            ;;
+        */apk)
+            apk update >/dev/null
+            # shellcheck disable=SC2086
+            apk add --no-cache $* >/dev/null
+            ;;
+    esac
+}
+
+# ----------------- bootstrap curl -----------------
+if ! command -v curl >/dev/null 2>&1; then
+    # Use pkg_install but only for curl (safe before full dep install)
+    pkg_install curl
+fi
 
 # ----------------- i18n -----------------
 # Initial guess from $LANG; user confirms or overrides at the prompt below.
@@ -25,7 +116,6 @@ t() {
     if [ "$LANG_CHOICE" = "zh" ]; then
         case "$key" in
             run_as_root)         fmt="请以 root 身份运行（sudo bash install.sh 或参考 README 的一行安装命令）" ;;
-            apt_only)            fmt="本安装器仅支持 Debian / Ubuntu 系发行版" ;;
             no_user)             fmt="⚠️  检测不到普通用户身份。建议先 sudo 切到普通用户再运行。" ;;
             install_root_prompt) fmt="   当前将为 root 安装（继续? [y/N]）" ;;
             downloading)         fmt="● 从 %s 下载安装文件 ..." ;;
@@ -37,10 +127,10 @@ t() {
             language_chosen)     fmt="  语言：%s" ;;
             step1)               fmt="▶ [1/7] 安装系统依赖 ..." ;;
             step2_already)       fmt="▶ [2/7] sing-box 已安装：%s" ;;
-            step2_installing)    fmt="▶ [2/7] 添加 sing-box 官方 APT 源并安装 ..." ;;
+            step2_installing)    fmt="▶ [2/7] 从 GitHub Releases 下载 sing-box 二进制 ..." ;;
             step2_done)          fmt="  已安装：%s" ;;
             step3)               fmt="▶ [3/7] 安装 sc CLI ..." ;;
-            step4)               fmt="▶ [4/7] 安装 systemd 服务 ..." ;;
+            step4)               fmt="▶ [4/7] 安装服务 ..." ;;
             step5)               fmt="▶ [5/7] 配置免密 sudo（仅针对 /usr/local/bin/sc）..." ;;
             step6)               fmt="▶ [6/7] 下载规则集 (.srs) ..." ;;
             step6_ok)            fmt="  下载完成" ;;
@@ -58,7 +148,6 @@ t() {
     else
         case "$key" in
             run_as_root)         fmt="Run as root (sudo bash install.sh, or use the one-line install from the README)" ;;
-            apt_only)            fmt="This installer only supports Debian / Ubuntu" ;;
             no_user)             fmt="⚠️  Cannot detect a regular user. Consider re-running with sudo from a normal account." ;;
             install_root_prompt) fmt="   Will install for root. Continue? [y/N]" ;;
             downloading)         fmt="● Downloading install files from %s ..." ;;
@@ -70,10 +159,10 @@ t() {
             language_chosen)     fmt="  Language:       %s" ;;
             step1)               fmt="▶ [1/7] Installing system dependencies ..." ;;
             step2_already)       fmt="▶ [2/7] sing-box already installed: %s" ;;
-            step2_installing)    fmt="▶ [2/7] Adding the official sing-box APT source and installing ..." ;;
+            step2_installing)    fmt="▶ [2/7] Downloading sing-box binary from GitHub Releases ..." ;;
             step2_done)          fmt="  Installed: %s" ;;
             step3)               fmt="▶ [3/7] Installing the sc CLI ..." ;;
-            step4)               fmt="▶ [4/7] Installing systemd units ..." ;;
+            step4)               fmt="▶ [4/7] Installing service ..." ;;
             step5)               fmt="▶ [5/7] Configuring NOPASSWD sudo (scoped to /usr/local/bin/sc) ..." ;;
             step6)               fmt="▶ [6/7] Downloading rulesets (.srs) ..." ;;
             step6_ok)            fmt="  Done" ;;
@@ -96,22 +185,6 @@ t() {
         printf "%s\n" "$fmt"
     fi
 }
-
-# ----------------- pre-flight -----------------
-if [ "$EUID" -ne 0 ]; then
-    t run_as_root
-    exit 1
-fi
-
-if ! command -v apt-get >/dev/null 2>&1; then
-    t apt_only
-    exit 1
-fi
-
-if ! command -v curl >/dev/null 2>&1; then
-    apt-get update -qq
-    apt-get install -y -qq curl >/dev/null
-fi
 
 # ----------------- language choice -----------------
 default_choice="1"
@@ -142,13 +215,18 @@ fi
 
 # 确定安装文件来源：本地 clone 或远程下载
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" 2>/dev/null && pwd || echo "")"
+
+CLEANUP_DIRS=()
+cleanup() { for d in "${CLEANUP_DIRS[@]}"; do rm -rf "$d"; done; }
+trap cleanup EXIT
+
 if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/bin/sc" ]; then
     ARTIFACT_DIR="$SCRIPT_DIR"
     SOURCE_DESC="local repo ($ARTIFACT_DIR)"
     [ "$LANG_CHOICE" = "zh" ] && SOURCE_DESC="本地仓库 ($ARTIFACT_DIR)"
 else
     ARTIFACT_DIR="$(mktemp -d -t singbox-cli-install.XXXXXX)"
-    trap 'rm -rf "$ARTIFACT_DIR"' EXIT
+    CLEANUP_DIRS+=("$ARTIFACT_DIR")
     SOURCE_DESC="$REPO@$REF"
     t downloading "$SOURCE_DESC"
     mkdir -p "$ARTIFACT_DIR/bin" "$ARTIFACT_DIR/systemd"
@@ -177,33 +255,39 @@ echo ""
 
 # ----------------- step 1: deps -----------------
 t step1
-apt-get update -qq
-apt-get install -y -qq curl python3 ca-certificates >/dev/null
+# shellcheck disable=SC2086
+pkg_install $BASE_DEPS
 
-# ----------------- step 2: sing-box -----------------
+# ----------------- step 2: sing-box binary -----------------
 if command -v sing-box >/dev/null 2>&1; then
     t step2_already "$(sing-box version | head -1)"
 else
     t step2_installing
-    mkdir -p /etc/apt/keyrings
-    curl -fsSL https://sing-box.app/gpg.key -o /etc/apt/keyrings/sagernet.asc
-    chmod a+r /etc/apt/keyrings/sagernet.asc
-    cat > /etc/apt/sources.list.d/sagernet.sources <<'EOF'
-Types: deb
-URIs: https://deb.sagernet.org/
-Suites: *
-Components: *
-Enabled: yes
-Signed-By: /etc/apt/keyrings/sagernet.asc
-EOF
-    apt-get update -qq
-    apt-get install -y -qq sing-box
+    SB_TMPDIR="$(mktemp -d)"
+    CLEANUP_DIRS+=("$SB_TMPDIR")
+    SB_VER=$(curl -fsSL "https://api.github.com/repos/${SB_REPO}/releases/latest" \
+        | grep '"tag_name"' | head -1 \
+        | sed 's/.*"v\([^"]*\)".*/\1/')
+    if [ -z "$SB_VER" ]; then
+        t download_failed "GitHub API (sing-box version)"
+        t check_network
+        exit 1
+    fi
+    SB_URL="https://github.com/${SB_REPO}/releases/download/v${SB_VER}/sing-box-${SB_VER}-linux-${ARCH}.tar.gz"
+    if ! curl -fsSL "$SB_URL" -o "$SB_TMPDIR/sing-box.tar.gz"; then
+        t download_failed "$SB_URL"
+        t check_network
+        exit 1
+    fi
+    mkdir -p "$SB_TMPDIR/extract"
+    tar -xz --strip-components=1 -C "$SB_TMPDIR/extract" -f "$SB_TMPDIR/sing-box.tar.gz"
+    install -m 755 "$SB_TMPDIR/extract/sing-box" "$SB_BIN"
     t step2_done "$(sing-box version | head -1)"
 fi
 
 # ----------------- step 3: dirs + sc CLI + uninstall.sh -----------------
 t step3
-mkdir -p /etc/sing-box/rules /var/lib/sing-box "$LIB_DIR"
+mkdir -p /etc/sing-box/rules /var/lib/sing-box /var/log/sing-box "$LIB_DIR"
 install -m 755 "$ARTIFACT_DIR/bin/sc" /usr/local/bin/sc
 install -m 755 "$ARTIFACT_DIR/uninstall.sh" "$LIB_DIR/uninstall.sh"
 
@@ -225,12 +309,43 @@ data["lang"] = lang
 p.write_text(json.dumps(data, indent=2))
 PY
 
-# ----------------- step 4: systemd units -----------------
+# Write distro-info so uninstall.sh and upgrades know the environment
+cat > "$LIB_DIR/distro-info" <<EOF
+PKG_MGR=$PKG_MGR
+INIT_SYS=$INIT_SYS
+EOF
+
+# ----------------- step 4: service -----------------
 t step4
-install -m 644 "$ARTIFACT_DIR/systemd/sing-box.service" /etc/systemd/system/
-install -m 644 "$ARTIFACT_DIR/systemd/sing-box-rules-update.service" /etc/systemd/system/
-install -m 644 "$ARTIFACT_DIR/systemd/sing-box-rules-update.timer" /etc/systemd/system/
-systemctl daemon-reload
+if [ "$INIT_SYS" = "systemd" ]; then
+    install -m 644 "$ARTIFACT_DIR/systemd/sing-box.service" /etc/systemd/system/
+    install -m 644 "$ARTIFACT_DIR/systemd/sing-box-rules-update.service" /etc/systemd/system/
+    install -m 644 "$ARTIFACT_DIR/systemd/sing-box-rules-update.timer" /etc/systemd/system/
+    systemctl daemon-reload
+else
+    # OpenRC (Alpine and compatible)
+    cat > /etc/init.d/sing-box <<INITEOF
+#!/sbin/openrc-run
+
+name="sing-box"
+description="sing-box Service"
+
+command="$SB_BIN"
+command_args="run -c /etc/sing-box/config.json"
+command_background=true
+pidfile="/run/\${RC_SVCNAME}.pid"
+output_log="/var/log/sing-box/access.log"
+error_log="/var/log/sing-box/error.log"
+
+supervisor=supervise-daemon
+
+depend() {
+    need net
+    after firewall
+}
+INITEOF
+    chmod +x /etc/init.d/sing-box
+fi
 
 # ----------------- step 5: sudoers -----------------
 t step5
@@ -251,8 +366,13 @@ fi
 # ----------------- step 7: enable + start -----------------
 t step7
 /usr/local/bin/sc reload >/dev/null
-systemctl enable --now sing-box >/dev/null 2>&1
-systemctl enable --now sing-box-rules-update.timer >/dev/null 2>&1
+if [ "$INIT_SYS" = "systemd" ]; then
+    systemctl enable --now sing-box >/dev/null 2>&1
+    systemctl enable --now sing-box-rules-update.timer >/dev/null 2>&1
+else
+    rc-update add sing-box default >/dev/null 2>&1 || true
+    rc-service sing-box start >/dev/null 2>&1 || true
+fi
 
 echo ""
 echo "═══════════════════════════════════════════════════════"

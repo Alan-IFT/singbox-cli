@@ -16,7 +16,8 @@
 
 ## 🛠 Requirements
 
-- Debian / Ubuntu (other systemd + apt distros may work but are untested)
+- Linux with systemd **or** OpenRC — tested on Debian, Ubuntu, Fedora, RHEL/CentOS/Rocky/Alma, Arch/Manjaro, openSUSE, Alpine
+- amd64 (x86_64) or arm64 (aarch64)
 - Python 3.6+ (preinstalled on most distros)
 - root (one-time sudoers setup, password-less afterwards)
 
@@ -31,9 +32,9 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/Alan-IFT/singbox-cl
 The installer will:
 
 1. Prompt you to choose CLI language — English (default) or Simplified Chinese
-2. Add the official sing-box APT source and install the sing-box core
+2. Download the sing-box binary from GitHub Releases and install it to `/usr/local/bin/sing-box`
 3. Install the `sc` CLI to `/usr/local/bin/`
-4. Create the systemd service + ruleset auto-update timer
+4. Create the service unit (systemd service + ruleset auto-update timer, **or** OpenRC init script on Alpine)
 5. Configure password-less sudo (scoped to the `sc` command only)
 6. Download `.srs` rulesets
 7. Start sing-box and enable boot autostart
@@ -146,18 +147,20 @@ User runs the sc CLI:
 
 | Purpose | Path |
 |---|---|
-| sing-box binary | `/usr/bin/sing-box` (apt-installed) |
+| sing-box binary | `/usr/local/bin/sing-box` |
 | sc CLI | `/usr/local/bin/sc` |
 | sing-box config (auto-generated) | `/etc/sing-box/config.json` |
 | Node list (with credentials) | `/etc/sing-box/nodes.json` (mode 600) |
 | Settings | `/etc/sing-box/settings.json` |
 | Rulesets | `/etc/sing-box/rules/*.srs` |
-| systemd service | `/etc/systemd/system/sing-box.service` |
-| Auto-update timer | `/etc/systemd/system/sing-box-rules-update.timer` |
-| Auto-update cadence override | `/etc/systemd/system/sing-box-rules-update.timer.d/override.conf` |
+| systemd service | `/etc/systemd/system/sing-box.service` (systemd only) |
+| Auto-update timer | `/etc/systemd/system/sing-box-rules-update.timer` (systemd only) |
+| Auto-update cadence override | `/etc/systemd/system/sing-box-rules-update.timer.d/override.conf` (systemd only) |
+| OpenRC service | `/etc/init.d/sing-box` (OpenRC/Alpine only) |
+| Periodic update scripts | `/etc/periodic/{daily,weekly,monthly}/singbox-update-rules` (OpenRC/Alpine only) |
 | Password-less sudo | `/etc/sudoers.d/sc` |
 | Uninstall script | `/usr/local/lib/singbox-cli/uninstall.sh` |
-| Logs | `journalctl -u sing-box` or `sc log` |
+| Logs | `journalctl -u sing-box` or `sc log` (systemd); `sc log` reads `/var/log/sing-box/` on OpenRC |
 
 ## 🗑 Uninstall
 
@@ -169,7 +172,7 @@ sudo ./uninstall.sh                                                             
 sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/Alan-IFT/singbox-cli/main/uninstall.sh)" # one-line remote
 ```
 
-This wipes systemd units, `/etc/sing-box/` (incl. nodes), `/var/lib/sing-box/`, sudoers, `/usr/local/bin/sc`, `/usr/local/lib/singbox-cli/`. Then it asks whether to also remove the sing-box binary and APT source — answer `y` for **truly zero residue**.
+This wipes the service unit, `/etc/sing-box/` (incl. nodes), `/var/lib/sing-box/`, `/var/log/sing-box/`, sudoers, `/usr/local/bin/sc`, `/usr/local/lib/singbox-cli/`. Then it asks whether to also remove the sing-box binary — answer `y` for **truly zero residue**.
 
 ## ⚠️ Security notes
 
@@ -184,7 +187,7 @@ PRs welcome. Top priorities:
 
 - [ ] Subscription link auto-update
 - [ ] urltest support beyond selector (auto-pick the fastest node)
-- [ ] RHEL / Fedora / Arch family support
+- [x] RHEL / Fedora / Arch family support
 - [ ] `sc ping` for node latency testing
 - [ ] Node import/export (JSON backup)
 

@@ -16,7 +16,8 @@
 
 ## 🛠 系统要求
 
-- Debian / Ubuntu（其他 systemd + apt 系发行版理论可用，未测试）
+- 带有 systemd **或** OpenRC 的 Linux 发行版——测试过 Debian、Ubuntu、Fedora、RHEL/CentOS/Rocky/Alma、Arch/Manjaro、openSUSE、Alpine
+- amd64 (x86_64) 或 arm64 (aarch64)
 - Python 3.6+（系统自带）
 - root 权限（一次性配 sudoers，之后免密）
 
@@ -31,9 +32,9 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/Alan-IFT/singbox-cl
 安装脚本会自动：
 
 1. 提示选择 CLI 语言——英文（默认）或简体中文
-2. 添加 sing-box 官方 APT 源并安装 sing-box 内核
+2. 从 GitHub Releases 下载 sing-box 二进制并安装到 `/usr/local/bin/sing-box`
 3. 安装 `sc` CLI 到 `/usr/local/bin/`
-4. 创建 systemd 服务 + 规则集自动更新 timer
+4. 创建服务（systemd 发行版：服务 unit + 规则集自动更新 timer；Alpine/OpenRC：init.d 脚本）
 5. 配置免密 sudo（仅针对 `sc` 命令）
 6. 下载 `.srs` 规则集
 7. 启动 sing-box 并设置开机自启
@@ -146,18 +147,20 @@ sc help
 
 | 用途 | 路径 |
 |---|---|
-| sing-box 二进制 | `/usr/bin/sing-box`（apt 安装） |
+| sing-box 二进制 | `/usr/local/bin/sing-box` |
 | sc CLI | `/usr/local/bin/sc` |
 | sing-box 配置（自动生成） | `/etc/sing-box/config.json` |
 | 节点列表（含密码） | `/etc/sing-box/nodes.json`（mode 600） |
 | 设置 | `/etc/sing-box/settings.json` |
 | 规则集 | `/etc/sing-box/rules/*.srs` |
-| systemd 服务 | `/etc/systemd/system/sing-box.service` |
-| 自动更新 timer | `/etc/systemd/system/sing-box-rules-update.timer` |
-| 自动更新频率覆盖 | `/etc/systemd/system/sing-box-rules-update.timer.d/override.conf` |
+| systemd 服务 | `/etc/systemd/system/sing-box.service`（仅 systemd） |
+| 自动更新 timer | `/etc/systemd/system/sing-box-rules-update.timer`（仅 systemd） |
+| 自动更新频率覆盖 | `/etc/systemd/system/sing-box-rules-update.timer.d/override.conf`（仅 systemd） |
+| OpenRC 服务 | `/etc/init.d/sing-box`（仅 Alpine/OpenRC） |
+| 定期更新脚本 | `/etc/periodic/{daily,weekly,monthly}/singbox-update-rules`（仅 Alpine/OpenRC） |
 | 免密 sudo | `/etc/sudoers.d/sc` |
 | 卸载脚本 | `/usr/local/lib/singbox-cli/uninstall.sh` |
-| 日志 | `journalctl -u sing-box` 或 `sc log` |
+| 日志 | `journalctl -u sing-box` 或 `sc log`（systemd）；OpenRC 下 `sc log` 读取 `/var/log/sing-box/` |
 
 ## 🗑 卸载
 
@@ -169,7 +172,7 @@ sudo ./uninstall.sh                             # 在仓库目录里
 sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/Alan-IFT/singbox-cli/main/uninstall.sh)"   # 一行远程
 ```
 
-会清掉 systemd 服务、`/etc/sing-box/`（含节点）、`/var/lib/sing-box/`、sudoers、`/usr/local/bin/sc`、`/usr/local/lib/singbox-cli/`。最后会问你要不要顺便把 sing-box 二进制和 APT 源也删掉——选 `y` 即真正零残留。
+会清掉服务 unit（systemd）或 init.d 脚本（OpenRC）、`/etc/sing-box/`（含节点）、`/var/lib/sing-box/`、`/var/log/sing-box/`、sudoers、`/usr/local/bin/sc`、`/usr/local/lib/singbox-cli/`。最后会问你要不要顺便把 sing-box 二进制也删掉——选 `y` 即真正零残留。
 
 ## ⚠️ 安全考虑
 
@@ -184,7 +187,7 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/Alan-IFT/singbox-cl
 
 - [ ] 支持订阅链接自动更新
 - [ ] 支持 selector 之外的 urltest（自动选最快节点）
-- [ ] 支持 RHEL / Fedora / Arch 系发行版
+- [x] 支持 RHEL / Fedora / Arch 系发行版
 - [ ] 添加节点延迟测试命令 `sc ping`
 - [ ] 节点导入/导出（JSON 备份）
 
