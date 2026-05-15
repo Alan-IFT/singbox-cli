@@ -4,6 +4,7 @@ import argparse
 import base64
 import json
 import os
+import shutil
 import subprocess
 import sys
 import urllib.error
@@ -20,7 +21,19 @@ RULES_DIR = CFG_DIR / "rules"
 LIB_DIR = Path("/usr/local/lib/singbox-cli")
 SERVICE = "sing-box"
 CLASH = "http://127.0.0.1:9090"
-SB_BIN = "sing-box"  # PATH lookup; apt installs to /usr/bin/sing-box
+SB_BIN = "sing-box"  # PATH lookup; installer places it at /usr/local/bin/sing-box
+
+# Runtime init-system detection (evaluated once at import time)
+SYSTEMD = bool(shutil.which("systemctl"))
+OPENRC  = bool(shutil.which("rc-service"))
+
+# OpenRC periodic directories for ruleset auto-update scheduling
+PERIODIC_DIRS = {
+    "daily":   Path("/etc/periodic/daily"),
+    "weekly":  Path("/etc/periodic/weekly"),
+    "monthly": Path("/etc/periodic/monthly"),
+}
+PERIODIC_SCRIPT = "singbox-update-rules"
 
 RULESET_URLS = {
     "geoip-cn.srs":        "https://github.com/MetaCubeX/meta-rules-dat/raw/sing/geo/geoip/cn.srs",
@@ -91,6 +104,13 @@ TRANSLATIONS = {
         # cmd_uninstall fallback
         "Uninstall script not found: {script}\nUse the one-line command to uninstall:\n  sudo bash -c \"$(curl -fsSL https://raw.githubusercontent.com/Alan-IFT/singbox-cli/main/uninstall.sh)\"":
             "卸载脚本不存在：{script}\n请用一行命令卸载：\n  sudo bash -c \"$(curl -fsSL https://raw.githubusercontent.com/Alan-IFT/singbox-cli/main/uninstall.sh)\"",
+        # update-interval on OpenRC
+        "Ruleset auto-update: {period} (via /etc/periodic/{period}/)":
+            "规则集自动更新：{period}（通过 /etc/periodic/{period}/）",
+        "No automatic ruleset update configured. Run `sc update-interval daily|weekly|monthly` to set up.":
+            "未配置规则集自动更新。运行 `sc update-interval daily|weekly|monthly` 进行设置。",
+        "OpenRC only supports daily / weekly / monthly intervals. Use systemd for custom OnCalendar expressions.":
+            "OpenRC 仅支持 daily / weekly / monthly 频率，自定义 OnCalendar 表达式需要 systemd。",
     },
 }
 
@@ -493,7 +513,10 @@ def generate_config():
 
 
 def restart_service():
-    subprocess.run(["systemctl", "restart", SERVICE], check=False)
+    if SYSTEMD:
+        subprocess.run(["systemctl", "restart", SERVICE], check=False)
+    elif OPENRC:
+        subprocess.run(["rc-service", SERVICE, "restart"], check=False)
 
 
 def reload_or_restart():
@@ -520,7 +543,12 @@ def clash_api(method, path, data=None):
 
 
 def is_running():
-    return subprocess.run(["systemctl", "is-active", "--quiet", SERVICE]).returncode == 0
+    if SYSTEMD:
+        return subprocess.run(["systemctl", "is-active", "--quiet", SERVICE]).returncode == 0
+    elif OPENRC:
+        return subprocess.run(["rc-service", SERVICE, "status"],
+                               capture_output=True).returncode == 0
+    return False
 
 
 # ============ Helpers ============
@@ -624,7 +652,11 @@ def cmd_rm(args):
 
 
 def cmd_on(args):
-    subprocess.run(["systemctl", "enable", "--now", SERVICE], check=False)
+    if SYSTEMD:
+        subprocess.run(["systemctl", "enable", "--now", SERVICE], check=False)
+    elif OPENRC:
+        subprocess.run(["rc-update", "add", SERVICE, "default"], check=False)
+        subprocess.run(["rc-service", SERVICE, "start"], check=False)
     settings = load_settings()
     settings["default_tun"] = True
     save_settings(settings)
@@ -632,7 +664,11 @@ def cmd_on(args):
 
 
 def cmd_off(args):
-    subprocess.run(["systemctl", "disable", "--now", SERVICE], check=False)
+    if SYSTEMD:
+        subprocess.run(["systemctl", "disable", "--now", SERVICE], check=False)
+    elif OPENRC:
+        subprocess.run(["rc-service", SERVICE, "stop"], check=False)
+        subprocess.run(["rc-update", "del", SERVICE, "default"], check=False)
     settings = load_settings()
     settings["default_tun"] = False
     save_settings(settings)
@@ -641,7 +677,10 @@ def cmd_off(args):
 
 def cmd_status(args):
     print(t("=== Service status ==="))
-    subprocess.run(["systemctl", "status", "--no-pager", "-n", "5", SERVICE])
+    if SYSTEMD:
+        subprocess.run(["systemctl", "status", "--no-pager", "-n", "5", SERVICE])
+    elif OPENRC:
+        subprocess.run(["rc-service", SERVICE, "status"])
     print("\n" + t("=== TUN interface ==="))
     subprocess.run(["ip", "-br", "addr", "show", "sb-tun"])
     if is_running():
@@ -676,9 +715,15 @@ def cmd_default_tun(args):
     if val not in ("on", "off"):
         sys.exit(t("Error: argument must be on or off"))
     if val == "on":
-        subprocess.run(["systemctl", "enable", SERVICE], check=False)
+        if SYSTEMD:
+            subprocess.run(["systemctl", "enable", SERVICE], check=False)
+        elif OPENRC:
+            subprocess.run(["rc-update", "add", SERVICE, "default"], check=False)
     else:
-        subprocess.run(["systemctl", "disable", SERVICE], check=False)
+        if SYSTEMD:
+            subprocess.run(["systemctl", "disable", SERVICE], check=False)
+        elif OPENRC:
+            subprocess.run(["rc-update", "del", SERVICE, "default"], check=False)
     settings = load_settings()
     settings["default_tun"] = (val == "on")
     save_settings(settings)
@@ -732,57 +777,105 @@ def cmd_update_rules(args):
         restart_service()
     print(t("Done"))
 
-
 def cmd_update_interval(args):
     val = args.value.strip()
-    if val == "show":
+
+    if SYSTEMD:
+        if val == "show":
+            subprocess.run(
+                ["systemctl", "list-timers", "--all",
+                 "sing-box-rules-update.timer", "--no-pager"],
+                check=False,
+            )
+            return
+
+        presets = {"hourly": "hourly", "daily": "daily",
+                   "weekly": "weekly", "monthly": "monthly"}
+        if val.lower() in presets:
+            on_calendar = presets[val.lower()]
+        elif val.startswith("OnCalendar="):
+            on_calendar = val[len("OnCalendar="):]
+        else:
+            on_calendar = val
+
+        override_dir = Path("/etc/systemd/system/sing-box-rules-update.timer.d")
+        override_dir.mkdir(parents=True, exist_ok=True)
+        (override_dir / "override.conf").write_text(
+            f"[Timer]\nOnCalendar=\nOnCalendar={on_calendar}\n"
+        )
+
+        subprocess.run(["systemctl", "daemon-reload"], check=False)
+        r = subprocess.run(
+            ["systemctl", "restart", "sing-box-rules-update.timer"],
+            capture_output=True, text=True,
+        )
+        if r.returncode != 0:
+            sys.exit(t("Error: applying timer failed: {err}", err=r.stderr.strip()))
+
+        settings = load_settings()
+        settings["update_interval"] = val
+        save_settings(settings)
+
+        print(t("Ruleset auto-update cadence → {val} (OnCalendar={oc})", val=val, oc=on_calendar))
+        print("\n" + t("=== Next run ==="))
         subprocess.run(
-            ["systemctl", "list-timers", "--all",
-             "sing-box-rules-update.timer", "--no-pager"],
+            ["systemctl", "list-timers", "sing-box-rules-update.timer", "--no-pager"],
             check=False,
         )
-        return
 
-    presets = {"hourly": "hourly", "daily": "daily",
-               "weekly": "weekly", "monthly": "monthly"}
-    if val.lower() in presets:
-        on_calendar = presets[val.lower()]
-    elif val.startswith("OnCalendar="):
-        on_calendar = val[len("OnCalendar="):]
-    else:
-        on_calendar = val
+    elif OPENRC:
+        if val == "show":
+            active = None
+            for period, d in PERIODIC_DIRS.items():
+                if (d / PERIODIC_SCRIPT).exists():
+                    active = period
+                    break
+            if active:
+                print(t("Ruleset auto-update: {period} (via /etc/periodic/{period}/)",
+                        period=active))
+            else:
+                print(t("No automatic ruleset update configured. Run `sc update-interval daily|weekly|monthly` to set up."))
+            return
 
-    override_dir = Path("/etc/systemd/system/sing-box-rules-update.timer.d")
-    override_dir.mkdir(parents=True, exist_ok=True)
-    (override_dir / "override.conf").write_text(
-        f"[Timer]\nOnCalendar=\nOnCalendar={on_calendar}\n"
-    )
+        if val.lower() not in PERIODIC_DIRS:
+            sys.exit(t("OpenRC only supports daily / weekly / monthly intervals. Use systemd for custom OnCalendar expressions."))
 
-    subprocess.run(["systemctl", "daemon-reload"], check=False)
-    r = subprocess.run(
-        ["systemctl", "restart", "sing-box-rules-update.timer"],
-        capture_output=True, text=True,
-    )
-    if r.returncode != 0:
-        sys.exit(t("Error: applying timer failed: {err}", err=r.stderr.strip()))
+        # Remove from all period dirs first, then write to the chosen one
+        for d in PERIODIC_DIRS.values():
+            script = d / PERIODIC_SCRIPT
+            if script.exists():
+                script.unlink()
+        target_dir = PERIODIC_DIRS[val.lower()]
+        target_dir.mkdir(parents=True, exist_ok=True)
+        script = target_dir / PERIODIC_SCRIPT
+        script.write_text("#!/bin/sh\n/usr/local/bin/sc update-rules\n")
+        script.chmod(0o755)
 
-    settings = load_settings()
-    settings["update_interval"] = val
-    save_settings(settings)
+        settings = load_settings()
+        settings["update_interval"] = val
+        save_settings(settings)
 
-    print(t("Ruleset auto-update cadence → {val} (OnCalendar={oc})", val=val, oc=on_calendar))
-    print("\n" + t("=== Next run ==="))
-    subprocess.run(
-        ["systemctl", "list-timers", "sing-box-rules-update.timer", "--no-pager"],
-        check=False,
-    )
+        print(t("Ruleset auto-update cadence → {val} (OnCalendar={oc})", val=val, oc=val))
+        print(t("Ruleset auto-update: {period} (via /etc/periodic/{period}/)", period=val.lower()))
 
 
 def cmd_log(args):
-    if args.follow:
-        subprocess.run(["journalctl", "-u", SERVICE, "-f"])
+    if SYSTEMD:
+        if args.follow:
+            subprocess.run(["journalctl", "-u", SERVICE, "-f"])
+        else:
+            subprocess.run(["journalctl", "-u", SERVICE, "-n", "100", "--no-pager"])
     else:
-        subprocess.run(["journalctl", "-u", SERVICE, "-n", "100", "--no-pager"])
+        # OpenRC: sing-box writes to /var/log/sing-box/ via supervise-daemon
+        log_candidates = [
+            Path("/var/log/sing-box/error.log"),
+            Path("/var/log/sing-box/access.log"),
+        ]
+        log = next((p for p in log_candidates if p.exists()), log_candidates[0])
+        if args.follow:
+            subprocess.run(["tail", "-f", str(log)], check=False)
+        else:
+            subprocess.run(["tail", "-n", "100", str(log)], check=False)
 
 
 def cmd_reload(args):
@@ -845,7 +938,7 @@ COMMANDS
   log [-f]                    Show logs (-f to follow, Ctrl+C to exit)
   reload                      Regenerate config and restart the service
   lang <en|zh>                Switch CLI language
-  uninstall                   Uninstall singbox-cli (optionally remove sing-box + APT source)
+  uninstall                   Uninstall singbox-cli (optionally remove the sing-box binary)
   help                        Show this help
 
 EXAMPLES
@@ -890,7 +983,7 @@ HELP_ZH = """sc —— sing-box 命令行管理工具
   log [-f]                    查看日志（-f 实时跟随，Ctrl+C 退出）
   reload                      重新生成配置并重启服务
   lang <en|zh>                切换 CLI 语言
-  uninstall                   卸载 singbox-cli（可选移除 sing-box 与 APT 源）
+  uninstall                   卸载 singbox-cli（可选移除 sing-box 二进制）
   help                        显示本帮助
 
 示例
