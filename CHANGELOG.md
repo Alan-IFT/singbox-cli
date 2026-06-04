@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### 修复
+
+- **Clash API 端口自动探测**：以前 `external_controller` 写死为 `127.0.0.1:9090`，与 xray / clash / cockpit 等同样默认占用 9090 的服务安装在同一台机器时会 `bind: address already in use`，导致 sing-box 启动即崩溃、TUN 建不起来。现在改为在高位区间（`29090` 起）自动探测一个空闲端口，写入 `settings.json` 的 `clash_api_port` 后固定复用（不会在重启时漂移）；`settings.json` 中已存在的值会被原样沿用，可手动指定。`sc status` 会显示当前 Clash API 端口。
+
 ## [0.1.0] - 2026-05-08
 
 首次发布。

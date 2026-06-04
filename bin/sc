@@ -5,6 +5,7 @@ import base64
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import urllib.error
@@ -20,7 +21,13 @@ SETTINGS_PATH = CFG_DIR / "settings.json"
 RULES_DIR = CFG_DIR / "rules"
 LIB_DIR = Path("/usr/local/lib/singbox-cli")
 SERVICE = "sing-box"
-CLASH = "http://127.0.0.1:9090"
+# The Clash API only ever talks to `sc` itself over loopback, so the exact port
+# is irrelevant — we auto-probe a free one in a high range to avoid clashing
+# with other local services (xray / clash / cockpit all default to 9090). Once
+# chosen, the port is persisted in settings.json and reused verbatim so it never
+# flaps across restarts.
+CLASH_PORT_BASE = 29090
+CLASH_PORT_SPAN = 100
 SB_BIN = "sing-box"  # PATH lookup; installer places it at /usr/local/bin/sing-box
 
 # Runtime init-system detection (evaluated once at import time)
@@ -83,6 +90,7 @@ TRANSLATIONS = {
         "=== TUN interface ===": "=== TUN 接口 ===",
         "=== Current node ===": "=== 当前节点 ===",
         "=== Route mode ===": "=== 路由模式 ===",
+        "=== Clash API ===": "=== Clash API 端口 ===",
         "=== Egress IP ===": "=== 出口 IP ===",
         "=== Next run ===": "=== 下次执行 ===",
         "Route mode → {mode}": "路由模式 → {mode}",
@@ -115,6 +123,7 @@ TRANSLATIONS = {
 }
 
 LANG = "en"  # populated in main() after _init_files()
+CLASH_PORT = CLASH_PORT_BASE  # re-resolved in main() via _resolve_clash_port()
 
 
 def _load_lang():
@@ -122,6 +131,42 @@ def _load_lang():
         return json.loads(SETTINGS_PATH.read_text()).get("lang", "en")
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return "en"
+
+
+def _free_port(base, span):
+    """First free loopback TCP port in [base, base+span); falls back to base."""
+    for port in range(base, base + span):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind(("127.0.0.1", port))
+                return port
+            except OSError:
+                continue
+    return base
+
+
+def _resolve_clash_port():
+    """Clash API port: auto-probed once, then persisted in settings.json.
+
+    A value already present in settings is always honored (manual pin); only the
+    first run on a fresh install probes for a free high port. Reusing the saved
+    value verbatim means the port never flaps across restarts — even though our
+    own sing-box then holds it.
+    """
+    try:
+        settings = load_settings()
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        settings = {}
+    port = settings.get("clash_api_port")
+    if isinstance(port, int) and 1 <= port <= 65535:
+        return port
+    port = _free_port(CLASH_PORT_BASE, CLASH_PORT_SPAN)
+    settings["clash_api_port"] = port
+    try:
+        save_settings(settings)
+    except OSError:
+        pass
+    return port
 
 
 def t(s, **kwargs):
@@ -497,7 +542,7 @@ def generate_config():
         "experimental": {
             "cache_file": {"enabled": True, "path": "/var/lib/sing-box/cache.db",
                            "store_fakeip": False},
-            "clash_api": {"external_controller": "127.0.0.1:9090"},
+            "clash_api": {"external_controller": f"127.0.0.1:{CLASH_PORT}"},
         },
     }
 
@@ -529,7 +574,7 @@ def reload_or_restart():
 # ============ Clash API ============
 
 def clash_api(method, path, data=None):
-    url = CLASH + path
+    url = f"http://127.0.0.1:{CLASH_PORT}" + path
     body = json.dumps(data).encode() if data is not None else None
     req = urllib.request.Request(url, data=body, method=method)
     if body:
@@ -690,6 +735,8 @@ def cmd_status(args):
         r = clash_api("GET", "/configs")
         print("\n" + t("=== Route mode ==="))
         print((r or {}).get("mode", t("(unavailable)")))
+        print("\n" + t("=== Clash API ==="))
+        print(f"127.0.0.1:{CLASH_PORT}")
         print("\n" + t("=== Egress IP ==="))
         try:
             with urllib.request.urlopen("https://api.ipify.org", timeout=8) as resp:
@@ -1005,9 +1052,10 @@ def cmd_help(args):
 
 
 def main():
-    global LANG
+    global LANG, CLASH_PORT
     _init_files()
     LANG = _load_lang()
+    CLASH_PORT = _resolve_clash_port()
     parser = argparse.ArgumentParser(prog="sc", add_help=False)
     sub = parser.add_subparsers(dest="cmd")
     sub.add_parser("ls"); sub.add_parser("now")

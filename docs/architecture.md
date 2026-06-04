@@ -67,7 +67,7 @@ nodes.json + settings.json
    sing-box 加载新配置
          │
          ├─ TUN 接口建立 / 调整
-         ├─ Clash API 启动 (127.0.0.1:9090)
+         ├─ Clash API 启动 (127.0.0.1:<自动探测的高位端口>)
          └─ 路由表插入规则
 ```
 

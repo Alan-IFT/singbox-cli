@@ -62,12 +62,12 @@ sudo unzip gh-pages.zip
 
 ```python
 "clash_api": {
-    "external_controller": "127.0.0.1:9090",
+    "external_controller": f"127.0.0.1:{CLASH_PORT}",
     "external_ui": "/etc/sing-box/dashboard/metacubexd-gh-pages",
 }
 ```
 
-`sc reload` 之后浏览器打开 `http://127.0.0.1:9090/ui/`，就能看到流量、延迟、节点切换等图形界面。
+Clash API 端口是自动探测的高位端口（避免和 xray/clash/cockpit 等默认占用的 9090 冲突），具体值用 `sc status` 查看（或看 `/etc/sing-box/settings.json` 里的 `clash_api_port`）。`sc reload` 之后浏览器打开 `http://127.0.0.1:<端口>/ui/`，就能看到流量、延迟、节点切换等图形界面。
 
 ## Q: TUN 模式下 BT/PT 下载会出问题吗？
 
