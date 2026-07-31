@@ -42,12 +42,36 @@ PERIODIC_DIRS = {
 }
 PERIODIC_SCRIPT = "singbox-update-rules"
 
-RULESET_URLS = {
-    "geoip-cn.srs":        "https://github.com/MetaCubeX/meta-rules-dat/raw/sing/geo/geoip/cn.srs",
-    "geosite-cn.srs":      "https://github.com/MetaCubeX/meta-rules-dat/raw/sing/geo/geosite/cn.srs",
-    "geosite-google.srs":  "https://github.com/MetaCubeX/meta-rules-dat/raw/sing/geo/geosite/google.srs",
-    "geosite-private.srs": "https://github.com/MetaCubeX/meta-rules-dat/raw/sing/geo/geosite/private.srs",
-}
+# ============ Rule-set constants ============
+# A *usable rule-set* is a .srs file that exists, carries the SRS magic and meets
+# SRS_MIN_BYTES. That is the single condition config generation and the downloader
+# both consult — deliberately not "present" / "downloaded" / "available".
+SRS_MAGIC = b"SRS"
+# The floor only has to exclude empty / stub bodies: the magic check rejects error
+# pages and the Content-Length equality check catches truncation. It MUST stay
+# strictly below the smallest real rule-set (geosite-private is a handful of
+# suffixes) — a floor that rejects a correctly downloaded file would re-create the
+# very bug this exists to remove. Never raise it without measuring the real files.
+SRS_MIN_BYTES = 16
+
+# (installed filename, path relative to a base). A tuple of pairs, not a dict: this
+# order is the emission order of route.rule_set and must not depend on dict ordering.
+RULESET_FILES = (
+    ("geoip-cn.srs",        "geoip/cn.srs"),
+    ("geosite-cn.srs",      "geosite/cn.srs"),
+    ("geosite-google.srs",  "geosite/google.srs"),
+    ("geosite-private.srs", "geosite/private.srs"),
+)
+# Tried in order until one yields a body that passes validation.
+RULESET_BASES = (
+    "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo",
+    "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo",
+    "https://ghfast.top/https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo",
+    "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo",
+)
+# Keys of a routing rule that answer rather than match. A rule whose only matcher
+# was a rule_set reference is dropped once that reference is gone.
+RULE_ANSWER_KEYS = frozenset(("outbound", "server", "action", "rcode"))
 
 # ============ Auto-elevate ============
 if os.geteuid() != 0:
@@ -100,6 +124,21 @@ TRANSLATIONS = {
         "Language → {val}": "语言 → {val}",
         "OK ({size} bytes)": "成功（{size} 字节）",
         "failed: {e}": "失败：{e}",
+        # rule-sets: degradation warning, per-file status, download progress
+        "{n}/{total} rule-sets unusable ({names}) — degraded to no-splitting mode: all traffic uses the default outbound. Run `sc update-rules` (or `sc reload` once the files are in place) to restore.":
+            "{n}/{total} 个规则集不可用（{names}）—— 已降级为无分流模式：所有流量走默认出站。补齐后执行 `sc update-rules`（或 `sc reload`）即可自动恢复。",
+        "{n}/{total} rule-sets unusable ({names}) — the rules referencing them were skipped; the remaining rule-sets still apply. Run `sc update-rules` (or `sc reload` once the files are in place) to restore.":
+            "{n}/{total} 个规则集不可用（{names}）—— 已跳过引用它们的分流规则，其余规则集仍然生效。补齐后执行 `sc update-rules`（或 `sc reload`）即可自动恢复。",
+        "missing": "缺失",
+        "not a rule-set file": "不是规则集文件",
+        "file too small": "文件过小",
+        "unreadable": "无法读取",
+        "{done}/{total} bytes ({pct}%)": "{done}/{total} 字节（{pct}%）",
+        "{done} bytes": "{done} 字节",
+        "truncated: got {got} of {declared} bytes": "传输不完整：收到 {got}/{declared} 字节",
+        "skipped (this source already failed in this run)": "已跳过（该源在本次运行中已失败）",
+        "; fell back after: {causes}": "；已回退，前序镜像未成功：{causes}",
+        "Rule-sets restored: {names} — config regenerated": "规则集已恢复：{names} —— 配置已重新生成",
         "→ Restarting sing-box ...": "→ 重启 sing-box ...",
         "Done": "完成",
         "Reloaded": "已重新加载",
@@ -450,12 +489,244 @@ def parse_share_url(url):
     raise ValueError(t("Unsupported share-link protocol: {url}", url=url[:30]))
 
 
+# ============ Rule-sets ============
+# One judgment of "is this rule-set usable?", consulted by config generation, by the
+# downloader (before anything is installed) and by the screen renderer. Adding a second
+# notion of usability anywhere else is a defect, not an optimisation.
+
+def srs_reject_reason(head, size):
+    """The one definition of an unusable rule-set body.
+
+    head -- first bytes of the body (may be shorter than SRS_MAGIC, or empty)
+    size -- total byte count of the body
+    Returns None when the body is usable, else "too-small" or "bad-magic".
+    Pure: no I/O, no globals beyond SRS_MAGIC / SRS_MIN_BYTES.
+    """
+    if size < SRS_MIN_BYTES:
+        return "too-small"          # checked first, so a 0-byte body is never "bad-magic"
+    if head[:len(SRS_MAGIC)] != SRS_MAGIC:
+        return "bad-magic"
+    return None
+
+
+def ruleset_status(path):
+    """Usability of one rule-set file. Never raises, never writes.
+
+    Returns exactly one of: "usable" | "absent" | "bad-magic" | "too-small" | "unreadable".
+    """
+    try:
+        if not path.exists():
+            # A dangling symlink does not exist, but it is broken rather than absent.
+            return "unreadable" if path.is_symlink() else "absent"
+        if not path.is_file():
+            return "unreadable"     # a directory, a fifo, ...
+        size = path.stat().st_size
+        with path.open("rb") as fh:
+            head = fh.read(len(SRS_MAGIC))
+    except OSError:
+        return "unreadable"
+    return srs_reject_reason(head, size) or "usable"
+
+
+def ruleset_report():
+    """[(tag, filename, status), ...] for every known rule-set, in RULESET_FILES order.
+
+    tag is the filename without ".srs" — the exact tag the config uses. Pure query: no
+    network, no service, no config; creates, modifies and deletes nothing.
+    """
+    report = []
+    for fname, _relpath in RULESET_FILES:
+        tag = fname[:-4] if fname.endswith(".srs") else fname
+        report.append((tag, fname, ruleset_status(RULES_DIR / fname)))
+    return report
+
+
+def usable_tags(report):
+    """Set of tags whose status is "usable"."""
+    return set(tag for tag, _fname, status in report if status == "usable")
+
+
+def _status_text(status):
+    """Bilingual phrase for a non-usable status. Must stay a function: LANG is assigned
+    in main() after import, so a module-level dict of t() values would freeze English."""
+    return {
+        "absent": t("missing"),
+        "bad-magic": t("not a rule-set file"),
+        "too-small": t("file too small"),
+        "unreadable": t("unreadable"),
+    }.get(status, status)
+
+
+def _filter_rules(rules, usable):
+    """Return the rules that survive, with every reference to a rule-set outside
+    `usable` removed. Surviving rules are mutated in place (JSON key order preserved).
+
+    Called for BOTH dns.rules and route.rules with the same `usable` set, so a dangling
+    reference is structurally impossible in either array.
+    """
+    kept = []
+    for rule in rules:
+        tags = rule.get("rule_set")
+        if not tags:
+            kept.append(rule)
+            continue
+        alive = [tag for tag in tags if tag in usable]
+        if len(alive) == len(tags):
+            kept.append(rule)
+        elif alive:
+            rule["rule_set"] = alive
+            kept.append(rule)
+        elif any(k != "rule_set" and k not in RULE_ANSWER_KEYS for k in rule):
+            # Still matches on something else: drop only the reference, keep the rule.
+            # CAUTION: a sing-box rule ANDs its matchers, so the survivor matches MORE
+            # than the original did (e.g. {network: udp, rule_set: X} becomes "all udp").
+            # Mandated behaviour, and dead for today's config — every rule-set rule here
+            # carries no other matcher. Adding a mixed-matcher rule broadens it silently.
+            del rule["rule_set"]
+            kept.append(rule)
+        # else: nothing left to match on — drop the whole rule, degrade toward `final`.
+    return kept
+
+
+def _warn_degraded(report):
+    """Emit the bilingual degradation warning on stderr. No-op when nothing is unusable."""
+    bad = [(tag, status) for tag, _fname, status in report if status != "usable"]
+    if not bad:
+        return
+    names = ", ".join("%s (%s)" % (tag, _status_text(status)) for tag, status in bad)
+    if len(bad) == len(report):
+        msg = t("{n}/{total} rule-sets unusable ({names}) — degraded to no-splitting mode: "
+                "all traffic uses the default outbound. Run `sc update-rules` (or `sc reload` "
+                "once the files are in place) to restore.",
+                n=len(bad), total=len(report), names=names)
+    else:
+        msg = t("{n}/{total} rule-sets unusable ({names}) — the rules referencing them were "
+                "skipped; the remaining rule-sets still apply. Run `sc update-rules` (or "
+                "`sc reload` once the files are in place) to restore.",
+                n=len(bad), total=len(report), names=names)
+    sys.stderr.write("⚠️  " + msg + "\n")
+
+
+def _ruleset_bases(mirror_values):
+    """Effective base list. --mirror (repeatable, whitespace-splittable) beats
+    SB_RULES_BASE; either REPLACES the built-in list; a whitespace-only override counts
+    as absent."""
+    override = []
+    for value in (mirror_values or []):
+        override.extend(value.split())
+    if not override:
+        override = os.environ.get("SB_RULES_BASE", "").split()
+    return override or list(RULESET_BASES)
+
+
+def _temp_path(fname):
+    """This invocation's temp path for one rule-set — unique per process, so the weekly
+    timer and a manual run cannot corrupt each other's transfer."""
+    return RULES_DIR / (fname + ".tmp." + str(os.getpid()))
+
+
+def _clear_stale_temps(fname):
+    """Remove this rule-set's leftover temp files from earlier runs.
+
+    A temp whose pid suffix belongs to a live process (a concurrent `sc update-rules`)
+    is left alone. An absent or non-integer suffix — which includes the legacy fixed
+    `<name>.tmp` written by older versions — counts as stale and is removed.
+    """
+    prefix = fname + ".tmp"
+    try:
+        entries = list(RULES_DIR.iterdir())
+    except OSError:
+        return
+    for path in entries:
+        name = path.name
+        if name != prefix and not name.startswith(prefix + "."):
+            continue
+        alive = False
+        if name != prefix:
+            try:
+                pid = int(name[len(prefix) + 1:])
+            except ValueError:
+                pid = -1                      # unparseable suffix ⇒ stale
+            if pid > 0 and pid != os.getpid():
+                try:
+                    os.kill(pid, 0)
+                    alive = True              # a concurrent run owns it
+                except ProcessLookupError:
+                    alive = False
+                except OSError:
+                    alive = True              # exists but not ours (EPERM)
+        if alive:
+            continue
+        try:
+            path.unlink()
+        except OSError:
+            pass
+
+
+def _fetch_to_temp(url, tmp, prefix, tty):
+    """Stream `url` into `tmp` in 64 KiB chunks, drawing progress when tty, and validate
+    the body. Returns the byte count.
+
+    Raises on transport failure, on got != a declared Content-Length, or on any
+    srs_reject_reason() rejection (message already bilingual). On a TTY the cursor is
+    left at the end of a freshly redrawn `prefix` with no newline whether it returns or
+    raises, so the caller prints its completion line identically in both modes.
+    Never touches the rule-set's real path; the caller owns `tmp`'s removal.
+    """
+    try:
+        got = 0
+        head = b""
+        with urllib.request.urlopen(url, timeout=30) as r:
+            try:
+                declared = int(r.headers.get("Content-Length"))
+            except (TypeError, ValueError):
+                declared = None       # absent or unparseable ⇒ no declared length
+            if declared is not None and declared < 0:
+                declared = None
+            with tmp.open("wb") as fh:
+                while True:
+                    chunk = r.read(65536)
+                    if not chunk:
+                        break
+                    fh.write(chunk)
+                    got += len(chunk)
+                    if len(head) < len(SRS_MAGIC):
+                        # Accumulate: a first read shorter than the magic is legal.
+                        head = (head + chunk)[:len(SRS_MAGIC)]
+                    if tty:
+                        if declared:
+                            line = t("{done}/{total} bytes ({pct}%)", done=got,
+                                     total=declared, pct=got * 100 // declared)
+                        else:
+                            line = t("{done} bytes", done=got)
+                        sys.stdout.write("\r" + prefix + line + "\033[K")
+                        sys.stdout.flush()
+        if declared is not None and got != declared:
+            raise ValueError(t("truncated: got {got} of {declared} bytes",
+                               got=got, declared=declared))
+        reason = srs_reject_reason(head, got)
+        if reason:
+            raise ValueError(_status_text(reason))
+        return got
+    finally:
+        if tty:
+            # Erase with \033[K rather than space padding: correct for CJK double-width
+            # text and never wraps. Only ever emitted on a terminal.
+            sys.stdout.write("\r" + prefix + "\033[K")
+            sys.stdout.flush()
+
+
 # ============ Config generation ============
 
 def generate_config():
     nodes_data = load_nodes()
     nodes = nodes_data["nodes"]
     active = nodes_data.get("active")
+
+    # The ONE rule-set query. The same `usable` set drives the definition list and both
+    # reference arrays, so a tag can never be referenced without being defined.
+    report = ruleset_report()
+    usable = usable_tags(report)
 
     node_tags = [n["tag"] for n in nodes]
     if active not in node_tags:
@@ -528,14 +799,9 @@ def generate_config():
                 {"outbound": "direct", "rule_set": ["geosite-cn"]},
             ],
             "rule_set": [
-                {"tag": "geoip-cn", "type": "local", "format": "binary",
-                 "path": str(RULES_DIR / "geoip-cn.srs")},
-                {"tag": "geosite-cn", "type": "local", "format": "binary",
-                 "path": str(RULES_DIR / "geosite-cn.srs")},
-                {"tag": "geosite-google", "type": "local", "format": "binary",
-                 "path": str(RULES_DIR / "geosite-google.srs")},
-                {"tag": "geosite-private", "type": "local", "format": "binary",
-                 "path": str(RULES_DIR / "geosite-private.srs")},
+                {"tag": tag, "type": "local", "format": "binary",
+                 "path": str(RULES_DIR / fname)}
+                for tag, fname, status in report if status == "usable"
             ],
             "final": "proxy",
         },
@@ -545,6 +811,14 @@ def generate_config():
             "clash_api": {"external_controller": f"127.0.0.1:{CLASH_PORT}"},
         },
     }
+
+    # Degrade per file: drop every rule that references a rule-set we did not define,
+    # in BOTH rule arrays. An unusable rule-set costs routing granularity, never start-up.
+    if not config["route"]["rule_set"]:
+        del config["route"]["rule_set"]     # an absent optional field beats an empty one
+    config["dns"]["rules"] = _filter_rules(config["dns"]["rules"], usable)
+    config["route"]["rules"] = _filter_rules(config["route"]["rules"], usable)
+    _warn_degraded(report)
 
     CFG_PATH.write_text(json.dumps(config, indent=2, ensure_ascii=False))
     os.chmod(CFG_PATH, 0o600)
@@ -803,23 +1077,68 @@ def cmd_sysproxy(args):
 
 def cmd_update_rules(args):
     RULES_DIR.mkdir(parents=True, exist_ok=True)
-    failed = []
-    for fname, url in RULESET_URLS.items():
+    bases = _ruleset_bases(getattr(args, "mirror", None))
+    tty = sys.stdout.isatty()
+    before = usable_tags(ruleset_report())
+    dead = set()        # a base that failed once is not retried in this run: with four
+    failed = []         # bases the whole run still pays at most four timeouts, as today
+    for fname, relpath in RULESET_FILES:
         target = RULES_DIR / fname
-        tmp = RULES_DIR / (fname + ".tmp")
-        try:
-            print(f"  ↓ {fname} ... ", end="", flush=True)
-            with urllib.request.urlopen(url, timeout=30) as r:
-                tmp.write_bytes(r.read())
-            tmp.replace(target)
-            print(t("OK ({size} bytes)", size=target.stat().st_size))
-        except Exception as e:
-            print(t("failed: {e}", e=e))
+        tmp = _temp_path(fname)
+        prefix = f"  ↓ {fname} ... "
+        print(prefix, end="", flush=True)
+        _clear_stale_temps(fname)
+        # Two lists, deliberately: `causes` names EVERY base in list order (dead-skips
+        # included) and feeds the total-failure line; `tried` names only the bases really
+        # contacted and rejected for THIS file and is appended to the success line, so a
+        # broken mirror stays visible when a later one works. Excluding dead-skips from
+        # `tried` keeps one real cause per base per run and leaves the happy path (base 1
+        # answers ⇒ `tried` empty ⇒ note empty) byte-identical.
+        causes = []
+        tried = []
+        for base in bases:
+            if base in dead:
+                causes.append(base + " -> "
+                              + t("skipped (this source already failed in this run)"))
+                continue
+            url = base.rstrip("/") + "/" + relpath
+            try:
+                got = _fetch_to_temp(url, tmp, prefix, tty)
+                tmp.replace(target)     # atomic, and only after validation passed
+                note = (t("; fell back after: {causes}", causes="; ".join(tried))
+                        if tried else "")
+                # ONE print, ONE completion line, no \r on the non-TTY path.
+                print(t("OK ({size} bytes)", size=got) + note)
+                break
+            except Exception as e:
+                dead.add(base)
+                entry = base + " -> " + str(e)
+                causes.append(entry)
+                tried.append(entry)
+                try:
+                    tmp.unlink()        # never leave debris; the real path is untouched
+                except OSError:
+                    pass
+        else:
+            # Every base exhausted. The cause names each one, on stdout, one line.
             failed.append(fname)
-            tmp.unlink(missing_ok=True)
+            print(t("failed: {e}", e="; ".join(causes)))
+
+    gained = sorted(usable_tags(ruleset_report()) - before)
+    applied = False
+    if gained and CFG_PATH.exists():
+        # Recovery: regenerate (never patch) so the restored rule-sets are actually used.
+        # Runs before the non-zero exit, so a partial recovery still repairs the config.
+        # No config yet (fresh install) ⇒ do nothing: the installer generates the first one.
+        ok = generate_config()
+        print(t("Rule-sets restored: {names} — config regenerated", names=", ".join(gained)))
+        if ok and is_running():
+            print("\n" + t("→ Restarting sing-box ..."))
+            restart_service()
+        applied = True
     if failed:
         sys.exit("\n" + t("{n} ruleset(s) failed to update", n=len(failed)))
-    if is_running():
+    if not applied and is_running():
         print("\n" + t("→ Restarting sing-box ..."))
         restart_service()
     print(t("Done"))
@@ -977,7 +1296,14 @@ COMMANDS
                                 direct = everything direct
   default-tun <on|off>        Toggle boot autostart of sing-box independently
   sysproxy <on|off>           Toggle GNOME system proxy (HTTP/SOCKS 7890; usually unneeded with TUN)
-  update-rules                Update .srs rulesets now
+  update-rules [--mirror URL] Update .srs rulesets now (several mirrors are tried in
+                              order and every download is validated before install)
+                                --mirror URL  use this base URL instead of the built-in
+                                              mirror list; repeatable, and one value may
+                                              hold several whitespace-separated URLs
+                                env SB_RULES_BASE="<url> [url...]" does the same, but
+                                  only when sc already runs as root (sudo's env_reset
+                                  drops it otherwise) — prefer --mirror
   update-interval <freq|show>  Set the auto-update cadence
                                 presets: hourly / daily / weekly / monthly
                                 custom: any systemd OnCalendar expression
@@ -1022,7 +1348,13 @@ HELP_ZH = """sc —— sing-box 命令行管理工具
                                 direct = 全部直连
   default-tun <on|off>        单独控制开机是否自启 sing-box
   sysproxy <on|off>           开关 GNOME 系统代理（HTTP/SOCKS 7890，TUN 模式下一般不用）
-  update-rules                立即更新 .srs 规则集文件
+  update-rules [--mirror URL] 立即更新 .srs 规则集文件（按顺序尝试多个镜像，
+                              每次下载都先校验再安装）
+                                --mirror URL  用该基地址替代内置镜像列表；可重复出现，
+                                              单个值也可写多个以空格分隔的 URL
+                                环境变量 SB_RULES_BASE="<url> [url...]" 效果相同，但仅在
+                                  sc 已以 root 运行时有效（否则会被 sudo 的 env_reset
+                                  清除）—— 推荐用 --mirror
   update-interval <频率|show>  设置规则集自动更新频率
                                 预设：hourly / daily / weekly / monthly
                                 自定义：任意 systemd OnCalendar 表达式
@@ -1066,7 +1398,8 @@ def main():
     p = sub.add_parser("mode"); p.add_argument("mode")
     p = sub.add_parser("default-tun"); p.add_argument("value")
     p = sub.add_parser("sysproxy"); p.add_argument("value")
-    sub.add_parser("update-rules")
+    p = sub.add_parser("update-rules")
+    p.add_argument("--mirror", action="append", default=None)
     p = sub.add_parser("update-interval"); p.add_argument("value")
     p = sub.add_parser("log"); p.add_argument("-f", "--follow", action="store_true")
     sub.add_parser("reload"); sub.add_parser("uninstall")

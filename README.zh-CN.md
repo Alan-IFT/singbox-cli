@@ -104,11 +104,18 @@ sc log -f              # 实时日志
 
 ```bash
 sc update-rules                       # 立即更新一次
+sc update-rules --mirror <基地址>     # 指定镜像（可重复）
 sc update-interval daily              # 每天自动更新
 sc update-interval weekly             # 每周（默认）
 sc update-interval 'Mon *-*-* 04:00:00'   # 每周一凌晨 4 点
 sc update-interval show               # 查看当前频率和下次执行时间
 ```
+
+`sc update-rules` 会按顺序尝试多个镜像（jsDelivr → testingcf → ghfast → raw.githubusercontent），并在安装前校验每次下载的内容，因此传输不完整的响应或 HTML 错误页永远不会被写入 `/etc/sing-box/rules/`。在终端下会显示下载进度；输出被重定向时仍然是每个规则集一行结果。
+
+`--mirror` 会**替换**内置镜像列表（失败后不会再回退到内置列表），可以重复出现，单个值也可以写多个以空格分隔的 URL。环境变量 `SB_RULES_BASE="<url> [url...]"` 效果相同，但仅在 `sc` 已经以 root 身份运行时有效（systemd 定时器、root shell）—— 在普通 shell 下 `sc` 会通过 `sudo` 重新执行自己，默认的 `env_reset` 会清除该变量。推荐使用 `--mirror`。
+
+**规则集下载失败不再导致服务起不来。** 生成配置时会自动剔除该规则集以及所有引用它的分流规则，并提示哪些规则集不可用、原因是什么，服务照常启动 —— 损失的只是分流粒度，不是连通性。补齐后执行 `sc update-rules`（或 `sc reload`），完整的分流规则会自动恢复。
 
 ### 切换 CLI 语言
 

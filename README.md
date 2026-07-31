@@ -104,11 +104,18 @@ sc log -f              # follow logs in real time
 
 ```bash
 sc update-rules                       # update once now
+sc update-rules --mirror <base-url>   # force a specific mirror (repeatable)
 sc update-interval daily              # update every day
 sc update-interval weekly             # update every week (default)
 sc update-interval 'Mon *-*-* 04:00:00'   # every Monday at 04:00
 sc update-interval show               # show current cadence + next run
 ```
+
+`sc update-rules` tries several mirrors in order (jsDelivr → testingcf → ghfast → raw.githubusercontent) and validates every download before installing it, so a truncated body or an HTML error page is never written to `/etc/sing-box/rules/`. Progress is shown while downloading on a terminal; redirected output keeps one completion line per ruleset.
+
+`--mirror` **replaces** the built-in mirror list (it does not fall back to it), is repeatable, and one value may hold several whitespace-separated URLs. The `SB_RULES_BASE="<url> [url...]"` environment variable does the same, but only when `sc` already runs as root (the systemd timer, a root shell) — from a normal shell `sc` re-execs itself through `sudo`, whose default `env_reset` drops the variable. Prefer `--mirror`.
+
+**A ruleset that cannot be downloaded is no longer fatal.** The generated config drops that ruleset and every routing rule referencing it, warns which ones are unusable and why, and the service still starts — you lose routing granularity, not connectivity. Run `sc update-rules` (or `sc reload` once the files are in place) and the full rules come back automatically.
 
 ### Switch CLI language
 

@@ -14,7 +14,46 @@
 
 | ID | Slug | Outcome | Completed | Doc folder |
 |---|---|---|---|---|
+| T-02 | config-degrade-missing-rulesets | **DELIVERED** — one rule-set usability judgment (`SRS` magic + 16-byte floor + Content-Length equality) consumed by config generation, the downloader and the progress display. Config now degrades per file, dropping unusable rule_sets *and* their references in both `dns.rules` and `route.rules`, so sing-box starts instead of FATALing. Ordered multi-mirror validated fetch (`--mirror` / `SB_RULES_BASE`), TTY-gated per-file progress, atomic temp-then-replace, and `sc update-rules` now regenerates the config so recovery is real. 2 rollbacks (both design-origin: D-1 cause-discarding → A-1; zh `失败：` grep collision → A-2). `verify_all PASS: 16 / WARN: 0 / FAIL: 0`; QA 846/846. Absorbed the former T-03 and the ruleset-progress row. Uncommitted; owner owns delivery. | 2026-07-31 | `docs/features/config-degrade-missing-rulesets/` (mode: full) |
 | T-01 | install-enable-start-split | **DELIVERED** — installer now reports its true outcome (unconditional autostart registration, real cause logged to `/var/log/sing-box/install.log`, honest banner, non-zero exit on failure). Absorbed the former T-04. `verify_all PASS: 16 / WARN: 0 / FAIL: 0`. AC-9 unverified (no restricted-network VM) → T-07. Uncommitted; stream owns delivery. | 2026-07-31 | `docs/features/install-enable-start-split/` (mode: full) |
+
+## Notes
+
+### T-02 consolidation (rule 85)
+
+T-02 deliberately absorbed what were originally three rows — config degradation, mirror/validation,
+and download progress — because all three need the same judgment ("is this rule-set file usable?").
+Split, degradation would have shipped a bare `path.exists()` and an HTML error page would have read
+as "present". Recorded in `02_SOLUTION_DESIGN.md` §12 and verified structurally at stages 3 and 5
+(deletion test: removing `srs_reject_reason` forces magic/floor logic back into two live call sites).
+
+### Follow-up rows surfaced by T-02 (not yet filed — owner to number them)
+
+Each was found by a stage agent, judged out of scope by the gate or the PM, and deliberately
+**re-homed rather than dropped**:
+
+1. **Python-floor violations — five sites, not two.** `capture_output=` (3.7+) at `bin/sc:822`,
+   `:864`, `:1159`, plus `text=True` (3.7+) at `:822`, `:1159`. The documented 3.6+ floor is already
+   false today. Either lower the code or raise the floor in both READMEs and `CHANGELOG.md`.
+   *(Requirement Q9 counted two; the gate reviewer found the third, the code reviewer the rest.)*
+2. **`TRANSLATIONS` has no `en` table**, so `t()` returns the key verbatim in English — `bin/sc:642`
+   already prints a literal `ls.idx`. Constrains every future key to readable English prose.
+3. **`--mirror` sudo/scheme hardening.** `--mirror` survives the auto-elevate re-exec (argv is
+   preserved even though the environment is not) and `urlopen` accepts `file://`. Privilege impact
+   negligible; the requirement's security NFR is nonetheless stale. A `http`/`https` allow-list is
+   a one-line fix.
+4. **D-4** — a local disk fault (ENOSPC, `replace()` EPERM) is reported as a *mirror* failure and
+   leaks the internal temp path. A-1 widened this to a second surface: it can now appear on a
+   success line as well as a failure line, so a fix must test both.
+5. **D-5** — stray blank line before the restart notice in `cmd_update_rules`.
+6. **`_temp_path` prefix coupling** — `_clear_stale_temps` builds `fname + ".tmp"` independently, so
+   the `".tmp"` literal is written twice and coupled only by convention.
+
+### Carried to T-07
+
+Restricted-network end-to-end verification (never reproduced here — no such VM), the four items QA
+left honestly unverified (BC-25, the D-2 escalation, AC-26 on a real 3.6 interpreter, BC-32), and
+QA's 846-assertion harness, which T-07 should inherit in preference to the developer's.
 
 ## Conventions
 
