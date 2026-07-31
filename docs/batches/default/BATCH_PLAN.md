@@ -8,7 +8,7 @@
 
 | ID | Slug | Goal (one sentence) | Mode | Depends on | Status |
 |---|---|---|---|---|---|
-| T-01 | install-enable-start-split | Make `install.sh` report its true outcome — register autostart unconditionally, surface real errors to `/var/log/sing-box/install.log`, and derive an honest closing banner plus exit code from collected phase status. | full | — | blocked |
+| T-01 | install-enable-start-split | Make `install.sh` report its true outcome — register autostart unconditionally, surface real errors to `/var/log/sing-box/install.log`, and derive an honest closing banner plus exit code from collected phase status. | full | — | done |
 | T-02 | config-degrade-missing-rulesets | Introduce one ruleset-resource abstraction in `bin/sc` — availability-and-validity detection plus validated multi-mirror atomic fetch with per-file byte/percent download progress — and have config generation degrade from it, dropping absent rule-sets per-file with a clear user warning. | full | — | pending |
 | T-03 | ruleset-mirror-fallback | ~~Multi-mirror download with validation~~ — **merged into T-02**; the mirror/validation/atomic-write logic and the availability check are one abstraction, not two. | full | — | skipped |
 | T-04 | install-error-surfacing | ~~Error surfacing + honest banner~~ — **merged into T-01**; setting a status flag and acting on it are one design, not two tasks. | full | T-01 | skipped |
