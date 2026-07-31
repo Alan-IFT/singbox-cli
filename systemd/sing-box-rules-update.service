@@ -4,4 +4,4 @@ After=network-online.target sing-box.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/proxy update-rules
+ExecStart=/usr/local/bin/sc update-rules
