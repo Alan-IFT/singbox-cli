@@ -9,11 +9,12 @@
 | ID | Slug | Goal (one sentence) | Mode | Depends on | Status |
 |---|---|---|---|---|---|
 | T-01 | install-enable-start-split | Make `install.sh` report its true outcome — register autostart unconditionally, surface real errors to `/var/log/sing-box/install.log`, and derive an honest closing banner plus exit code from collected phase status. | full | — | in-progress |
-| T-02 | config-degrade-missing-rulesets | Introduce one ruleset-resource abstraction in `bin/sc` — availability-and-validity detection plus validated multi-mirror atomic fetch — and have config generation degrade from it, dropping absent rule-sets per-file with a clear user warning. | full | — | pending |
+| T-02 | config-degrade-missing-rulesets | Introduce one ruleset-resource abstraction in `bin/sc` — availability-and-validity detection plus validated multi-mirror atomic fetch with per-file byte/percent download progress — and have config generation degrade from it, dropping absent rule-sets per-file with a clear user warning. | full | — | pending |
 | T-03 | ruleset-mirror-fallback | ~~Multi-mirror download with validation~~ — **merged into T-02**; the mirror/validation/atomic-write logic and the availability check are one abstraction, not two. | full | — | skipped |
 | T-04 | install-error-surfacing | ~~Error surfacing + honest banner~~ — **merged into T-01**; setting a status flag and acting on it are one design, not two tasks. | full | T-01 | skipped |
 | T-05 | sc-doctor | Add a `sc doctor` command that prints binary+version, config syntax check, per-`.srs` presence and size, service active/enabled state, `sb-tun` interface and address, Clash API reachability, and current egress IP in one screen. | full | T-02 | pending |
 | T-06 | sc-config-show | Add `sc config --show` (with an optional `--redact` that masks node credentials) so `/etc/sing-box/config.json` can be inspected without root `grep`. | full | — | pending |
+| T-08 | install-binary-download-progress | Show real download progress for the sing-box binary tarball in `install.sh` step 2 by replacing `curl -fsSL` with a progress-emitting invocation, degrading to a quiet single-line notice when stdout is not a TTY. | full | — | pending |
 | T-07 | restricted-network-regression-test | Add a repeatable restricted-network regression test that blocks `github.com` / `raw.githubusercontent.com` in a container or VM, runs the full one-liner install, and asserts the five expected end-state conditions from the failure report. | full | T-01, T-02 | pending |
 
 ## Notes (optional)
@@ -29,6 +30,22 @@
     file is (SRS magic, minimum size). Split, T-02 would have shipped a bare `path.exists()` that
     T-03 then had to revisit — and a mirror returning an HTML error page would read as "present".
     One task: one ruleset-resource abstraction that both config generation and download use.
+- **Download progress (2026-07-31, owner: 「看不到每个下载部分的进度条，不知道什么时候能完成」)** —
+  split by code region, not by symptom, per `.harness/rules/85-design-discipline.md`:
+  - **Ruleset progress → folded into T-02** (not a new row). `bin/sc:804-825` currently does
+    `tmp.write_bytes(r.read())` — a single blocking read, so progress requires chunking the fetch
+    loop. T-02 already rewrites that exact loop for mirrors + validation + atomic replace. A
+    separate progress row would rewrite the same function twice.
+  - **Binary progress → T-08** (new row). `install.sh:274` uses `curl -fsSL "$SB_URL"`; the `-s`
+    silences curl's own meter. Different file, different language, and a different step from the
+    one T-01 is rewriting, so there is no shared seam to preserve.
+  - **Shared design constraint for both:** progress output must degrade when stdout is not a TTY.
+    This is not cosmetic — `sc update-rules` runs from the weekly systemd timer, so an unguarded
+    progress bar would write carriage-return spam into the journal. Gate on `sys.stdout.isatty()`
+    / `[ -t 1 ]` and fall back to a single completion line. The two implementations cannot share
+    code (Bash/curl vs Python/urllib) but must share the visual language.
+  - Note the existing ruleset code already writes to `.tmp` then `.replace()` — T-02's atomic-write
+    requirement is partly satisfied already; keep it rather than reinventing it.
 - **P3-2 (timer `Persistent=true`) produced no row — the requirement is already satisfied.** The
   report marked it 待确认; verified 2026-07-31 that `systemd/sing-box-rules-update.timer` already
   contains `Persistent=true`, and `install.sh:320` installs that exact file to
