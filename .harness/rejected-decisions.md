@@ -62,4 +62,53 @@
   and handed to T-07 rather than thrown away, so the gate stops being permanently empty.
 - **Origin:** T-02 `config-degrade-missing-rulesets` §8 Q8, against
   `.harness/rules/50-singbox-cli.md` ("the first real task that adds a test command must replace the
-  matching SKIP").
+  matching SKIP"). **Re-occurrence:** T-10 `ruleset-update-no-needless-restart` §10 D-8 — same
+  answer for the same reason (diff boundary is `bin/sc` + `CHANGELOG.md`), explicitly flagged there
+  as the weakest of that task's decisions, since the change is about restart behaviour and a
+  permanently reproducible guard has real value. T-07 still owns the committed harness.
+
+## mtime-or-size-as-a-ruleset-change-signal
+- **Decision:** declined (a rule-set counts as changed only when its installed **content** differs —
+  full byte equality or a digest of the full content).
+- **Why:** every write-based signal (mtime, "the request returned 200", "a file was replaced") is true on
+  **every successful run**, whether or not the bytes differ from the installed ones, so it would keep
+  reproducing the connection drop this task exists to remove — the argument holds regardless of how often
+  upstream content actually changes, and no frequency claim is needed or made. Size alone is a weaker
+  equality and would miss an equal-size content change. `Content-Length` is already consumed as a truncation
+  check and says nothing about whether the body differs from the installed one. **Accuracy note
+  (gate-corrected, do not restore the old wording):** `.harness/insight-index.md:15` says the four mirrors
+  serve content byte-identical **to each other** at one instant; it does **not** establish week-over-week
+  stability of the upstream rule-sets, so "a successful re-download of unchanged data is the *common* case"
+  must not be quoted as a conclusion from it.
+- **Origin:** T-10 `ruleset-update-no-needless-restart` §4 B-1 / §10 D-3.
+
+## trust-singbox-fswatch-ruleset-reload
+- **Decision:** deferred (T-10 restarts sing-box on a real content change instead of relying on
+  sing-box reloading the `.srs` file by itself).
+- **Why:** the installed binary really does carry a local rule-set file watcher — `/usr/local/bin/sing-box`
+  contains the pclntab entry `route/rule/rule_set_local.go`, the log literals `watch rule-set file` and
+  `reload rule-set `, and links `github.com/sagernet/fswatch` over `fsnotify` — so on that host a replaced
+  rule-set is probably picked up in place at no cost to established connections. It still cannot be relied
+  on, and T-10's B-4/B-5 allow an "applied without restarting" claim only with evidence. Three load-bearing
+  reasons, in order: (1) **our own config closes the log channel** — `generate_config()` emits
+  `"log": {"level": "warn"}` (`bin/sc:746`), so an Info-level success line is never written on this project's
+  hosts, whatever the binary can print; (2) **B-12 forbids a systemd-only oracle** — reading a journal has no
+  OpenRC counterpart and `sc` contains no log-reading code at all; (3) **whether the watcher survives our
+  atomic rename-over-replace** (`bin/sc` `tmp.replace(target)`, inode vs. dirent) could not be determined, so
+  even a perfect oracle would not tell us the right thing happened for *our* write pattern. **Accuracy note
+  (gate-corrected, do not restore the old wording):** it is **not** true that the binary logs nothing on a
+  successful reload — `reloaded rule-set` is absent, but `updated rule-set ` and `rule-set updated` are each
+  present alongside `route/rule/rule_set_remote.go`; what is true is only that a success literal **cannot be
+  attributed to the local-file path from strings alone**. Also **not** load-bearing: that `install.sh`
+  installs the **latest** release rather than a pinned version — fleet capability drift is real context, but
+  `sing-box version` and Clash `/version` are both probeable per host, so it cannot carry the decision.
+  Restarting only when the installed bytes really changed removes the weekly no-op connection drop regardless
+  of which way the unknowns fall. **Unblock path:** pin a minimum sing-box version in `install.sh`, then run
+  one observed rename-replace experiment on a disposable host (never a live one); if the reload is confirmed,
+  the remaining restarts can be dropped. Also declined here: SIGHUP / `ExecReload`
+  (`systemd/sing-box.service:10`) — it recreates the whole box instance, so it drops connections like a
+  restart, and the OpenRC service written by `install.sh` defines no `reload()` at all; and the Clash API —
+  `/providers/rules` exists as a route but the binary carries none of the Clash rule-provider payload fields
+  (`ruleCount`, `vehicleType`), confirming T-02's E-7 that the API switches proxy and mode only.
+- **Origin:** T-10 `ruleset-update-no-needless-restart` §10 D-1, closed with evidence in
+  `docs/features/ruleset-update-no-needless-restart/02_SOLUTION_DESIGN.md` §2.

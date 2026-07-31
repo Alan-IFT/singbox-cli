@@ -15,6 +15,7 @@
 | T-05 | sc-doctor | Add a `sc doctor` command that prints binary+version, config syntax check, per-`.srs` presence and size, service active/enabled state, `sb-tun` interface and address, Clash API reachability, and current egress IP in one screen. | full | T-02 | pending |
 | T-06 | sc-config-show | Add `sc config --show` (with an optional `--redact` that masks node credentials) so `/etc/sing-box/config.json` can be inspected without root `grep`. | full | — | pending |
 | T-09 | fix-rules-update-execstart | Fix `systemd/sing-box-rules-update.service`, whose `ExecStart` invokes the non-existent `/usr/local/bin/proxy` so the weekly ruleset auto-update has never run at all (203/EXEC), pointing it at the installed `sc` binary. | full | — | done |
+| T-10 | ruleset-update-no-needless-restart | Stop `sc update-rules` from restarting sing-box when no rule-set actually changed, so the now-live weekly timer no longer drops every connection each Monday; prefer hot-apply over restart per the project's own convention. | full | — | done |
 | T-08 | install-binary-download-progress | Show real download progress for the sing-box binary tarball in `install.sh` step 2 by replacing `curl -fsSL` with a progress-emitting invocation, degrading to a quiet single-line notice when stdout is not a TTY. | full | — | pending |
 | T-07 | restricted-network-regression-test | Add a repeatable restricted-network regression test that blocks `github.com` / `raw.githubusercontent.com` in a container or VM, runs the full one-liner install, and asserts the five expected end-state conditions from the failure report. | full | T-01, T-02 | pending |
 
@@ -72,7 +73,7 @@
   install gets **no automatic ruleset update by default**, while a systemd install gets the weekly
   timer (once T-09 makes it actually run). This is a behaviour gap between the two init systems,
   not a defect against any stated requirement. Ask before filing.
-- **⚠️ RECOMMENDED ROW, NOT YET FILED — needs the owner's go-ahead (would widen scope).**
+- **T-10 filed 2026-07-31 on the owner's standing grant 「你来决策就行」.**
   T-09 fixed a dead timer, which activates a latent defect: `bin/sc:1141-1143` restarts sing-box
   even when **nothing changed** (`if not applied and is_running()`). With `OnCalendar=weekly` +
   `RandomizedDelaySec=1h`, every systemd host now drops all connections once a week, Monday

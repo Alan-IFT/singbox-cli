@@ -2,6 +2,7 @@
 """sc — sing-box CLI manager. Run `sc help` for usage."""
 import argparse
 import base64
+import hashlib
 import json
 import os
 import shutil
@@ -139,6 +140,9 @@ TRANSLATIONS = {
         "skipped (this source already failed in this run)": "已跳过（该源在本次运行中已失败）",
         "; fell back after: {causes}": "；已回退，前序镜像未成功：{causes}",
         "Rule-sets restored: {names} — config regenerated": "规则集已恢复：{names} —— 配置已重新生成",
+        "No rule-set changed — the sing-box service was not touched": "规则集内容无变化 —— 未改动 sing-box 服务",
+        "Rule-sets updated: {names} — sing-box restarted to load them": "规则集已更新：{names} —— 已重启 sing-box 以加载新数据",
+        "Rule-sets updated: {names} — the sing-box service was not touched": "规则集已更新：{names} —— 未改动 sing-box 服务",
         "→ Restarting sing-box ...": "→ 重启 sing-box ...",
         "Done": "完成",
         "Reloaded": "已重新加载",
@@ -509,23 +513,87 @@ def srs_reject_reason(head, size):
     return None
 
 
-def ruleset_status(path):
-    """Usability of one rule-set file. Never raises, never writes.
+def ruleset_state(path):
+    """Two facts about one rule-set file, from ONE read: (status, digest).
 
-    Returns exactly one of: "usable" | "absent" | "bad-magic" | "too-small" | "unreadable".
+    status -- exactly one of "usable" | "absent" | "bad-magic" | "too-small" | "unreadable",
+              decided by srs_reject_reason() and by nothing else.
+    digest -- sha256 hex of the file's FULL content, or None.
+
+    DIGEST CONTRACT (binding — changed_usable_tags() is only correct because of it):
+
+        digest is None  <=>  no complete read happened  <=>  status in {"absent", "unreadable"}
+
+    So a file read to EOF without error ALWAYS carries a real digest, including a readable
+    EMPTY file: ("too-small", sha256(b"").hexdigest()), because zero bytes *were* read
+    successfully. An OSError at any point — before or after N bytes — yields
+    ("unreadable", None) and NEVER a partial digest, which would be a content claim about
+    bytes that were never fully read. None is therefore not a content value: two Nones are
+    NOT "the same content", and changed_usable_tags() relies on that.
+
+    Never raises, never writes. Reads in 65536-byte chunks, so memory does not scale with
+    file size, and `size` is the real byte count rather than st_size.
     """
+    head = b""
+    size = 0
+    digest = hashlib.sha256()
     try:
         if not path.exists():
             # A dangling symlink does not exist, but it is broken rather than absent.
-            return "unreadable" if path.is_symlink() else "absent"
+            return ("unreadable", None) if path.is_symlink() else ("absent", None)
         if not path.is_file():
-            return "unreadable"     # a directory, a fifo, ...
-        size = path.stat().st_size
+            return ("unreadable", None)     # a directory, a fifo, ...
         with path.open("rb") as fh:
-            head = fh.read(len(SRS_MAGIC))
+            while True:
+                chunk = fh.read(65536)      # same chunk size as _fetch_to_temp
+                if not chunk:
+                    break
+                digest.update(chunk)
+                size += len(chunk)
+                if len(head) < len(SRS_MAGIC):
+                    # Accumulate: a first read shorter than the magic is legal.
+                    head = (head + chunk)[:len(SRS_MAGIC)]
     except OSError:
-        return "unreadable"
-    return srs_reject_reason(head, size) or "usable"
+        return ("unreadable", None)         # a partial digest is never returned
+    return (srs_reject_reason(head, size) or "usable", digest.hexdigest())
+
+
+def ruleset_status(path):
+    """Usability of one rule-set file — the status-only view of ruleset_state().
+
+    Returns exactly one of: "usable" | "absent" | "bad-magic" | "too-small" | "unreadable".
+
+    Has no in-tree caller today: both remaining questions (the report and update-rules'
+    before/after snapshots) need the digest as well and go through ruleset_states().
+    Retained deliberately as the named per-file adapter of the single usability judgment
+    (docs/dev-map.md) — the thing to call instead of forming a second opinion with
+    path.exists() when only the status of one file is wanted.
+    """
+    return ruleset_state(path)[0]
+
+
+def ruleset_states():
+    """[(tag, filename, status, digest), ...] for every rule-set, in RULESET_FILES order.
+
+    THE snapshot: cmd_update_rules takes exactly one before the downloads and one after
+    them, and answers both "which rule-sets became usable" and "whose bytes really changed"
+    from the same bytes. tag is the filename without ".srs" — the exact tag the config uses.
+    Pure query: no network, no service, no config; creates, modifies and deletes nothing.
+    """
+    states = []
+    for fname, _relpath in RULESET_FILES:
+        tag = fname[:-4] if fname.endswith(".srs") else fname
+        status, digest = ruleset_state(RULES_DIR / fname)
+        states.append((tag, fname, status, digest))
+    return states
+
+
+def _status_view(states):
+    """[(tag, filename, status), ...] projection of a ruleset_states() result.
+
+    generate_config() and usable_tags() destructure 3-tuples; this keeps both untouched.
+    """
+    return [(tag, fname, status) for tag, fname, status, _digest in states]
 
 
 def ruleset_report():
@@ -534,11 +602,38 @@ def ruleset_report():
     tag is the filename without ".srs" — the exact tag the config uses. Pure query: no
     network, no service, no config; creates, modifies and deletes nothing.
     """
-    report = []
-    for fname, _relpath in RULESET_FILES:
-        tag = fname[:-4] if fname.endswith(".srs") else fname
-        report.append((tag, fname, ruleset_status(RULES_DIR / fname)))
-    return report
+    return _status_view(ruleset_states())
+
+
+def changed_usable_tags(before, after):
+    """Sorted tags that are usable in `after` AND whose content differs from `before`.
+
+    Both arguments are ruleset_states() results. This is the apply set — the single
+    "must sing-box re-read anything?" answer for a whole run. Pure: no I/O, no globals.
+
+    Paired BY TAG through dicts, never by list index. Both snapshots iterate RULESET_FILES
+    today, so positional pairing happens to work; it would become a silent mis-pairing the
+    moment that tuple changes.
+
+    The "usable in after" half is not decoration: a rule-set corrupted or deleted mid-run by
+    an external actor is a LOSS, not a change, and restarting *for it* would make sing-box
+    re-read a file it cannot parse — the start-up failure the degradation work removed.
+    Whatever we restart for, we restart only for a file sing-box will actually load.
+    """
+    old = dict((tag, digest) for tag, _fname, _status, digest in before)
+    changed = []
+    for tag, _fname, status, digest in after:
+        if status != "usable":
+            continue                    # a loss is not a change
+        old_digest = old.get(tag)       # a tag absent from `before` reads as None
+        # None means "those bytes were never read", never "empty" and never a content
+        # value: it differs from every digest AND from another None. The None-vs-None
+        # arm is unreachable for a tag usable in `after` (its digest is real, by the
+        # ruleset_state contract) and is spelled out so that a later edit cannot quietly
+        # make two never-read files compare equal.
+        if old_digest is None or digest is None or old_digest != digest:
+            changed.append(tag)
+    return sorted(changed)
 
 
 def usable_tags(report):
@@ -1079,7 +1174,7 @@ def cmd_update_rules(args):
     RULES_DIR.mkdir(parents=True, exist_ok=True)
     bases = _ruleset_bases(getattr(args, "mirror", None))
     tty = sys.stdout.isatty()
-    before = usable_tags(ruleset_report())
+    before = ruleset_states()
     dead = set()        # a base that failed once is not retried in this run: with four
     failed = []         # bases the whole run still pays at most four timeouts, as today
     for fname, relpath in RULESET_FILES:
@@ -1124,23 +1219,41 @@ def cmd_update_rules(args):
             failed.append(fname)
             print(t("failed: {e}", e="; ".join(causes)))
 
-    gained = sorted(usable_tags(ruleset_report()) - before)
-    applied = False
-    if gained and CFG_PATH.exists():
-        # Recovery: regenerate (never patch) so the restored rule-sets are actually used.
-        # Runs before the non-zero exit, so a partial recovery still repairs the config.
-        # No config yet (fresh install) ⇒ do nothing: the installer generates the first one.
-        ok = generate_config()
-        print(t("Rule-sets restored: {names} — config regenerated", names=", ".join(gained)))
-        if ok and is_running():
+    after = ruleset_states()
+    gained = sorted(usable_tags(_status_view(after)) - usable_tags(_status_view(before)))
+    changed = changed_usable_tags(before, after)    # gained is a subset of changed
+    restarted = False
+    # THE apply decision — one per run, for the whole run. `changed` is empty unless some
+    # rule-set's installed BYTES really differ from what was on disk before the downloads,
+    # so a run that re-fetched four byte-identical files touches nothing at all.
+    # No config yet (fresh install) ⇒ do nothing: the installer generates the first one.
+    if changed and CFG_PATH.exists():
+        regen_ok = True
+        if gained:
+            # Recovery: regenerate (never patch) so the restored rule-sets are actually
+            # used. Runs before the non-zero exit, so a partial recovery still repairs the
+            # config, and a failed check still blocks the restart below.
+            regen_ok = generate_config()
+            print(t("Rule-sets restored: {names} — config regenerated", names=", ".join(gained)))
+        if regen_ok and is_running():
             print("\n" + t("→ Restarting sing-box ..."))
+            # The restart is conditional on changed_usable_tags(); an unconditional restart
+            # here is the T-10 defect — it dropped every live connection (a remote admin's
+            # own SSH included) on every weekly timer run, for four unchanged files.
             restart_service()
-        applied = True
+            restarted = True
+    # Exactly one truthful run-level outcome, always, before the exit: a run that ends
+    # non-zero must still state what it did to the service.
+    if not changed:
+        print(t("No rule-set changed — the sing-box service was not touched"))
+    elif restarted:
+        print(t("Rule-sets updated: {names} — sing-box restarted to load them",
+                names=", ".join(changed)))
+    else:
+        print(t("Rule-sets updated: {names} — the sing-box service was not touched",
+                names=", ".join(changed)))
     if failed:
         sys.exit("\n" + t("{n} ruleset(s) failed to update", n=len(failed)))
-    if not applied and is_running():
-        print("\n" + t("→ Restarting sing-box ..."))
-        restart_service()
     print(t("Done"))
 
 def cmd_update_interval(args):
