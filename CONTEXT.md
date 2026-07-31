@@ -56,6 +56,20 @@ repository-relative path, or a version plus architecture). It is printed in both
 it labels the progress display, and off one it is the whole of the output for that transfer.
 _Avoid_: progress line, status line, banner
 
+**stated outcome**:
+A sentence the installer itself prints, in the user's chosen language, saying what happened and what
+to do next, paired with an exit status derived from the same facts. T-01 made this the installer's
+standing promise: a run that ends without one is a defect regardless of why it ended. A raw error
+line from a called tool (curl, mktemp, tar) is not a stated outcome — it is not localized, it does
+not name the installer's step, and it says nothing about what to do next.
+_Avoid_: error message, failure message, banner (the banner is one rendering of a stated outcome)
+
+**assignment abort**:
+Termination of a `set -e` shell script at a bare `VAR=$(…)` command substitution whose command or
+pipeline exited non-zero, before any line below the assignment runs. The distinguishing symptom is
+that the script's own validation and error handling for that value become unreachable code.
+_Avoid_: silent failure, crash, set -e bug
+
 **degraded config**:
 A generated `config.json` from which unusable rule-sets and every routing rule referencing them
 have been dropped, so sing-box starts with less routing granularity instead of failing to start.

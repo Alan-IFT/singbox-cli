@@ -33,8 +33,10 @@ is no test directory. `bin/sc` is a single Python 3 file run directly; `install.
 
 `.harness/scripts/verify_all.sh` **B.1 is a real gate**, not a SKIP: it runs
 `python3 -m py_compile bin/sc` plus `bash -n` on `install.sh` and `uninstall.sh`, and it
-fails the run on a parse error. **B.2 (tests) and B.3 (lint) are still SKIP** — the first
-task that adds a suite or a lint config must replace the matching SKIP, because a
+fails the run on a parse error. **B.2 is a real gate too since T-11**: it runs
+`.harness/scripts/check-i18n-parity.sh install.sh`, which renders every `t()` key in both
+languages and fails the run on a key-set or `printf`-specifier mismatch. **B.3 (lint) is
+still SKIP** — the first task that adds a lint config must replace that SKIP, because a
 permanently SKIPping check proves nothing.
 
 Do not repeat the claim that "all B.* checks are SKIP" — it was true only before B.1 was

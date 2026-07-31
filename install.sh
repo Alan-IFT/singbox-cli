@@ -370,10 +370,24 @@ else
     t step2_installing
     SB_TMPDIR="$(mktemp -d)"
     CLEANUP_DIRS+=("$SB_TMPDIR")
-    SB_VER=$(curl "${CURL_OPTS_QUIET[@]}" "https://api.github.com/repos/${SB_REPO}/releases/latest" \
-        | grep '"tag_name"' | head -1 \
-        | sed 's/.*"v\([^"]*\)".*/\1/')
-    # Validate that we got a semver-like string (e.g. "1.10.0")
+    # Under `set -euo pipefail` a bare VAR=$(pipeline) carries the pipeline's own
+    # status, so a failed fetch terminated the installer HERE — before the
+    # validation below, which is the only code that can say what went wrong (T-11).
+    # `if` is one of set -e's exempt contexts, so the status is caught, not fatal.
+    #
+    # NO ELEMENT OF THIS PIPELINE MAY EXIT BEFORE EOF. `head -1` was removed for
+    # exactly that reason: a reader that closes the pipe early (head, grep -m1,
+    # sed q) can kill an upstream element with SIGPIPE, and `pipefail` would then
+    # report a SUCCESSFUL fetch as a failed one. `sed -n '1s…p'` reads to EOF and
+    # still yields only the first matching line, as `head -1` did.
+    SB_VER=""
+    if ! SB_VER=$(curl "${CURL_OPTS_QUIET[@]}" "https://api.github.com/repos/${SB_REPO}/releases/latest" \
+        | grep '"tag_name"' \
+        | sed -n '1s/.*"v\([^"]*\)".*/\1/p'); then
+        SB_VER=""
+    fi
+    # Validate that we got a semver-like string (e.g. "1.10.0"). This is the ONLY
+    # judge of whether the version is usable; the pipeline's status never decides.
     if [ -z "$SB_VER" ] || ! echo "$SB_VER" | grep -qE '^[0-9]+\.[0-9]+'; then
         t download_failed "GitHub API (sing-box version)"
         t check_network

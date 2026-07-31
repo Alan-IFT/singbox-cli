@@ -67,7 +67,13 @@ done
 [[ -z "$b1_syntax" ]] && step "B.1" "Syntax (bin/sc, install.sh, uninstall.sh)" "PASS" \
     || step "B.1" "Syntax (bin/sc, install.sh, uninstall.sh)" "FAIL" "$b1_syntax"
 
-step "B.2" "Tests pass" "SKIP"
+if [[ -x .harness/scripts/check-i18n-parity.sh || -f .harness/scripts/check-i18n-parity.sh ]]; then
+    b2_out=$(bash .harness/scripts/check-i18n-parity.sh install.sh 2>&1); b2_rc=$?
+    if [[ $b2_rc -eq 0 ]]; then step "B.2" "install.sh bilingual key parity" "PASS"
+    else step "B.2" "install.sh bilingual key parity" "FAIL" "$b2_out"; fi
+else
+    step "B.2" "install.sh bilingual key parity" "SKIP"
+fi
 step "B.3" "Lint" "SKIP"
 # >>> HARNESS:B-CUSTOM:END <<<
 

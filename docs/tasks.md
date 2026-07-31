@@ -14,6 +14,7 @@
 
 | ID | Slug | Outcome | Completed | Doc folder |
 |---|---|---|---|---|
+| T-11 | install-version-query-abort | **DELIVERED** — `install.sh`'s version query no longer kills the installer at the assignment. `SB_VER=$(curl … \| grep … \| head -1 \| sed …)` under `set -euo pipefail` carried the pipeline's status, so a failed fetch aborted at `:373`, bypassing both its own `download_failed`/`check_network` handler **and** `install_report()` — the exact "states no outcome" failure T-01 exists to prevent, on an everyday path (GitHub rate-limits unauthenticated calls at 60/hour/IP). Now `SB_VER=""` + `if ! SB_VER=$(…)`, with `head -1` replaced by `sed -n '1s…p'`. All **five** failure modes converge on the existing validator, which is now the *only* judge; the pipeline's status never decides. The sharpest mode was invisible before: HTTP 200 with no `tag_name` (captive portal) — curl exits 0 so `-S` prints nothing, `grep` exits 1 silently, and the installer died **producing no output at all**. **Reporting route decided, not defaulted**: explicit early exit, NOT `install_report()`, because routing there would print six statements false at step 2 (all six verified against source) — so **AC-11 holds with no exception**, the phase machinery byte-identical by range diff. Dropping `head -1` is **load-bearing for large or hostile bodies, precautionary for the real ~1.6 KB endpoint** (an early-closing reader + `pipefail` would report a *successful* fetch as failed). Also ships `check-i18n-parity.sh` as `verify_all` **B.2**, turning a permanently-SKIP step into a real gate and closing a hazard deferred four tasks running. **0 rollbacks**; three upstream defects discharged by ruling or re-homed row, none reaching product code. Premise established empirically by PM pre-flight (E-0 7/7) because stages 1-3 have no shell. QA **rebuilt** the harness rather than re-running the developer's: 102 assertions / 0 failures / 145 runs / 0 flakes, non-vacuity proven by making the success test fail on demand. `verify_all PASS: 16 / WARN: 1 / FAIL: 0 / SKIP: 1`, clone delta exactly the two predicted steps. `install.sh` never executed; live service identical at **four** checkpoints (`MainPID` + `ActiveEnterTimestamp`). Product diff `install.sh` **+18/−4**. Uncommitted; owner owns delivery. | 2026-08-01 | `docs/features/_archived/install-version-query-abort/` (mode: full) |
 | T-08 | install-binary-download-progress | **DELIVERED** — the sing-box tarball (tens of MB, the largest transfer in the install) now shows curl's own `--progress-bar`, so the owner's 「不知道什么时候能完成」 is answered where it actually hurt. Shipping diff is **2 files, +27/−3**: a download flag policy block at `install.sh:116-132` (`CURL_OPTS_QUIET=(-f -s -S -L)`, literally today's `-fsSL`, and `CURL_OPTS_PROGRESS` = the same off a terminal, `(-f -S -L --progress-bar)` on one) selected by the file's **only** `[ -t 2 ]`, consumed at all three curl sites; exactly three lines replaced. **No hand-rolled meter, no helper function, no new file** — rule 85's counter-rule held. TTY gating is on **stderr**, verified three times: curl's meter is a stderr artefact *and* curl does not self-gate on `isatty(stderr)` when `-o <file>` is used, so `[ -t 2 ]` is correctness, not cosmetics (this supersedes `BATCH_PLAN.md:46-47`'s `[ -t 1 ]`, wrong in both directions). Every download was **assessed, and each remaining silence justified in writing** per 「每个下载部分」: five artifact name lines, version query meter-free as a boundary marker. **1 rollback** (stage 2 found a false justification leg in D-5; analyst verified, retracted it, and re-homed the live bug it concealed — the design was not re-dispatched and the gate audited and upheld that call). The curl **7.29** option floor — the claim whose failure kills step 2 on every RHEL/CentOS 7 host, invisibly on a modern box — was settled against the **official 7.29.0 release tarball** by two independent readers; the `curl-7_29_0` git tag is *not* valid evidence (`curlver.h` reads `7.28.2-DEV`). `verify_all PASS: 16 / WARN: 0 / FAIL: 0 / SKIP: 2`, delta 0 vs a pristine-HEAD **clone**. QA 39 scripted assertions + 5 probes, **0 product defects**; BC-3 (stdout TTY + stderr redirected → zero `0x0D`) proven with a real `openpty` driver and falsified on demand at 26. **Six vacuous greens caught rather than shipped**, one of which had already produced a false PASS. Live service provably untouched — identical `MainPID`/`ActiveEnterTimestamp` at three independent checkpoints. Uncommitted; owner owns delivery. | 2026-08-01 | `docs/features/_archived/install-binary-download-progress/` (mode: full) |
 | T-10 | ruleset-update-no-needless-restart | **DELIVERED** — `sc update-rules` no longer restarts sing-box unless a rule-set's **bytes on disk** actually changed, so the timer T-09 just made live no longer drops every connection each Monday. `bin/sc:1141-1143`'s unconditional `if not applied and is_running(): restart_service()` is gone; `ruleset_state(path) -> (status, digest)` reads each file **once** and returns both facts, so `gained ⊆ changed` holds and "exactly one apply per run" is **structural** — one `restart_service()` call site outside `reload_or_restart()`, under `if changed and CFG_PATH.exists()`. T-02's 自动恢复 preserved with its inner order verbatim and still ahead of the non-zero exit. **Hot-apply was investigated, not assumed, and declined on evidence**: Clash API has `/providers/rules` but no `ruleCount`/`vehicleType` (compatibility stub); SIGHUP recreates the instance and OpenRC defines no `reload()`; sing-box *does* fswatch local rule-sets but our own `log.level=warn` closes the only channel that could witness it — recorded as a **deferred decline**, not a rejection. **0 rollbacks** (two document-only fixes, neither a defect). `verify_all PASS: 16 / WARN: 0 / FAIL: 0 / SKIP: 2`, delta 0 vs a pristine `HEAD` QA rebuilt itself; QA 522 assertions / 0 failures / 0 product defects, with a negative control (same fixture: HEAD `['is_running','restart_service']` → change `[]`) and 4 killed mutants. Live service provably untouched by identical `MainPID` + `ActiveEnterTimestamp`. Gate's sharpest finding: **`systemctl is-active` cannot detect a restart** — the check written after T-02's incident would have passed *during* it. Product diff 3 files, +147/−31. Uncommitted; owner owns delivery. | 2026-08-01 | `docs/features/_archived/ruleset-update-no-needless-restart/` (mode: full) |
 | T-09 | fix-rules-update-execstart | **DELIVERED** — `systemd/sing-box-rules-update.service:7` now runs `/usr/local/bin/sc update-rules` instead of the never-installed `/usr/local/bin/proxy`, so the README-advertised weekly ruleset auto-update can run for the first time on any systemd host. Shipping diff is 2 files: the unit (1 insertion / 1 deletion) + one zh `修复` bullet in `CHANGELOG.md`. **0 rollbacks**; the stage-1 conditional escalation (Q1) did not fire — `daemon-reload` alone is sufficient, verified on mechanism at three stages, so `install.sh` stayed out of the diff and re-running the installer is the whole upgrade. `verify_all PASS: 16 / WARN: 0 / FAIL: 0 / SKIP: 2`, delta 0 against a pristine `HEAD` baseline QA rebuilt itself. `systemd-analyze verify`: pre-change exit 1 naming `/usr/local/bin/proxy`, post-change exit 0. End-to-end ("the timer now really updates") is **reasoned, not executed** — no root, no live mutation. QA found the host contradicts two upstream premises: the unit has **never run** (timer `disabled`, no stamp, journal empty), so the "~100% of hosts are in `failed`" premise is false and the BC-11 stamp claim has zero empirical support project-wide. Uncommitted; owner owns delivery. | 2026-07-31 | `docs/features/fix-rules-update-execstart/` (mode: full) |
@@ -47,8 +48,55 @@
    owns the next edit to these flags. Deliberately not added by T-08: dev-map is not in AC-19's
    carve-out, so editing it would have breached the criterion the gate made binding.
 5. **`.harness/scripts/baseline.json` still reads `test_count: 0`** across all five delivered tasks —
-   the project has no committed test suite (`verify_all` B.2/B.3 are permanently SKIP). Every task so
-   far has built a throwaway harness and discarded it. A standing gap, not any one task's.
+   the project had no committed test suite. **Partly resolved by T-11**, which made B.2 a real check;
+   B.3 (lint) is still SKIP and `baseline.json` still reads zero — see R-4. Every task before T-11
+   built a throwaway harness and discarded it.
+
+### Open rows surfaced by T-11 (R-1 … R-8) — owner to number
+
+Each was found by a T-11 stage agent, judged out of scope by the requirement or the design, and
+deliberately **re-homed rather than dropped**. HEAD anchors are pre-T-11 line numbers.
+
+1. **R-1 — unguarded `mktemp -d` assignments.** `ARTIFACT_DIR="$(mktemp -d -t …)"` (`install.sh:332`)
+   and `SB_TMPDIR="$(mktemp -d)"` (`:371`) abort the run by exactly T-11's mechanism, leaving only
+   `mktemp`'s raw English line. Re-homed (D-3/O-8) because no handler below them is made unreachable
+   and the failure domain is the local temp filesystem, not the network.
+2. **R-2 — empty version display.** `t step2_already "$(sing-box version | head -1)"` (`:368`) and
+   `t step2_done "$(…)"` (`:392`) discard the substitution's status, so a `sing-box` that exits
+   non-zero prints `▶ [2/7] sing-box already installed: ` with an empty version and the run
+   continues. A display defect, not an abort.
+3. **R-3 — the wider silent-abort class.** Bare `python3` heredoc (`:403-417`), `tar -xz` (`:390`),
+   `install -m` (`:391`/`:398`/`:399`/`:428-430`), `chmod` (`:454`/`:462`), `visudo -c` (`:463`) all
+   abort `install.sh` with no stated outcome. **T-01's "the installer always states its outcome"
+   guarantee is not global, and T-11 does not make it so** (D-7). This row is the one that would.
+4. **R-4 — `.harness/scripts/baseline.json` still reads `test_count: 0`.** T-11 made `verify_all`
+   B.2 a real check (`check-i18n-parity.sh`, 41 keys × 2 languages), so the file can finally be
+   populated instead of recording zero across six delivered tasks.
+5. **R-5 — the `fail_download()` helper.** Three sites now share
+   `t download_failed … ; t check_network ; exit 1` (`:346-348`, `:385-387`, and T-11's new block).
+   The seam is real; T-11 declined it (`02_SOLUTION_DESIGN.md` §3.5, recorded in
+   `.harness/rejected-decisions.md` as `installer-early-exit-download-helper`) because it would pull
+   two untouched blocks into the diff and weaken the line-by-line audits AC-9 and B-5 rest on.
+   Natural owner is R-3, which rewrites this failure class anyway.
+6. **R-6 — the PowerShell mirror diverges.** T-11 wired B.2 in `.harness/scripts/verify_all.sh` only;
+   `.harness/scripts/verify_all.ps1:79` still reads `Step "B.2" "Tests pass"` with a SKIP body, so
+   the two mirrors now disagree about what B.2 is. Out of T-11's permitted diff by AC-12/A-4;
+   recorded here so the divergence is not silent.
+7. **R-7 — the new B.2 gate has two blind spots, and it is now permanent.** Confirmed with tool
+   evidence at stage 6: mutating `install.sh:143`'s `LANG_CHOICE` dispatch makes
+   `check-i18n-parity.sh` render the **en** table twice, agree on every comparison, print
+   `OK: 41 keys, both languages` — a literally false statement — and **exit 0**, with zh unreachable.
+   It also cannot see a key missing from *both* tables, though that aborts the installer under
+   `set -u`. The product is clean today; the gate is not. Cheapest fix: assert at least one key
+   renders differently between the two languages. Owner: solution-architect (design blind spot).
+8. **R-8 — three T-11 document defects, none reaching product code.** (a) `02_SOLUTION_DESIGN.md`
+   §10's E-10 fixture is defective: `yes … | head -200000` is itself an early-exiting reader *inside*
+   the measured pipeline, so under `pipefail` both legs return 141 regardless of the extraction tail
+   — the probe could never distinguish its own legs. (b) §4's "+11 line shift" is actually +14.
+   (c) `04_DEVELOPMENT.md`'s "load-bearing, not precautionary" overstates the evidence; the accurate
+   reading is *load-bearing for large or hostile bodies, precautionary for the real endpoint*.
+   (d) `.harness/rules/50-singbox-cli.md:45` still opens "until B.2/B.3 are real", now false for B.2
+   — C-11 correctly forbade touching it, so it belongs to the next rule-50 edit.
 
 ### T-02 consolidation (rule 85)
 

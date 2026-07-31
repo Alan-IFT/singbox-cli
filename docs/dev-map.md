@@ -20,7 +20,8 @@ singbox-cli/
 ```
 
 There is **no build step, no dependency manifest and no test directory.** `.harness/scripts/verify_all.sh`
-B.1 syntax-checks `bin/sc`, `install.sh`, `uninstall.sh`; B.2/B.3 are still `SKIP`.
+B.1 syntax-checks `bin/sc`, `install.sh`, `uninstall.sh`; B.2 runs the `install.sh` bilingual
+key-parity check (T-11); B.3 (lint) is still `SKIP`.
 
 ## `bin/sc` internal sections (in file order)
 
@@ -52,6 +53,7 @@ B.1 syntax-checks `bin/sc`, `install.sh`, `uninstall.sh`; B.2/B.3 are still `SKI
 | Bilingual output | `t(s, **kwargs)` + `TRANSLATIONS` | `bin/sc` `# i18n` | `TRANSLATIONS` has **no `en` table** — `t()` returns the key itself in English. |
 | Warning to stderr | `sys.stderr.write("⚠️  " + t(...) + "\n")` | `generate_config`, `_warn_degraded` | The `⚠️` prefix stays outside `t()`. |
 | Apply a config change | `generate_config()` → `restart_service()` / `reload_or_restart()` / `clash_api()` | `bin/sc` | Node and mode switches go through the Clash API; structural changes need a restart. |
+| Bilingual parity proof for `install.sh` | `check-i18n-parity.sh [FILE]` | `.harness/scripts/` | `t()` key + `printf`-specifier parity for `install.sh`; extracts the function and renders every key under `set -u`; wired as `verify_all` B.2. Exit 0 parity holds / 1 broken / 2 cannot decide — **2 is a failure for the caller, never a pass**. Does not cover `bin/sc` (no `en` table, different shape). |
 
 ## Patterns to follow
 
@@ -68,6 +70,11 @@ B.1 syntax-checks `bin/sc`, `install.sh`, `uninstall.sh`; B.2/B.3 are still `SKI
   `install.sh` and the install log depend on this split for `sc update-rules`.
 - **Non-TTY output must contain no `\r`** and must keep one completion line per item: the installer
   and the OpenRC periodic script capture it into a file.
+- **In `install.sh`, never write a bare `VAR=$(pipeline)` under `set -euo pipefail`** when a handler
+  below is supposed to see the failure — the assignment carries the pipeline's status and aborts the
+  script *at that line*. Put it in an `if` condition, and keep **every element of the pipeline
+  reading to EOF** (no `head`, no `grep -m1`, no `sed …q`), or `pipefail` will report a successful
+  fetch as a failed one. See `install.sh` step 2's version query.
 
 ## Patterns to avoid
 
