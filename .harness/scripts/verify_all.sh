@@ -49,7 +49,24 @@ fi
 # --- B. Build / test / lint (CUSTOMIZE FOR Python 3 CLI (sc) + Bash installer/uninstaller, systemd/OpenRC service units, multi-distro package managers (apt/dnf/pacman/zypper/apk), sing-box binary management) ---
 # TODO: Replace each SKIP with your actual command for Python 3 CLI (sc) + Bash installer/uninstaller, systemd/OpenRC service units, multi-distro package managers (apt/dnf/pacman/zypper/apk), sing-box binary management.
 # Examples at the bottom of this file.
-step "B.1" "Build" "SKIP"
+# B.1 — no compile step (bin/sc is run directly, shell scripts are interpreted).
+# Substitute a syntax gate: a parse error in either artifact bricks the installed CLI.
+b1_syntax=""
+if command -v python3 >/dev/null 2>&1; then
+    if ! python3 -m py_compile bin/sc 2>/dev/null; then
+        b1_syntax="bin/sc fails python3 -m py_compile"
+    fi
+    rm -rf bin/__pycache__ 2>/dev/null || true
+else
+    b1_syntax="python3 not found"
+fi
+for sh_file in install.sh uninstall.sh; do
+    [[ -f "$sh_file" ]] || continue
+    bash -n "$sh_file" 2>/dev/null || b1_syntax="$b1_syntax; $sh_file fails bash -n"
+done
+[[ -z "$b1_syntax" ]] && step "B.1" "Syntax (bin/sc, install.sh, uninstall.sh)" "PASS" \
+    || step "B.1" "Syntax (bin/sc, install.sh, uninstall.sh)" "FAIL" "$b1_syntax"
+
 step "B.2" "Tests pass" "SKIP"
 step "B.3" "Lint" "SKIP"
 # >>> HARNESS:B-CUSTOM:END <<<
