@@ -18,3 +18,7 @@ Thumbs.db
 *.log
 test/
 .env
+
+# Harness (transient, session-scoped)
+.harness/ambient.flag
+.harness/intervention.md
