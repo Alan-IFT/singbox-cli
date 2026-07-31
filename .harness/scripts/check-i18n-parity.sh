@@ -95,6 +95,17 @@ for lang in en zh; do
     fi
 done
 
+# --- 3b. self-check: the two renders MUST differ (R-7) ----------------------
+# Without this, the checker has a false-green blind spot. If the LANG_CHOICE
+# dispatch in the target file breaks, BOTH children render the SAME (English)
+# table, step 4 compares en against en, agrees with itself, and prints
+# "OK: N keys, both languages" while zh is unreachable — a green light from the
+# very gate that exists to catch unreachable-language bugs. Two full renders of
+# dozens of keys cannot be byte-identical unless the dispatch never switched.
+if cmp -s "$TMP/out.en" "$TMP/out.zh"; then
+    die2 "en and zh renders are byte-identical — the language dispatch in $FILE never switched, so this check cannot see zh at all (it would otherwise pass vacuously)"
+fi
+
 # --- 4. compare -------------------------------------------------------------
 bad=0
 while IFS=$'\t' read -r k_en st_en len_en spec_en <&3 && IFS=$'\t' read -r k_zh st_zh len_zh spec_zh <&4; do
