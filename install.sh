@@ -15,6 +15,19 @@ LIB_DIR="/usr/local/lib/singbox-cli"
 SB_BIN="/usr/local/bin/sing-box"
 SB_REPO="SagerNet/sing-box"
 
+# The log path the user is TOLD about — never reassigned, so every message names
+# the real path (B-14, B-15). LOG_SINK is where output is actually redirected;
+# it stays /dev/null until the probe below step 5 proves the log file openable.
+INSTALL_LOG="/var/log/sing-box/install.log"
+LOG_SINK="/dev/null"         # "$INSTALL_LOG" | /dev/null — written only by the probe
+
+# Phase status — the single source of truth for the closing report
+# (install_report) and for the process exit status. Pessimistic defaults: a
+# phase counts as failed until the step that owns it records otherwise.
+PHASE_RULESETS="failed"      # ok | failed           — step 6
+PHASE_CONFIG="failed"        # ok | failed           — step 7, sc reload
+PHASE_SERVICE="not-started"  # started | not-started — step 7, service launch
+
 # ----------------- pre-flight: root -----------------
 if [ "$EUID" -ne 0 ]; then
     echo "Run as root (sudo bash install.sh, or use the one-line install from the README)"
@@ -130,7 +143,7 @@ t() {
             step5)               fmt="▶ [5/7] 配置免密 sudo（仅针对 /usr/local/bin/sc）..." ;;
             step6)               fmt="▶ [6/7] 下载规则集 (.srs) ..." ;;
             step6_ok)            fmt="  下载完成" ;;
-            step6_warn)          fmt="  ⚠️ 下载失败（可能是网络问题），稍后用 'sc update-rules' 重试" ;;
+            step6_warn)          fmt="  ⚠️ 规则集下载失败，详细原因见 %s，稍后用 'sc update-rules' 重试" ;;
             step7)               fmt="▶ [7/7] 生成初始配置并启动服务 ..." ;;
             done_banner)         fmt="  ✅ 安装完成" ;;
             next_steps)          fmt="下一步：" ;;
@@ -140,6 +153,17 @@ t() {
             next_lang)           fmt="  4. 切换语言：    sc lang en|zh" ;;
             next_uninstall)      fmt="  5. 卸载：        sc uninstall" ;;
             note_initial)        fmt="（初始没有节点时，TUN 已建立但流量走 direct，加节点后自动切换）" ;;
+            fail_banner)         fmt="  ❌ 安装未完成" ;;
+            fail_config)         fmt="配置生成失败：sing-box 没有通过配置校验，服务未启动。" ;;
+            fail_service)        fmt="配置已生成，但服务启动失败，当前没有运行。" ;;
+            fail_rulesets)       fmt="规则集缺失（第 6 步下载失败），这通常就是配置校验失败的原因。" ;;
+            fail_next)           fmt="请手动执行以下命令修复（系统不会自动恢复）：" ;;
+            fail_rules)          fmt="  1. 重新下载规则集：sc update-rules" ;;
+            fail_reload)         fmt="  2. 重新生成配置：  sc reload" ;;
+            fail_status)         fmt="  3. 查看服务状态：  %s" ;;
+            fail_log)            fmt="详细错误已记录在 %s" ;;
+            fail_nolog)          fmt="%s 不可写，本次的详细错误没有保存；请直接运行上面的命令查看错误输出。" ;;
+            step6_nolog)         fmt="  ⚠️ 规则集下载失败，%s 不可写，详细原因未能保存，稍后用 'sc update-rules' 重试" ;;
         esac
     else
         case "$key" in
@@ -162,7 +186,7 @@ t() {
             step5)               fmt="▶ [5/7] Configuring NOPASSWD sudo (scoped to /usr/local/bin/sc) ..." ;;
             step6)               fmt="▶ [6/7] Downloading rulesets (.srs) ..." ;;
             step6_ok)            fmt="  Done" ;;
-            step6_warn)          fmt="  ⚠️ Download failed (likely a network issue) — retry later with 'sc update-rules'" ;;
+            step6_warn)          fmt="  ⚠️ Ruleset download failed — see %s for the cause; retry later with 'sc update-rules'" ;;
             step7)               fmt="▶ [7/7] Generating initial config and starting the service ..." ;;
             done_banner)         fmt="  ✅ Install complete" ;;
             next_steps)          fmt="Next steps:" ;;
@@ -172,6 +196,17 @@ t() {
             next_lang)           fmt="  4. Switch lang:    sc lang en|zh" ;;
             next_uninstall)      fmt="  5. Uninstall:      sc uninstall" ;;
             note_initial)        fmt="(With no nodes yet, the TUN is up but traffic goes direct; adding a node switches it automatically.)" ;;
+            fail_banner)         fmt="  ❌ Install incomplete" ;;
+            fail_config)         fmt="Config generation failed: sing-box did not pass the config check, so the service was not started." ;;
+            fail_service)        fmt="The config was generated, but the service failed to start and is not running." ;;
+            fail_rulesets)       fmt="The rulesets are missing (the step 6 download failed) — that is usually why the config check fails." ;;
+            fail_next)           fmt="Run these commands yourself to fix it (nothing repairs it automatically):" ;;
+            fail_rules)          fmt="  1. Re-download rulesets: sc update-rules" ;;
+            fail_reload)         fmt="  2. Regenerate config:    sc reload" ;;
+            fail_status)         fmt="  3. Check service state:  %s" ;;
+            fail_log)            fmt="The detailed error was written to %s" ;;
+            fail_nolog)          fmt="%s is not writable, so the detailed error was not saved — run the commands above to see it." ;;
+            step6_nolog)         fmt="  ⚠️ Ruleset download failed — %s is not writable, so the cause was not saved; retry later with 'sc update-rules'" ;;
         esac
     fi
     if [ "$#" -gt 0 ]; then
@@ -180,6 +215,56 @@ t() {
     else
         printf "%s\n" "$fmt"
     fi
+}
+
+# Closing report. Reads the recorded phase status and nothing else, so the
+# banner and the exit status can never disagree. Returns 0 for a successful
+# install (config generated AND service running), 1 otherwise.
+install_report() {
+    echo ""
+    echo "═══════════════════════════════════════════════════════"
+    if [ "$PHASE_CONFIG" = "ok" ] && [ "$PHASE_SERVICE" = "started" ]; then
+        t done_banner
+        echo "═══════════════════════════════════════════════════════"
+        echo ""
+        t next_steps
+        t next_add
+        t next_status
+        t next_help
+        t next_lang
+        t next_uninstall
+        echo ""
+        t note_initial
+        return 0
+    fi
+    t fail_banner
+    echo "═══════════════════════════════════════════════════════"
+    echo ""
+    if [ "$PHASE_CONFIG" = "ok" ]; then
+        t fail_service
+    else
+        t fail_config
+    fi
+    if [ "$PHASE_RULESETS" = "failed" ]; then
+        t fail_rulesets
+    fi
+    echo ""
+    t fail_next
+    t fail_rules
+    t fail_reload
+    if [ "$INIT_SYS" = "systemd" ]; then
+        t fail_status "systemctl status sing-box"
+    else
+        t fail_status "rc-service sing-box status"
+    fi
+    echo ""
+    # Always name the real log path; say which of the two things is true of it.
+    if [ "$LOG_SINK" = "$INSTALL_LOG" ]; then
+        t fail_log "$INSTALL_LOG"
+    else
+        t fail_nolog "$INSTALL_LOG"
+    fi
+    return 1
 }
 
 # ----------------- language choice -----------------
@@ -213,7 +298,10 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" 2>/dev/null && pwd || echo "")"
 
 CLEANUP_DIRS=()
-cleanup() { for d in "${CLEANUP_DIRS[@]}"; do rm -rf "$d"; done; }
+# "${arr[@]}" over an EMPTY array is an unbound-variable error under `set -u` on
+# bash < 4.4 (CentOS/RHEL 7 ships 4.2). Inside the EXIT trap that would override
+# the installer's derived exit status, so guard both the expansion and the rm.
+cleanup() { for d in ${CLEANUP_DIRS[@]+"${CLEANUP_DIRS[@]}"}; do rm -rf "$d" || true; done; }
 trap cleanup EXIT
 
 if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/bin/sc" ]; then
@@ -352,35 +440,58 @@ EOF
 chmod 440 /etc/sudoers.d/sc
 visudo -c -f /etc/sudoers.d/sc >/dev/null
 
+# ----------------- install log -----------------
+# Steps 6-7 append their diagnostics here, so a failed run keeps the real cause
+# instead of sending it to /dev/null. Mode 0640: captured `sing-box check`
+# output can quote fragments of the generated config. Only on success is the
+# sink promoted to the real file — logging must never change what the installer
+# does (a plain >> on an unwritable path makes the command itself fail), and
+# INSTALL_LOG is never touched, so every message still names the real path.
+if ( umask 027; printf '\n===== singbox-cli install (pid %s) =====\n' "$$" >>"$INSTALL_LOG" ) 2>/dev/null; then
+    LOG_SINK="$INSTALL_LOG"
+fi
+
 # ----------------- step 6: rulesets -----------------
 t step6
-if /usr/local/bin/sc update-rules >/dev/null 2>&1; then
+if /usr/local/bin/sc update-rules >>"$LOG_SINK" 2>&1; then
+    PHASE_RULESETS="ok"
     t step6_ok
+elif [ "$LOG_SINK" = "$INSTALL_LOG" ]; then
+    t step6_warn "$INSTALL_LOG"
 else
-    t step6_warn
+    t step6_nolog "$INSTALL_LOG"
 fi
 
 # ----------------- step 7: enable + start -----------------
 t step7
-/usr/local/bin/sc reload >/dev/null
+
+# Register for boot autostart first: registration must not depend on config
+# generation, and a failure here must never abort the install.
 if [ "$INIT_SYS" = "systemd" ]; then
-    systemctl enable --now sing-box >/dev/null 2>&1
-    systemctl enable --now sing-box-rules-update.timer >/dev/null 2>&1
+    systemctl enable sing-box >>"$LOG_SINK" 2>&1 || true
+    systemctl enable sing-box-rules-update.timer >>"$LOG_SINK" 2>&1 || true
 else
-    rc-update add sing-box default >/dev/null 2>&1 || true
-    rc-service sing-box start >/dev/null 2>&1 || true
+    rc-update add sing-box default >>"$LOG_SINK" 2>&1 || true
 fi
 
-echo ""
-echo "═══════════════════════════════════════════════════════"
-t done_banner
-echo "═══════════════════════════════════════════════════════"
-echo ""
-t next_steps
-t next_add
-t next_status
-t next_help
-t next_lang
-t next_uninstall
-echo ""
-t note_initial
+# Generate the initial config; start the service only if that succeeded.
+# Each phase records its own outcome; nothing else decides what the run was.
+if /usr/local/bin/sc reload >>"$LOG_SINK" 2>&1; then
+    PHASE_CONFIG="ok"
+    if [ "$INIT_SYS" = "systemd" ]; then
+        if systemctl start sing-box >>"$LOG_SINK" 2>&1; then
+            PHASE_SERVICE="started"
+        fi
+        # The rules-update timer is auxiliary: its start does not decide the run.
+        systemctl start sing-box-rules-update.timer >>"$LOG_SINK" 2>&1 || true
+    else
+        if rc-service sing-box start >>"$LOG_SINK" 2>&1; then
+            PHASE_SERVICE="started"
+        fi
+    fi
+fi
+
+# The closing report and the exit status come from the same derivation, so the
+# installer cannot print success for a run that did not install a working service.
+install_report || exit 1
+exit 0

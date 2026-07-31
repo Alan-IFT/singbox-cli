@@ -8,13 +8,13 @@
 
 | ID | Slug | Stage | Started | Doc folder |
 |---|---|---|---|---|
-| _(none yet)_ | | | | |
+| _(none)_ | | | | |
 
 ## Completed tasks
 
 | ID | Slug | Outcome | Completed | Doc folder |
 |---|---|---|---|---|
-| _(none yet)_ | | | | |
+| T-01 | install-enable-start-split | **DELIVERED** — installer now reports its true outcome (unconditional autostart registration, real cause logged to `/var/log/sing-box/install.log`, honest banner, non-zero exit on failure). Absorbed the former T-04. `verify_all PASS: 16 / WARN: 0 / FAIL: 0`. AC-9 unverified (no restricted-network VM) → T-07. Uncommitted; stream owns delivery. | 2026-07-31 | `docs/features/install-enable-start-split/` (mode: full) |
 
 ## Conventions
 
