@@ -16,7 +16,8 @@
 | T-06 | sc-config-show | Add `sc config --show` (with an optional `--redact` that masks node credentials) so `/etc/sing-box/config.json` can be inspected without root `grep`. | full | — | pending |
 | T-09 | fix-rules-update-execstart | Fix `systemd/sing-box-rules-update.service`, whose `ExecStart` invokes the non-existent `/usr/local/bin/proxy` so the weekly ruleset auto-update has never run at all (203/EXEC), pointing it at the installed `sc` binary. | full | — | done |
 | T-10 | ruleset-update-no-needless-restart | Stop `sc update-rules` from restarting sing-box when no rule-set actually changed, so the now-live weekly timer no longer drops every connection each Monday; prefer hot-apply over restart per the project's own convention. | full | — | done |
-| T-08 | install-binary-download-progress | Show real download progress for the sing-box binary tarball in `install.sh` step 2 by replacing `curl -fsSL` with a progress-emitting invocation, degrading to a quiet single-line notice when stdout is not a TTY. | full | — | pending |
+| T-08 | install-binary-download-progress | Show real download progress for the sing-box binary tarball in `install.sh` step 2 by replacing `curl -fsSL` with a progress-emitting invocation, degrading to a quiet single-line notice when stderr is not a TTY. | full | — | done |
+| T-11 | install-version-query-abort | Fix `install.sh`'s sing-box version query, where `VAR=$(pipeline)` aborts at the assignment under `set -e` and so bypasses both its own error handler and `install_report()` — letting the installer exit having stated no outcome, the exact property T-01 exists to guarantee. | full | — | pending |
 | T-07 | restricted-network-regression-test | Add a repeatable restricted-network regression test that blocks `github.com` / `raw.githubusercontent.com` in a container or VM, runs the full one-liner install, and asserts the five expected end-state conditions from the failure report. | full | T-01, T-02 | pending |
 
 ## Notes (optional)
@@ -43,8 +44,9 @@
     one T-01 is rewriting, so there is no shared seam to preserve.
   - **Shared design constraint for both:** progress output must degrade when stdout is not a TTY.
     This is not cosmetic — `sc update-rules` runs from the weekly systemd timer, so an unguarded
-    progress bar would write carriage-return spam into the journal. Gate on `sys.stdout.isatty()`
-    / `[ -t 1 ]` and fall back to a single completion line. The two implementations cannot share
+    progress bar would write carriage-return spam into the journal. Gate on `sys.stdout.isatty()` in Python; in Bash gate on **`[ -t 2 ]`, not `[ -t 1 ]`** —
+    T-08 established that curl writes its meter to stderr and does not self-gate on it. Fall back to
+    a single completion line. The two implementations cannot share
     code (Bash/curl vs Python/urllib) but must share the visual language.
   - Note the existing ruleset code already writes to `.tmp` then `.replace()` — T-02's atomic-write
     requirement is partly satisfied already; keep it rather than reinventing it.

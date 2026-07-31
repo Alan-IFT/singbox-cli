@@ -66,6 +66,76 @@
   answer for the same reason (diff boundary is `bin/sc` + `CHANGELOG.md`), explicitly flagged there
   as the weakest of that task's decisions, since the change is about restart behaviour and a
   permanently reproducible guard has real value. T-07 still owns the committed harness.
+  **Re-occurrence:** T-08 `install-binary-download-progress` §9 D-A8 — its AC-9 needs a `t()`
+  key-parity extractor for `install.sh`, which is exactly the check `.harness/rules/50-singbox-cli.md`
+  wants wired into `verify_all` B.2/B.3; AC-19 caps that diff at `install.sh` + `CHANGELOG.md`, so the
+  extractor runs at QA time and is pasted into `06_TEST_REPORT.md` for T-07 to commit. This is the
+  third row to hit the same wall — the next one should probably widen its own diff instead.
+
+## t-fmt-default-fallback
+- **Decision:** declined (`t()` in `install.sh` keeps `local fmt` with no default).
+- **Why:** the proposal was to make a key missing from one language table print the key name instead of
+  aborting the installer under `set -u` (`.harness/insight-index.md:10`). It trades a bug that cannot
+  ship unnoticed for one that easily can: today a zh-only omission kills the run loudly the first time
+  anyone answers `2`, whereas the fallback would print `step2_fetching` mid-install and complete. It
+  also edits a function serving ~45 keys for a hazard the task did not raise. The structural fix is a
+  committed key-parity gate (see `ruleset-unit-tests-in-t02`); the per-task mitigations are fewer keys,
+  paired insertion at the same relative position in both `case` blocks, and a both-languages run.
+- **Origin:** T-08 `install-binary-download-progress` §9 D-A7, answering the brief's "design so this
+  class of bug is structurally hard".
+
+## ruleset-progress-visible-during-install
+- **Decision:** deferred (T-08 leaves step 6's `sc update-rules` redirected to `$LOG_SINK`, so the
+  per-rule-set progress T-02 built is still invisible while an install is running).
+- **Why:** un-redirecting it destroys T-01's design, in which the *cause* of a rule-set failure is
+  captured into `/var/log/sing-box/install.log` while the screen shows only a summary; and a `tee`
+  is forbidden by `.harness/insight-index.md:12` — under `pipefail` a logging fault would flip a
+  healthy phase. It is also outside T-08's stated boundary (the installer's own transfers, not the
+  rule-set download path). The gap is real, not imaginary: T-02 shipped TTY-gated per-rule-set
+  progress that no installing user has ever seen, because at install time `sc`'s stdout is a file
+  (T-02 evidence E-8). **Unblock path:** a row that decides how step 6 can show progress on the
+  terminal *and* keep the cause in the log without a `pipefail`-exposed pipeline — e.g. showing
+  progress on a stream that is not the one being captured.
+- **Origin:** T-08 `install-binary-download-progress` §9 D-6 / §4 item 3.
+
+## installer-package-manager-download-output
+- **Decision:** declined for T-08 (step 1's apt/dnf/yum/pacman/zypper/apk installs stay quiet).
+- **Why:** those bytes are not the installer's own transfer. Making them visible means removing the
+  quiet flags from six package managers with six output volumes and six error surfaces, changing
+  `pkg_install`'s `|| return 1` failure reporting, for a step whose payload is a handful of usually
+  cached packages. That is scope the owner's request ("每个下载部分" — the downloads the installer
+  itself performs) does not carry, and it is separable into its own row if ever wanted.
+- **Origin:** T-08 `install-binary-download-progress` §9 D-7.
+
+## installer-version-query-silent-abort
+- **Decision:** deferred (T-08 leaves `install.sh`'s GitHub API version query exactly as it is, apart
+  from substituting the shared quiet-flag array).
+- **Why:** this is a **live defect, not a style point**, and it was found while correcting a wrong
+  sentence in T-08's own requirement (D-5's third reason). `SB_VER=$(curl -fsSL … | grep '"tag_name"'
+  | head -1 | sed …)` (`install.sh:352-354`) is a plain assignment from a command substitution, so its
+  status is the pipeline's status; under `set -euo pipefail` (`install.sh:9`) an HTTP 403 (GitHub's
+  unauthenticated rate limit — routine from shared/CGNAT/CI addresses), a 404, or any transport
+  failure makes curl exit 22/6 with empty stdout, `grep` exit 1, and `set -e` terminate the installer
+  **at the assignment**. The bilingual `t download_failed "GitHub API (sing-box version)"` /
+  `t check_network` at `:356-360` is therefore unreachable on exactly the failures it was written for;
+  it catches only a pipeline that exits 0 and yields an empty or non-semver string. **T-01 blast
+  radius:** T-01 made `install_report()` state the outcome and derive the exit status
+  (`install.sh:494-497`); this path reaches neither, and unlike step 2's *designed* failure exit it
+  substitutes no statement of its own — so the installer can terminate having said nothing about what
+  happened, showing only curl's raw English one-liner (kept by `-S`) and exiting 1, the same status as
+  the diagnosed path. Not fixed in T-08 because fixing it changes step-2 failure behaviour, which
+  T-08's AC-6/AC-14 pin as unchanged, and `.harness/rules/85-design-discipline.md`'s counter-rule
+  forbids widening a task past the request it was given: T-08 makes downloads visible, it does not
+  redesign failure reporting. **Unblock path:** its own row — an API/transport failure of the version
+  query produces the same class of outcome as a tarball failure (a bilingual statement naming what
+  failed and what to check, plus a derived exit status). That row decides whether the fix keeps the
+  direct `exit 1` or routes through `install_report()`, and whether any other bare `VAR=$(pipeline)`
+  under `set -e` in this script carries the same hole. Cheap to fix (an explicit `if ! SB_VER=$(…)`),
+  but it needs its own acceptance criteria, so it is not smuggled in.
+- **Origin:** T-08 `install-binary-download-progress` — found by the Solution Architect as
+  `docs/features/install-binary-download-progress/02_SOLUTION_DESIGN.md` §11 R-D, verified and
+  re-homed by the Requirement Analyst as that task's `01_REQUIREMENT_ANALYSIS.md` §4 item 11 / E-15 /
+  §9 D-5.
 
 ## mtime-or-size-as-a-ruleset-change-signal
 - **Decision:** declined (a rule-set counts as changed only when its installed **content** differs —

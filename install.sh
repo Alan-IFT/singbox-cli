@@ -113,6 +113,24 @@ if ! command -v curl >/dev/null 2>&1; then
     pkg_install curl
 fi
 
+# ----------------- download flag policy -----------------
+# Decided once, for every curl in this script.
+#
+# curl writes its progress meter to STDERR, and does NOT suppress it when stderr
+# is not a terminal — silencing it is exactly what -s does. So the terminal-ness
+# of STDERR, not stdout, decides whether 0x0D and partial redraws can land in a
+# captured log (`... > install.log 2>&1`, CI output, issue reports).
+#
+# -s and --progress-bar are not additive: -s wins and shows nothing. So the
+# progress variant DROPS -s rather than adding a flag. -S is kept in both: with
+# -s it is what keeps curl's error text on stderr, without -s it is a no-op.
+# Every option here exists in curl 7.29 (the oldest supported distro, RHEL 7).
+CURL_OPTS_QUIET=(-f -s -S -L)
+CURL_OPTS_PROGRESS=("${CURL_OPTS_QUIET[@]}")
+if [ -t 2 ]; then
+    CURL_OPTS_PROGRESS=(-f -S -L --progress-bar)
+fi
+
 # ----------------- i18n -----------------
 # Initial guess from $LANG; user confirms or overrides at the prompt below.
 LANG_CHOICE="en"
@@ -128,6 +146,7 @@ t() {
             no_user)             fmt="⚠️  检测不到普通用户身份。建议先 sudo 切到普通用户再运行。" ;;
             install_root_prompt) fmt="   当前将为 root 安装（继续? [y/N]）" ;;
             downloading)         fmt="● 从 %s 下载安装文件 ..." ;;
+            fetching_item)       fmt="  ↓ 获取 %s ..." ;;
             download_failed)     fmt="✗ 下载失败：%s" ;;
             check_network)       fmt="  请检查网络后重试" ;;
             banner)              fmt="  singbox-cli 安装" ;;
@@ -171,6 +190,7 @@ t() {
             no_user)             fmt="⚠️  Cannot detect a regular user. Consider re-running with sudo from a normal account." ;;
             install_root_prompt) fmt="   Will install for root. Continue? [y/N]" ;;
             downloading)         fmt="● Downloading install files from %s ..." ;;
+            fetching_item)       fmt="  ↓ Fetching %s ..." ;;
             download_failed)     fmt="✗ Download failed: %s" ;;
             check_network)       fmt="  Please check your network and retry" ;;
             banner)              fmt="  singbox-cli installer" ;;
@@ -321,7 +341,8 @@ else
         systemd/sing-box-rules-update.service \
         systemd/sing-box-rules-update.timer
     do
-        if ! curl -fsSL "$RAW_BASE/$rel" -o "$ARTIFACT_DIR/$rel"; then
+        t fetching_item "$rel"
+        if ! curl "${CURL_OPTS_QUIET[@]}" "$RAW_BASE/$rel" -o "$ARTIFACT_DIR/$rel"; then
             t download_failed "$RAW_BASE/$rel"
             t check_network
             exit 1
@@ -349,7 +370,7 @@ else
     t step2_installing
     SB_TMPDIR="$(mktemp -d)"
     CLEANUP_DIRS+=("$SB_TMPDIR")
-    SB_VER=$(curl -fsSL "https://api.github.com/repos/${SB_REPO}/releases/latest" \
+    SB_VER=$(curl "${CURL_OPTS_QUIET[@]}" "https://api.github.com/repos/${SB_REPO}/releases/latest" \
         | grep '"tag_name"' | head -1 \
         | sed 's/.*"v\([^"]*\)".*/\1/')
     # Validate that we got a semver-like string (e.g. "1.10.0")
@@ -359,7 +380,8 @@ else
         exit 1
     fi
     SB_URL="https://github.com/${SB_REPO}/releases/download/v${SB_VER}/sing-box-${SB_VER}-linux-${ARCH}.tar.gz"
-    if ! curl -fsSL "$SB_URL" -o "$SB_TMPDIR/sing-box.tar.gz"; then
+    t fetching_item "sing-box v$SB_VER ($ARCH)"
+    if ! curl "${CURL_OPTS_PROGRESS[@]}" "$SB_URL" -o "$SB_TMPDIR/sing-box.tar.gz"; then
         t download_failed "$SB_URL"
         t check_network
         exit 1

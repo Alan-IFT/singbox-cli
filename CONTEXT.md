@@ -43,6 +43,19 @@ whether a command performs one is a user-visible promise — a restart drops eve
 connection.
 _Avoid_: touching the service, bouncing, refreshing
 
+**non-TTY output contract**:
+The rule that when a stream is not attached to a terminal, output written to it carries no carriage
+return and no intermediate progress state — exactly one complete line per item. It is a correctness
+rule, not a style rule: `sc update-rules` output is captured into `/var/log/sing-box/install.log`
+and installer output is routinely piped to a log or run from automation.
+_Avoid_: quiet mode, non-interactive mode, plain output
+
+**quiet notice**:
+The single complete line printed *before* a transfer starts that names what is being fetched (a
+repository-relative path, or a version plus architecture). It is printed in both modes: on a terminal
+it labels the progress display, and off one it is the whole of the output for that transfer.
+_Avoid_: progress line, status line, banner
+
 **degraded config**:
 A generated `config.json` from which unusable rule-sets and every routing rule referencing them
 have been dropped, so sing-box starts with less routing granularity instead of failing to start.
