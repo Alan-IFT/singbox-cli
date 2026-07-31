@@ -14,7 +14,7 @@
 | T-04 | install-error-surfacing | ~~Error surfacing + honest banner~~ — **merged into T-01**; setting a status flag and acting on it are one design, not two tasks. | full | T-01 | skipped |
 | T-05 | sc-doctor | Add a `sc doctor` command that prints binary+version, config syntax check, per-`.srs` presence and size, service active/enabled state, `sb-tun` interface and address, Clash API reachability, and current egress IP in one screen. | full | T-02 | pending |
 | T-06 | sc-config-show | Add `sc config --show` (with an optional `--redact` that masks node credentials) so `/etc/sing-box/config.json` can be inspected without root `grep`. | full | — | pending |
-| T-09 | fix-rules-update-execstart | Fix `systemd/sing-box-rules-update.service`, whose `ExecStart` invokes the non-existent `/usr/local/bin/proxy` so the weekly ruleset auto-update has never run at all (203/EXEC), pointing it at the installed `sc` binary. | full | — | pending |
+| T-09 | fix-rules-update-execstart | Fix `systemd/sing-box-rules-update.service`, whose `ExecStart` invokes the non-existent `/usr/local/bin/proxy` so the weekly ruleset auto-update has never run at all (203/EXEC), pointing it at the installed `sc` binary. | full | — | done |
 | T-08 | install-binary-download-progress | Show real download progress for the sing-box binary tarball in `install.sh` step 2 by replacing `curl -fsSL` with a progress-emitting invocation, degrading to a quiet single-line notice when stdout is not a TTY. | full | — | pending |
 | T-07 | restricted-network-regression-test | Add a repeatable restricted-network regression test that blocks `github.com` / `raw.githubusercontent.com` in a container or VM, runs the full one-liner install, and asserts the five expected end-state conditions from the failure report. | full | T-01, T-02 | pending |
 
@@ -72,6 +72,17 @@
   install gets **no automatic ruleset update by default**, while a systemd install gets the weekly
   timer (once T-09 makes it actually run). This is a behaviour gap between the two init systems,
   not a defect against any stated requirement. Ask before filing.
+- **⚠️ RECOMMENDED ROW, NOT YET FILED — needs the owner's go-ahead (would widen scope).**
+  T-09 fixed a dead timer, which activates a latent defect: `bin/sc:1141-1143` restarts sing-box
+  even when **nothing changed** (`if not applied and is_running()`). With `OnCalendar=weekly` +
+  `RandomizedDelaySec=1h`, every systemd host now drops all connections once a week, Monday
+  00:00-01:00 local, for a refresh that usually changes nothing. Verified directly 2026-07-31.
+  Fix shape: restart only when a rule-set actually changed on disk — and prefer the project's own
+  hot-apply-over-restart convention (`.harness/rules/50-singbox-cli.md`), since sing-box reloads
+  rule-sets without a service restart. Say the word and I file it.
+  Two smaller follow-ups found alongside, same status: `uninstall.sh:113-130` never runs
+  `systemctl reset-failed`, so it can leave a unit in `systemctl --failed`; and `bin/sc` still has
+  3 `capture_output=True` sites (Python 3.7+) against a README-documented 3.6+ floor.
 - **P3-2 (timer `Persistent=true`) produced no row — the requirement is already satisfied.** The
   report marked it 待确认; verified 2026-07-31 that `systemd/sing-box-rules-update.timer` already
   contains `Persistent=true`, and `install.sh:320` installs that exact file to

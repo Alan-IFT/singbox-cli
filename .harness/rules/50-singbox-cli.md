@@ -31,16 +31,21 @@ is no test directory. `bin/sc` is a single Python 3 file run directly; `install.
 - Lint / typecheck: `<your linter>` — no lint config is committed. If you add one, wire it
   into `verify_all` section B at the same time.
 
-`.harness/scripts/verify_all.sh` currently SKIPs every B.* check. **The first real task
-that adds a build/test/lint command must replace the matching SKIP** — a permanently
-SKIPping gate proves nothing.
+`.harness/scripts/verify_all.sh` **B.1 is a real gate**, not a SKIP: it runs
+`python3 -m py_compile bin/sc` plus `bash -n` on `install.sh` and `uninstall.sh`, and it
+fails the run on a parse error. **B.2 (tests) and B.3 (lint) are still SKIP** — the first
+task that adds a suite or a lint config must replace the matching SKIP, because a
+permanently SKIPping check proves nothing.
 
-Minimum manual verification for any change until a suite exists:
+Do not repeat the claim that "all B.* checks are SKIP" — it was true only before B.1 was
+wired, and it has already propagated into task documents once.
+
+Minimum manual verification for any change, until B.2/B.3 are real:
 
 <!-- source: README.md -->
 
-- Syntax-check what you touched: `python3 -m py_compile bin/sc`, `bash -n install.sh`,
-  `bash -n uninstall.sh`.
+- The B.1 syntax gate is the floor, not the ceiling — it proves the files parse, nothing
+  about behaviour.
 - `install.sh` must stay **idempotent**: re-running it overwrites `sc` and the service
   units but must leave `/etc/sing-box/nodes.json` and `/etc/sing-box/settings.json`
   untouched. Any change to the installer must preserve this.

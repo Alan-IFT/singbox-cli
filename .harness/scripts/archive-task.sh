@@ -48,7 +48,27 @@ if [[ -f "$delivery_file" ]]; then
     # Extract '## Insight' section bullets
     while IFS= read -r line; do
         harvested+=("$line")
-    done < <(awk '/^##[[:space:]]+Insights?[[:space:]]*$/{flag=1; next} /^##[[:space:]]/{flag=0} flag && /^[[:space:]]*-[[:space:]]/' "$delivery_file" || true)
+    # LOCAL FIX (2026-07-31): the upstream one-liner selected only lines matching
+    # /^[[:space:]]*-[[:space:]]/, i.e. bullet FIRST lines. A wrapped bullet lost every
+    # continuation line, so entries were silently truncated mid-sentence and dropped their
+    # trailing "· evidence: <slug>" tag. Insights 10-13 and 18-21 in insight-index.md were
+    # corrupted this way before it was caught. Join continuation lines into one record.
+    # NOTE: this file is plugin-vendored — /harness-upgrade may overwrite this fix.
+    done < <(awk '
+        /^##[[:space:]]+Insights?[[:space:]]*$/ { flag=1; next }
+        /^##[[:space:]]/                        { if (flag && buf != "") { print buf; buf="" } flag=0 }
+        flag {
+            if ($0 ~ /^[[:space:]]*-[[:space:]]/) {          # new bullet
+                if (buf != "") print buf
+                buf=$0
+            } else if ($0 ~ /[^[:space:]]/) {                # continuation line
+                if (buf != "") { sub(/^[[:space:]]+/, "", $0); buf = buf " " $0 }
+            } else {                                          # blank line ends the bullet
+                if (buf != "") { print buf; buf="" }
+            }
+        }
+        END { if (buf != "") print buf }
+    ' "$delivery_file" || true)
 fi
 
 if (( ${#harvested[@]} > 0 )); then
