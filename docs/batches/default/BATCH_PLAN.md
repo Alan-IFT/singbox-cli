@@ -19,11 +19,11 @@
 | T-10 | ruleset-update-no-needless-restart | Stop `sc update-rules` from restarting sing-box when no rule-set actually changed, so the now-live weekly timer no longer drops every connection each Monday; prefer hot-apply over restart per the project's own convention. | full | — | done |
 | T-08 | install-binary-download-progress | Show real download progress for the sing-box binary tarball in `install.sh` step 2 by replacing `curl -fsSL` with a progress-emitting invocation, degrading to a quiet single-line notice when stderr is not a TTY. | full | — | done |
 | T-11 | install-version-query-abort | Fix `install.sh`'s sing-box version query, where `VAR=$(pipeline)` aborts at the assignment under `set -e` and so bypasses both its own error handler and `install_report()` — letting the installer exit having stated no outcome, the exact property T-01 exists to guarantee. | full | — | done |
-| T-13 | config-write-permission-hardening | Close the credential-exposure window when writing `config.json` — create the file 0600 from the start instead of `write_text` then `chmod`, apply the same to any backup it writes, and have `install.sh` verify permissions across `/etc/sing-box/` at the end. | full | — | pending |
-| T-14 | config-override-mechanism | Give the generated `config.json` a user override entry point (`override.json` or `conf.d/*.json`) deep-merged over the template, with array `$prepend`/`$append`/`$replace` so rule *position* is expressible, plus a drift warning when the user has hand-edited the generated file. | full | — | pending |
-| T-15 | proxy-urltest-group | Make the `proxy` tag always point at a `urltest` group rather than a concrete node, so a single flaky node has a failover path, and surface per-node latency from the Clash API in `sc ls`. | full | — | pending |
-| T-16 | dns-resilience | Stop a single flaky node from killing all name resolution: add a non-proxied fallback resolver, converge the 10s DNS timeout, and suppress AAAA when the host has no global IPv6 (`sc ipv6 on/off/auto`). | full | — | pending |
-| T-17 | telemetry-reject-list | Add an opt-out DNS reject list for common telemetry domains, inserted at the position the rule order requires, and extensible through the override mechanism. | full | T-14, T-16 | pending |
+| T-13 | config-write-permission-hardening | Close the credential-exposure window when writing `config.json` — create the file 0600 from the start instead of `write_text` then `chmod`, apply the same to any backup it writes, and have `install.sh` verify permissions across `/etc/sing-box/` at the end. | full | — | done |
+| T-14 | config-composition-layer | Turn config generation from one hardcoded dict into a composition — base template as data, ordered overlays, then a user override file — with explicit array `$prepend`/`$append`/`$replace` semantics and drift detection, under the hard constraint that with no override present the emitted config is **byte-identical** to today's. | full | — | pending |
+| T-15 | proxy-urltest-group | Make the `proxy` tag always point at a `urltest` group rather than a concrete node, so a single flaky node has a failover path, and surface per-node latency from the Clash API in `sc ls`. | full | T-14 | pending |
+| T-16 | dns-resilience | Stop a single flaky node from killing all name resolution: add a non-proxied fallback resolver, converge the 10s DNS timeout, and suppress AAAA when the host has no global IPv6 (`sc ipv6 on/off/auto`) — expressed as overlays on T-14's layer, not as edits to a hardcoded dict. | full | T-14 | pending |
+| T-17 | telemetry-reject-list | Ship the common-telemetry DNS reject list as an opt-out overlay on T-14's layer — after T-14 and T-16 this should be close to data plus a toggle, not new machinery. | full | T-14, T-16 | pending |
 | T-18 | status-egress-via-clash-api | Fix `sc status`'s egress-IP probe, which cannot work in pure-TUN mode because it assumes a local inbound that does not exist, and report a bare traceback when it fails. | full | T-15 | pending |
 | T-19 | ruleset-staleness-visibility | Make stale rule-sets loud: report each file's age in `sc status`, and make the systemd timer actually fail when updates fail instead of only printing. | full | — | pending |
 | T-20 | doctor-extended-checks | Extend `sc doctor` with the checks that need features landing after it — rule-set age, per-node latency, DNS timing, config drift, file permissions, and IPv6 consistency — each reported as a conclusion with a next step. | full | T-05, T-13, T-14, T-15, T-16 | pending |
@@ -60,6 +60,26 @@
     code (Bash/curl vs Python/urllib) but must share the visual language.
   - Note the existing ruleset code already writes to `.tmp` then `.replace()` — T-02's atomic-write
     requirement is partly satisfied already; keep it rather than reinventing it.
+- **RESTRUCTURED 2026-08-01 on the owner's directive 「优先用好的设计，避免不断的修修补补」, stated a
+  second time.** The criticism was correct: the pool had been filed as the field report's symptom
+  list. Re-derived from the code instead.
+  **The finding:** `bin/sc:1001` holds ONE hardcoded ~70-line config dict, and **T-14, T-15, T-16 and
+  T-17 all edit it** — T-16 and T-17 both editing `dns.rules`, an array whose *order carries meaning*.
+  Four tasks taking turns patching one monolith is precisely the pattern rule 85 forbids, and the
+  field report itself asked for the fix (#4: 「长期考虑把模板从 Python 字符串里抽出来」).
+  **The design:** T-14 is no longer "add an override file". It becomes the composition layer —
+  base template as data, ordered overlays, user override on top, with explicit array semantics
+  because rule position is load-bearing. Its gate is that **with no override present the emitted
+  config is byte-identical to today's**, which makes a pure structural change verifiable and keeps
+  behaviour out of it.
+  **The consequence:** T-15, T-16, T-17 and T-21 stop being edits to a hardcoded dict and become
+  content on a structure — T-17 in particular should collapse to data plus a toggle. They now depend
+  on T-14 for real consumption, not for sequencing convenience. This is why T-14 is worth doing
+  first even though it ships no user-visible behaviour: it is the one change that makes the other
+  four small, and it is the same change the owner identified as gating everything else.
+  Counter-rule check per rule 85 (a refactor needs a nameable future edit it prevents): five are
+  nameable — T-15, T-16, T-17, T-21, and every user customization that today survives only until the
+  next `sc reload`.
 - **v2rayN研究 2026-08-01 (owner: 「singbox-cli 初衷是实现一个类似于非桌面版的 V2rayN；完全可以抄 V2rayN 的一些逻辑」).**
   Read 2dust/v2rayN's actual update path before filing anything. Findings, evidence-backed:
   - **Their download logic is WEAKER than what T-02 already shipped.** `DownloadFileAsync` has no
