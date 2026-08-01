@@ -12,12 +12,21 @@
 | T-02 | config-degrade-missing-rulesets | Introduce one ruleset-resource abstraction in `bin/sc` — availability-and-validity detection plus validated multi-mirror atomic fetch with per-file byte/percent download progress — and have config generation degrade from it, dropping absent rule-sets per-file with a clear user warning. | full | — | done |
 | T-03 | ruleset-mirror-fallback | ~~Multi-mirror download with validation~~ — **merged into T-02**; the mirror/validation/atomic-write logic and the availability check are one abstraction, not two. | full | — | skipped |
 | T-04 | install-error-surfacing | ~~Error surfacing + honest banner~~ — **merged into T-01**; setting a status flag and acting on it are one design, not two tasks. | full | T-01 | skipped |
-| T-05 | sc-doctor | Add a `sc doctor` command that prints binary+version, config syntax check, per-`.srs` presence and size, service active/enabled state, `sb-tun` interface and address, Clash API reachability, and current egress IP in one screen. | full | T-02 | pending |
+| T-05 | sc-doctor | Add a `sc doctor` command that prints binary+version, config syntax check, per-`.srs` presence and size, service active/enabled state, `sb-tun` interface and address, Clash API reachability, and current egress IP in one screen. | full | T-02 | done |
+| T-12 | dns-block-aaaa-query-type | ~~AAAA suppression~~ — **merged into T-16**; it is one `query_type` entry in the same DNS block T-16 restructures, and the live hand-patch it rescues is the same change. | full | — | skipped |
 | T-06 | sc-config-show | Add `sc config --show` (with an optional `--redact` that masks node credentials) so `/etc/sing-box/config.json` can be inspected without root `grep`. | full | — | pending |
 | T-09 | fix-rules-update-execstart | Fix `systemd/sing-box-rules-update.service`, whose `ExecStart` invokes the non-existent `/usr/local/bin/proxy` so the weekly ruleset auto-update has never run at all (203/EXEC), pointing it at the installed `sc` binary. | full | — | done |
 | T-10 | ruleset-update-no-needless-restart | Stop `sc update-rules` from restarting sing-box when no rule-set actually changed, so the now-live weekly timer no longer drops every connection each Monday; prefer hot-apply over restart per the project's own convention. | full | — | done |
 | T-08 | install-binary-download-progress | Show real download progress for the sing-box binary tarball in `install.sh` step 2 by replacing `curl -fsSL` with a progress-emitting invocation, degrading to a quiet single-line notice when stderr is not a TTY. | full | — | done |
 | T-11 | install-version-query-abort | Fix `install.sh`'s sing-box version query, where `VAR=$(pipeline)` aborts at the assignment under `set -e` and so bypasses both its own error handler and `install_report()` — letting the installer exit having stated no outcome, the exact property T-01 exists to guarantee. | full | — | done |
+| T-13 | config-write-permission-hardening | Close the credential-exposure window when writing `config.json` — create the file 0600 from the start instead of `write_text` then `chmod`, apply the same to any backup it writes, and have `install.sh` verify permissions across `/etc/sing-box/` at the end. | full | — | pending |
+| T-14 | config-override-mechanism | Give the generated `config.json` a user override entry point (`override.json` or `conf.d/*.json`) deep-merged over the template, with array `$prepend`/`$append`/`$replace` so rule *position* is expressible, plus a drift warning when the user has hand-edited the generated file. | full | — | pending |
+| T-15 | proxy-urltest-group | Make the `proxy` tag always point at a `urltest` group rather than a concrete node, so a single flaky node has a failover path, and surface per-node latency from the Clash API in `sc ls`. | full | — | pending |
+| T-16 | dns-resilience | Stop a single flaky node from killing all name resolution: add a non-proxied fallback resolver, converge the 10s DNS timeout, and suppress AAAA when the host has no global IPv6 (`sc ipv6 on/off/auto`). | full | — | pending |
+| T-17 | telemetry-reject-list | Add an opt-out DNS reject list for common telemetry domains, inserted at the position the rule order requires, and extensible through the override mechanism. | full | T-14, T-16 | pending |
+| T-18 | status-egress-via-clash-api | Fix `sc status`'s egress-IP probe, which cannot work in pure-TUN mode because it assumes a local inbound that does not exist, and report a bare traceback when it fails. | full | T-15 | pending |
+| T-19 | ruleset-staleness-visibility | Make stale rule-sets loud: report each file's age in `sc status`, and make the systemd timer actually fail when updates fail instead of only printing. | full | — | pending |
+| T-20 | doctor-extended-checks | Extend `sc doctor` with the checks that need features landing after it — rule-set age, per-node latency, DNS timing, config drift, file permissions, and IPv6 consistency — each reported as a conclusion with a next step. | full | T-05, T-13, T-14, T-15, T-16 | pending |
 | T-07 | restricted-network-regression-test | Add a repeatable restricted-network regression test that blocks `github.com` / `raw.githubusercontent.com` in a container or VM, runs the full one-liner install, and asserts the five expected end-state conditions from the failure report. | full | T-01, T-02 | pending |
 
 ## Notes (optional)
@@ -50,6 +59,53 @@
     code (Bash/curl vs Python/urllib) but must share the visual language.
   - Note the existing ruleset code already writes to `.tmp` then `.replace()` — T-02's atomic-write
     requirement is partly satisfied already; keep it rather than reinventing it.
+- **Ingest 2026-08-01 — second field report (two production hosts, Ubuntu 24.04, pure TUN).**
+  Ten numbered items. Triaged against work already delivered in this batch **before** filing, so the
+  pool records what is genuinely outstanding rather than re-litigating shipped work:
+  - **#2 (install.sh `set -e` / step 7) — ALREADY DELIVERED as T-01** (commit 493eb6a). The report's
+    ask ("区分完全成功 / 部分成功 / 失败三种状态") is exactly what `PHASE_RULESETS`/`PHASE_CONFIG`/
+    `PHASE_SERVICE` + `install_report()` now produce. No row.
+  - **#3's mirror half — ALREADY DELIVERED as T-02** (commit ab4e4a4). `RULESET_BASES` already lists
+    cdn.jsdelivr → testingcf.jsdelivr → ghfast → raw.githubusercontent, i.e. jsDelivr ahead of GitHub
+    exactly as recommended, with per-source fallback and SRS validation. **The remainder is real and
+    is T-19**: staleness reporting and making the timer fail loudly rather than printing.
+  - **#6's root cause as stated is WRONG for current code, but the observation is real.** The report
+    says the tool never sets permissions when regenerating; in fact `bin/sc` has called
+    `os.chmod(CFG_PATH, 0o600)` immediately after writing since commit 41ffd08, there is exactly one
+    write path, and the live file here is `-rw-------`. What survives scrutiny is a narrower defect:
+    `write_text` creates the file at umask (0644) and only *then* chmods, leaving a window in which a
+    credentials file is world-readable — plus backups get no chmod at all. T-13 is scoped to that,
+    not to the reported cause. The 0644 file the reporter saw most likely predates 41ffd08 on that
+    host; T-19's permission sweep in `install.sh` would repair such a host.
+  - **#7 (AAAA) absorbed T-12 into T-16.** It is one `query_type` entry inside the DNS block T-16
+    restructures; shipping it alone then restructuring around it is the seam
+    `.harness/rules/85-design-discipline.md` forbids. The report's measurement is strong evidence:
+    10.0s timeout → 0.016s empty answer on both hosts.
+  - **#5 + #7 merged as T-16.** Both are "a flaky node must not hang name resolution", both edit the
+    same `dns.servers`/`dns.rules` region, and the report itself notes rule *order* carries meaning
+    (reject must sit after `clash_mode` and before the routing rules). Three separate rows would each
+    have to reason about the others' insertion points.
+  - **#8 (`sc doctor`) is in flight as T-05**, which was briefed before this report arrived. The
+    report's richer check list is **T-20**, not a T-05 rollback: rule-set age, node latency, config
+    drift, permission audit and IPv6 consistency each depend on features that do not exist yet
+    (T-19, T-15, T-14, T-13, T-16 respectively). That is a real dependency, not a patch-then-patch.
+  - **#1, #4, #9, #10** are new: T-15, T-14, T-18, T-17.
+  - Execution order follows the report's own staging, which is sound: security and the blocking
+    prerequisite first (T-13, T-14), then stability (T-15, T-16, T-19), then experience (T-17, T-18,
+    T-20). The report is right that **T-14 gates everything** — until a user can persist their own
+    configuration, every workaround dies at the next `sc reload`, and their only recourse is editing
+    the shipped script, which forfeits the upgrade path.
+  - Two through-lines the report asks to be carried into every row, both adopted: **failures must be
+    loud**, and **a generated artifact must leave room for the user**.
+- **T-12 filed 2026-08-01 — a live hand-patch is about to be silently destroyed.** At 10:06 a
+  separate terminal (`pts/4`, `PWD=/home/alan/Programs/NFBY_CMS`) ran
+  `sed -i 's/"query_type": \[64, 65\]/"query_type": [28, 64, 65]/' /usr/local/bin/sc`, adding AAAA
+  to the DNS predefined-NOERROR list on the INSTALLED binary only. The repo's `bin/sc` still reads
+  `[64, 65]`. `install.sh` is idempotent and rewrites `/usr/local/bin/sc`, so the next install or
+  upgrade discards the change with no warning. A `/usr/local/bin/sc.bak-2026-08-01-1006` backup was
+  taken by the same session. The change itself needs a real decision (blocking AAAA suppresses IPv6
+  resolution globally — deliberate for some setups, a regression for others), so it gets a pipeline
+  rather than a copy-paste.
 - **T-01 blocked 2026-07-31 by an infrastructure outage, not by the task.** The safety classifier
   (`claude-sonnet-5[1m]`) went unavailable, so the `Agent` tool could not dispatch stage 5. Stages
   1-4 are complete and mutually consistent (analyst rev. 2, architect rev. 3, gate APPROVED with

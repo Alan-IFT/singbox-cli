@@ -182,3 +182,37 @@
   (`ruleCount`, `vehicleType`), confirming T-02's E-7 that the API switches proxy and mode only.
 - **Origin:** T-10 `ruleset-update-no-needless-restart` §10 D-1, closed with evidence in
   `docs/features/ruleset-update-no-needless-restart/02_SOLUTION_DESIGN.md` §2.
+
+## doctor-exit-status-always-zero
+- **Decision:** declined (`sc doctor` exits `0` = all OK, `1` = at least one PROBLEM, `2` = no PROBLEM
+  but at least one UNKNOWN).
+- **Why:** "a diagnostic should never surprise a shell" avoids a small, bounded surprise — a `set -e`
+  script deliberately running `sc doctor` — at the cost of the command's entire automated use (health
+  check, pre-flight step, triage one-liner). The project already derives status from findings:
+  `sc update-rules` exits non-zero when rule-sets failed (`bin/sc:1255-1256`) and T-01 made
+  `install.sh` derive its status from recorded phase state. The **two-value** 0/non-zero variant was
+  also declined: it must fold UNKNOWN into one of the two values and both foldings lie — folding into
+  `0` calls a host healthy when no init system was detected (BC-8) or no Clash port is recorded
+  (BC-11); folding into `1` calls it broken on evidence that does not exist. FR-8 already forces three
+  outcome classes on the report; the status just does not throw the third one away. Accepted
+  side-effect: argparse's own usage error also exits `2`, distinguishable because a usage error prints
+  no report.
+- **Origin:** T-05 `sc-doctor` — the owner assigned the choice to stage 2; stage 1 §8 R-7 stated both
+  candidates without imposing one. Decided in `docs/features/sc-doctor/02_SOLUTION_DESIGN.md` §3.1.
+
+## shared-singbox-check-wrapper
+- **Decision:** declined (`sc doctor`'s S3 invokes `sing-box check` directly; `generate_config()`'s
+  invocation at `bin/sc:921-926` is left exactly as it is).
+- **Why:** three reasons, in order. (1) The judgment "is this config valid" is formed by the external
+  binary, not by `bin/sc` — what a wrapper would share is a four-line invocation, i.e. a pass-through
+  that fails the deletion test: delete it and no complexity reappears at either call site. (2) The two
+  call sites genuinely differ — `generate_config()` checks a file it has just written, as part of an
+  apply flow, and routes the message into a stderr warning; `doctor` checks a file it must never write
+  and must classify the outcome and truncate the message per BC-7. (3) `generate_config()`'s
+  invocation is one of the three pre-existing `capture_output=` sites (3.7+ on a 3.6+ floor) that are
+  filed as their own pool row; a shared wrapper would either drag that fix into T-05's diff or force
+  T-05 to add a fourth occurrence, and both are forbidden by its scope. The consistent principle: T-05
+  consolidates shared **data** (`TUN_IFACE`, `_egress_ip()`'s endpoint, `_saved_clash_port()`'s
+  settings key) and does not wrap shared **procedure**.
+- **Origin:** T-05 `sc-doctor`, `docs/features/sc-doctor/02_SOLUTION_DESIGN.md` §3.5, against rule 85's
+  "duplicated judgment" test.

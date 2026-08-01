@@ -97,8 +97,39 @@ sc mode direct         # everything direct
 sc on                  # start + enable on boot
 sc off                 # stop + disable on boot
 sc status              # service status, TUN interface, current node, egress IP
+sc doctor              # one-pass read-only health report (see below)
 sc log -f              # follow logs in real time
 ```
+
+### Diagnose the install
+
+```bash
+sc doctor
+```
+
+One pass, one screen, seven facts — printed in **causal order**, so every cause appears above the effects it can produce:
+
+| # | Section | What it reports |
+|---|---|---|
+| 1 | sing-box binary | the resolved path of the binary and its version |
+| 2 | Rule-sets | one row per `.srs`: usable / missing / not a rule-set file / too small / unreadable, plus the byte count from that same read |
+| 3 | Configuration | whether `config.json` exists, and what `sing-box check` says about it |
+| 4 | Service | running now, and registered to start at boot — two separate facts |
+| 5 | TUN interface | whether `sb-tun` exists, and its addresses |
+| 6 | Clash API | the port recorded in `settings.json`, and whether it answers |
+| 7 | Egress IP | the observed public address (queried even when the service is down) |
+
+Every row is marked `[OK]`, `[PROBLEM]` or `[UNKNOWN]` (`[正常]` / `[异常]` / `[未知]` under `sc lang zh`), so `sc doctor | grep '^\[PROBLEM\]'` lists exactly what is wrong. `[UNKNOWN]` means the check could not run at all — a missing tool, a permission denial — never "the thing being checked is broken". One failing check never ends the run: all seven sections are always printed.
+
+**`sc doctor` changes nothing.** It writes no config, downloads nothing, and never starts, stops, restarts, enables or repairs anything. Unlike every other subcommand it does not even create `/etc/sing-box` or persist a Clash API port on first run — on a broken or fresh machine the emptiness of those paths is often the diagnosis, and a diagnostic must not destroy the evidence it was run to collect. It is safe to run repeatedly, concurrently, and as the very first thing after a failure.
+
+Exit status:
+
+| Exit | Meaning |
+|---|---|
+| `0` | every section OK |
+| `1` | at least one `[PROBLEM]` — any section: a missing binary, an unusable rule-set, a failed config check, a stopped or non-autostarting service, a missing TUN device, an unanswered Clash API port, a failed egress query |
+| `2` | no `[PROBLEM]`, but at least one `[UNKNOWN]` — a check could not run: no sing-box binary to check the config with, no init system detected, `ip` missing, or no Clash API port recorded in `settings.json` |
 
 ### Ruleset update
 

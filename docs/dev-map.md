@@ -27,7 +27,7 @@ key-parity check (T-11); B.3 (lint) is still `SKIP`.
 
 | Section | What lives there |
 |---|---|
-| `# Paths` | `CFG_DIR` / `CFG_PATH` / `NODES_PATH` / `SETTINGS_PATH` / `RULES_DIR`, `SB_BIN`, Clash-API port range. Only ever referenced *inside* function bodies, so a test harness can repoint them after import. |
+| `# Paths` | `CFG_DIR` / `CFG_PATH` / `NODES_PATH` / `SETTINGS_PATH` / `RULES_DIR`, `SB_BIN`, `TUN_IFACE`, Clash-API port range. Only ever referenced *inside* function bodies, so a test harness can repoint them after import. |
 | `# Rule-set constants` | `SRS_MAGIC`, `SRS_MIN_BYTES`, `RULESET_FILES` (filename → path relative to a base), `RULESET_BASES` (ordered mirrors), `RULE_ANSWER_KEYS`. |
 | `# Auto-elevate` | `os.execvp("sudo", ...)` at **import time** when not root. A harness must neutralise this line to load the file as a module. |
 | `# i18n` | `TRANSLATIONS` (English source string → `zh`) and `t()`. |
@@ -35,21 +35,25 @@ key-parity check (T-11); B.3 (lint) is still `SKIP`.
 | `# Share-URL parsers` | `parse_vless / vmess / trojan / ss / hy2 / tuic` → dispatched by `parse_share_url`. |
 | `# Rule-sets` | The usability model — see "Reusable utilities" below. |
 | `# Config generation` | `generate_config()` builds the whole `config.json` literal, filters it by the usable rule-set set, writes 0600, then runs `sing-box check`. Also holds the two apply helpers `restart_service()` and `reload_or_restart()`. |
-| `# Clash API` | `clash_api()`, `is_running()`. |
-| `# Commands` | One `cmd_<name>(args)` per subcommand. |
+| `# Clash API` | `clash_api(method, path, data=None, port=None)`, `is_running()`. `port=None` means "the port `main()` resolved"; only `sc doctor` passes one explicitly. |
+| `# Commands` | One `cmd_<name>(args)` per subcommand. Includes the `# doctor` block: class constants + `_plain()` / `_doctor_run()` / `_doctor_print()`, seven probes returning rows as data, the `DOCTOR_SECTIONS` print order, and `cmd_doctor()` (driver: isolation, streaming, exit status). |
 | `HELP_EN` / `HELP_ZH` | Two hand-aligned help blocks; descriptions start at column 30, sub-options at column 32. |
-| `main()` | argparse subparsers + a `handlers` dict. Assigns `LANG` and `CLASH_PORT` **after** import. |
+| `main()` | argparse subparsers + a `handlers` dict. **Parses arguments first, then initialises**: `doctor` is the one command that takes the read-only arm (`LANG = _load_lang()` only) and skips `_init_files()` / `_resolve_clash_port()`; every other command — present and future — takes the `else` arm unchanged. Assigns `LANG` and `CLASH_PORT` **after** import. |
 
 ## Reusable utilities
 
 | Need | Existing | File | Notes |
 |---|---|---|---|
 | "Is this rule-set usable?" | `srs_reject_reason(head, size)` | `bin/sc` `# Rule-sets` | The single definition (SRS magic + size floor). Three adapters: `ruleset_state(path)` for a file, `_fetch_to_temp()` for bytes off a socket, `_status_text()` for the screen. Never form a second opinion. |
-| One file's on-disk facts | `ruleset_state(path)` → `(status, digest)` | same | The ONE reader of a `.srs` on disk, from one chunked read. `digest` is sha256 of the full content, or `None` — and `digest is None` ⟺ status ∈ `absent / unreadable` ⟺ no complete read (a readable *empty* file gets a real digest). `ruleset_status(path)` is its status-only view; it has no in-tree caller today and is kept as the named per-file adapter. |
-| Per-file rule-set state | `ruleset_report()` → `[(tag, filename, status)]`, `usable_tags(report)` | same | Pure query: no network, no service, no config, writes nothing. `status` is a flat `str`: `usable / absent / bad-magic / too-small / unreadable`. Built as `_status_view(ruleset_states())`; `ruleset_states()` is the same list with the digest appended (4-tuples). |
+| One file's on-disk facts | `ruleset_state(path)` → `(status, digest, size)` | same | The ONE reader of a `.srs` on disk, from one chunked read. `digest` is sha256 of the full content and `size` is that read's real byte count (**never `st_size`**), or both `None` — and `size is None` ⟺ `digest is None` ⟺ status ∈ `absent / unreadable` ⟺ no complete read (a readable *empty* file gets a real digest and a real `0`). `sc doctor` prints the size that decided the status, so its report cannot contradict itself. `ruleset_status(path)` is its status-only view; it has no in-tree caller today and is kept as the named per-file adapter. |
+| Per-file rule-set state | `ruleset_report()` → `[(tag, filename, status)]`, `usable_tags(report)` | same | Pure query: no network, no service, no config, writes nothing. `status` is a flat `str`: `usable / absent / bad-magic / too-small / unreadable`. Built as `_status_view(ruleset_states())`; `ruleset_states()` is the same list with the digest **and size** appended (5-tuples). `_status_view()` is the shield: it is where a widening of the snapshot tuple stops, which is why `generate_config()` / `usable_tags()` / `_warn_degraded()` destructure 3-tuples and need no edit when it widens. |
 | "Did any rule-set's content change?" | `changed_usable_tags(before, after)` | same | Both args are `ruleset_states()` snapshots; returns the sorted tags that are usable *after* and whose bytes really differ. Paired by tag, never by list index. This — not "the download succeeded" — is what `sc update-rules` restarts on. |
 | Drop dangling rule-set refs | `_filter_rules(rules, usable)` | same | Called for **both** `dns.rules` and `route.rules` with the same set. Do not add an array-name parameter. |
 | Validated multi-mirror fetch | `_ruleset_bases()`, `_temp_path()`, `_clear_stale_temps()`, `_fetch_to_temp()` | same | Chunked read, progress on a TTY only, atomic temp-then-replace, per-run dead-base marking. |
+| This project's TUN device name | `TUN_IFACE` | `bin/sc` `# Paths` | The single definition. `generate_config()`'s `interface_name`, `sc status`'s `ip addr show` and `sc doctor`'s S5 all consume it; renaming the device stays one edit. |
+| The public egress address | `_egress_ip()` | `bin/sc` (next to `_resolve_clash_port`) | The single query: endpoint literal + the 8 s timeout + decode, in one place. Raises on failure; **byte-faithful on purpose** — `sc status` prints its value verbatim, so scrubbing belongs at the *caller* (`_plain()`), never inside it. `sc status` and `sc doctor` can therefore never report different addresses. |
+| The persisted Clash API port | `_saved_clash_port()` | same | The single **reader** of `settings["clash_api_port"]`: reads, never probes, never writes. `_resolve_clash_port()` is the single **writer** and calls it first. `sc doctor` uses only the reader — probing would return a port free by construction and then report it unreachable. |
+| Foreign text made output-safe | `_plain(text)` | `bin/sc` `# doctor` | CR + ESC removed, trailing whitespace stripped. Applied at the call sites to every tool's output and every `{e}`, which is what makes "a redirected report contains no `\r` and no ESC" a property of the code. |
 | Bilingual output | `t(s, **kwargs)` + `TRANSLATIONS` | `bin/sc` `# i18n` | `TRANSLATIONS` has **no `en` table** — `t()` returns the key itself in English. |
 | Warning to stderr | `sys.stderr.write("⚠️  " + t(...) + "\n")` | `generate_config`, `_warn_degraded` | The `⚠️` prefix stays outside `t()`. |
 | Apply a config change | `generate_config()` → `restart_service()` / `reload_or_restart()` / `clash_api()` | `bin/sc` | Node and mode switches go through the Clash API; structural changes need a restart. |
@@ -84,3 +88,11 @@ key-parity check (T-11); B.3 (lint) is still `SKIP`.
 - Don't split `bin/sc` into modules or add a config format for something a constant can express.
 - Don't let a test harness import `bin/sc` without neutralising the auto-elevate line and setting
   `SYSTEMD = OPENRC = False` — otherwise it restarts the developer's real sing-box service.
+  (Neutralise the *sudo re-exec* specifically: `cmd_uninstall` legitimately calls `os.execvp("bash", …)`,
+  so a blanket "no `os.execvp`" guard refuses to load a healthy file.)
+- Don't give `sc doctor` a second opinion about anything the codebase already decides — it consumes
+  `ruleset_states()` / `_status_text()` / `is_running()` / `clash_api()` / `_saved_clash_port()` /
+  `_egress_ip()` / `SYSTEMD` / `OPENRC`, and it must stay that way.
+- Don't add a per-subcommand "read-only" flag or a `READ_ONLY_COMMANDS` set. `main()` names the one
+  read-only command positively, so a *new* command inherits today's initialising behaviour by
+  default; a flag each subcommand must set inverts that failure direction.

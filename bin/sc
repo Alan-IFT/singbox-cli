@@ -22,6 +22,11 @@ SETTINGS_PATH = CFG_DIR / "settings.json"
 RULES_DIR = CFG_DIR / "rules"
 LIB_DIR = Path("/usr/local/lib/singbox-cli")
 SERVICE = "sing-box"
+# THE name of this project's TUN device. One definition, three consumers:
+# generate_config()'s inbound, `sc status`'s `ip addr show`, and `sc doctor`'s S5.
+# Renaming the device must stay a one-line edit — a probe left on the old name would
+# report a false PROBLEM on a perfectly healthy host.
+TUN_IFACE = "sb-tun"
 # The Clash API only ever talks to `sc` itself over loopback, so the exact port
 # is irrelevant — we auto-probe a free one in a high range to avoid clashing
 # with other local services (xray / clash / cockpit all default to 9090). Once
@@ -162,6 +167,54 @@ TRANSLATIONS = {
             "未配置规则集自动更新。运行 `sc update-interval daily|weekly|monthly` 进行设置。",
         "OpenRC only supports daily / weekly / monthly intervals. Use systemd for custom OnCalendar expressions.":
             "OpenRC 仅支持 daily / weekly / monthly 频率，自定义 OnCalendar 表达式需要 systemd。",
+        # doctor — outcome classes, section labels, row values. None of these may contain
+        # 失败, which is the load-bearing grep literal of "failed: {e}" above.
+        "OK": "正常",
+        "PROBLEM": "异常",
+        "UNKNOWN": "未知",
+        "sing-box binary": "sing-box 可执行文件",
+        "sing-box version": "sing-box 版本",
+        "rule-sets": "规则集",
+        "configuration": "配置文件",
+        "sing-box check": "sing-box 配置检查",
+        "service": "服务",
+        "boot autostart": "开机自启",
+        "TUN interface": "TUN 接口",
+        "TUN addresses": "TUN 地址",
+        # Untranslated on purpose (the product name is the label), but present so the
+        # bilingual enumeration covers every key doctor emits.
+        "Clash API": "Clash API",
+        "Clash API responding": "Clash API 是否响应",
+        "egress IP": "出口 IP",
+        "usable": "可用",
+        "not found on PATH": "未在 PATH 中找到",
+        "no sing-box binary on PATH": "PATH 中没有 sing-box 可执行文件",
+        "the binary produced no version line (exit {code})": "该可执行文件未输出版本信息（退出码 {code}）",
+        "{n}/{total} usable": "{n}/{total} 个可用",
+        "{reason}, {size} bytes": "{reason}，{size} 字节",
+        "{reason}, size unavailable": "{reason}，大小未知",
+        "no file at {path}": "文件不存在：{path}",
+        "cannot read {path}: {e}": "无法读取 {path}：{e}",
+        "no error reported": "未报告错误",
+        "the checker reported an error:": "检查器报告了错误：",
+        "the checker reported an error, no message (exit {code})":
+            "检查器报告了错误，未输出信息（退出码 {code}）",
+        "... {n} more line(s) not shown": "……另有 {n} 行未显示",
+        "running (via {init})": "运行中（由 {init} 报告）",
+        "not running (via {init})": "未运行（由 {init} 报告）",
+        "no init system detected (neither systemd nor OpenRC)":
+            "未检测到 init 系统（既没有 systemd 也没有 OpenRC）",
+        "enabled": "已启用",
+        "not enabled ({state})": "未启用（{state}）",
+        "not in the default runlevel": "不在 default 运行级别",
+        "cannot determine: {e}": "无法确定：{e}",
+        "{iface} does not exist": "{iface} 不存在",
+        "cannot query: {e}": "无法查询：{e}",
+        "no port recorded in settings.json": "settings.json 中没有记录端口",
+        "yes": "是",
+        "no answer within the 3s timeout": "3 秒超时内无响应",
+        "not probed — no port recorded": "未探测 —— 没有记录端口",
+        "this check could not run: {e}": "该项检查无法执行：{e}",
     },
 }
 
@@ -188,6 +241,22 @@ def _free_port(base, span):
     return base
 
 
+def _saved_clash_port():
+    """The Clash API port recorded in settings.json, or None if none is recorded.
+
+    THE single reader of settings["clash_api_port"]: it reads, never probes and never
+    writes. `sc doctor` consumes exactly this — probing would return a port that is free
+    *by construction* and then report it unreachable, which is a tautology, and
+    persisting it would make a diagnostic invent the state it is diagnosing.
+    """
+    try:
+        settings = load_settings()
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+    port = settings.get("clash_api_port")
+    return port if isinstance(port, int) and 1 <= port <= 65535 else None
+
+
 def _resolve_clash_port():
     """Clash API port: auto-probed once, then persisted in settings.json.
 
@@ -196,20 +265,35 @@ def _resolve_clash_port():
     value verbatim means the port never flaps across restarts — even though our
     own sing-box then holds it.
     """
+    port = _saved_clash_port()
+    if port is not None:
+        return port
+    port = _free_port(CLASH_PORT_BASE, CLASH_PORT_SPAN)
+    # Re-load and MERGE. save_settings() rewrites the whole file, so persisting a fresh
+    # single-key dict here would erase lang / mode / default_tun / update_interval on
+    # every install that predates the port auto-probe — the exact hosts this branch runs on.
     try:
         settings = load_settings()
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         settings = {}
-    port = settings.get("clash_api_port")
-    if isinstance(port, int) and 1 <= port <= 65535:
-        return port
-    port = _free_port(CLASH_PORT_BASE, CLASH_PORT_SPAN)
     settings["clash_api_port"] = port
     try:
         save_settings(settings)
     except OSError:
         pass
     return port
+
+
+def _egress_ip():
+    """The public egress address as text, from THE one endpoint sc queries.
+
+    Raises on failure — the caller decides how to render it. The endpoint literal and the
+    8 s socket timeout live here and nowhere else, so `sc status` and `sc doctor` can never
+    report different egress addresses on the same machine. Deliberately byte-faithful: the
+    value is printed verbatim by `sc status`, so no scrubbing happens in here.
+    """
+    with urllib.request.urlopen("https://api.ipify.org", timeout=8) as resp:
+        return resp.read().decode()
 
 
 def t(s, **kwargs):
@@ -514,25 +598,30 @@ def srs_reject_reason(head, size):
 
 
 def ruleset_state(path):
-    """Two facts about one rule-set file, from ONE read: (status, digest).
+    """Three facts about one rule-set file, from ONE read: (status, digest, size).
 
     status -- exactly one of "usable" | "absent" | "bad-magic" | "too-small" | "unreadable",
               decided by srs_reject_reason() and by nothing else.
     digest -- sha256 hex of the file's FULL content, or None.
+    size   -- the byte count of that same read, or None.
 
     DIGEST CONTRACT (binding — changed_usable_tags() is only correct because of it):
 
-        digest is None  <=>  no complete read happened  <=>  status in {"absent", "unreadable"}
+        size is None <=> digest is None  <=>  no complete read happened
+                                         <=>  status in {"absent", "unreadable"}
 
-    So a file read to EOF without error ALWAYS carries a real digest, including a readable
-    EMPTY file: ("too-small", sha256(b"").hexdigest()), because zero bytes *were* read
-    successfully. An OSError at any point — before or after N bytes — yields
-    ("unreadable", None) and NEVER a partial digest, which would be a content claim about
-    bytes that were never fully read. None is therefore not a content value: two Nones are
-    NOT "the same content", and changed_usable_tags() relies on that.
+    So a file read to EOF without error ALWAYS carries a real digest AND a real size,
+    including a readable EMPTY file: ("too-small", sha256(b"").hexdigest(), 0), because
+    zero bytes *were* read successfully. An OSError at any point — before or after N bytes
+    — yields ("unreadable", None, None) and NEVER a partial digest or a partial size, which
+    would be a content claim about bytes that were never fully read. None is therefore not
+    a content value: two Nones are NOT "the same content", and changed_usable_tags() relies
+    on that.
 
     Never raises, never writes. Reads in 65536-byte chunks, so memory does not scale with
-    file size, and `size` is the real byte count rather than st_size.
+    file size, and `size` is the real byte count rather than st_size — which is why it is
+    returned rather than discarded: `sc doctor` prints the size that the very same read
+    decided the status from, so the report cannot contradict itself.
     """
     head = b""
     size = 0
@@ -540,9 +629,9 @@ def ruleset_state(path):
     try:
         if not path.exists():
             # A dangling symlink does not exist, but it is broken rather than absent.
-            return ("unreadable", None) if path.is_symlink() else ("absent", None)
+            return ("unreadable", None, None) if path.is_symlink() else ("absent", None, None)
         if not path.is_file():
-            return ("unreadable", None)     # a directory, a fifo, ...
+            return ("unreadable", None, None)   # a directory, a fifo, ...
         with path.open("rb") as fh:
             while True:
                 chunk = fh.read(65536)      # same chunk size as _fetch_to_temp
@@ -554,8 +643,9 @@ def ruleset_state(path):
                     # Accumulate: a first read shorter than the magic is legal.
                     head = (head + chunk)[:len(SRS_MAGIC)]
     except OSError:
-        return ("unreadable", None)         # a partial digest is never returned
-    return (srs_reject_reason(head, size) or "usable", digest.hexdigest())
+        # a partial digest and a partial size are never returned
+        return ("unreadable", None, None)
+    return (srs_reject_reason(head, size) or "usable", digest.hexdigest(), size)
 
 
 def ruleset_status(path):
@@ -573,27 +663,29 @@ def ruleset_status(path):
 
 
 def ruleset_states():
-    """[(tag, filename, status, digest), ...] for every rule-set, in RULESET_FILES order.
+    """[(tag, filename, status, digest, size), ...] per rule-set, in RULESET_FILES order.
 
     THE snapshot: cmd_update_rules takes exactly one before the downloads and one after
     them, and answers both "which rule-sets became usable" and "whose bytes really changed"
-    from the same bytes. tag is the filename without ".srs" — the exact tag the config uses.
+    from the same bytes; `sc doctor` takes one and answers "what is on disk right now",
+    size included. tag is the filename without ".srs" — the exact tag the config uses.
     Pure query: no network, no service, no config; creates, modifies and deletes nothing.
     """
     states = []
     for fname, _relpath in RULESET_FILES:
         tag = fname[:-4] if fname.endswith(".srs") else fname
-        status, digest = ruleset_state(RULES_DIR / fname)
-        states.append((tag, fname, status, digest))
+        status, digest, size = ruleset_state(RULES_DIR / fname)
+        states.append((tag, fname, status, digest, size))
     return states
 
 
 def _status_view(states):
     """[(tag, filename, status), ...] projection of a ruleset_states() result.
 
-    generate_config() and usable_tags() destructure 3-tuples; this keeps both untouched.
+    generate_config() and usable_tags() destructure 3-tuples; this keeps both untouched,
+    and it is where a widening of the snapshot tuple stops.
     """
-    return [(tag, fname, status) for tag, fname, status, _digest in states]
+    return [(tag, fname, status) for tag, fname, status, _digest, _size in states]
 
 
 def ruleset_report():
@@ -620,9 +712,9 @@ def changed_usable_tags(before, after):
     re-read a file it cannot parse — the start-up failure the degradation work removed.
     Whatever we restart for, we restart only for a file sing-box will actually load.
     """
-    old = dict((tag, digest) for tag, _fname, _status, digest in before)
+    old = dict((tag, digest) for tag, _fname, _status, digest, _size in before)
     changed = []
-    for tag, _fname, status, digest in after:
+    for tag, _fname, status, digest, _size in after:
         if status != "usable":
             continue                    # a loss is not a change
         old_digest = old.get(tag)       # a tag absent from `before` reads as None
@@ -642,9 +734,15 @@ def usable_tags(report):
 
 
 def _status_text(status):
-    """Bilingual phrase for a non-usable status. Must stay a function: LANG is assigned
-    in main() after import, so a module-level dict of t() values would freeze English."""
+    """Bilingual phrase for a rule-set status. Must stay a function: LANG is assigned
+    in main() after import, so a module-level dict of t() values would freeze English.
+
+    "usable" is here for `sc doctor`, which renders healthy rows too; the degradation
+    warning and its callers only ever pass non-usable statuses, so their output is
+    unchanged. This is the one status vocabulary — doctor adds no second one.
+    """
     return {
+        "usable": t("usable"),
         "absent": t("missing"),
         "bad-magic": t("not a rule-set file"),
         "too-small": t("file too small"),
@@ -870,7 +968,7 @@ def generate_config():
             "independent_cache": True,
         },
         "inbounds": [
-            {"type": "tun", "tag": "tun-in", "interface_name": "sb-tun",
+            {"type": "tun", "tag": "tun-in", "interface_name": TUN_IFACE,
              "address": ["172.19.0.1/30"], "mtu": 9000,
              "auto_route": True, "strict_route": True, "stack": "gvisor"},
         ],
@@ -942,8 +1040,11 @@ def reload_or_restart():
 
 # ============ Clash API ============
 
-def clash_api(method, path, data=None):
-    url = f"http://127.0.0.1:{CLASH_PORT}" + path
+def clash_api(method, path, data=None, port=None):
+    # port=None keeps every existing call site on the port main() resolved; `sc doctor`
+    # passes the persisted port explicitly, because it never resolves (and so never
+    # persists) one of its own.
+    url = f"http://127.0.0.1:{port or CLASH_PORT}" + path
     body = json.dumps(data).encode() if data is not None else None
     req = urllib.request.Request(url, data=body, method=method)
     if body:
@@ -1096,7 +1197,7 @@ def cmd_status(args):
     elif OPENRC:
         subprocess.run(["rc-service", SERVICE, "status"])
     print("\n" + t("=== TUN interface ==="))
-    subprocess.run(["ip", "-br", "addr", "show", "sb-tun"])
+    subprocess.run(["ip", "-br", "addr", "show", TUN_IFACE])
     if is_running():
         nodes_data = load_nodes()
         print("\n" + t("=== Current node ==="))
@@ -1108,10 +1209,339 @@ def cmd_status(args):
         print(f"127.0.0.1:{CLASH_PORT}")
         print("\n" + t("=== Egress IP ==="))
         try:
-            with urllib.request.urlopen("https://api.ipify.org", timeout=8) as resp:
-                print(resp.read().decode())
+            print(_egress_ip())
         except Exception as e:
             print(t("(error: {e})", e=e))
+
+
+# ============ doctor ============
+# One pass, one screen, seven facts, in CAUSAL order: no section is printed before a
+# section whose failure would explain it (binary and rule-sets above the config check,
+# the config check above the service, the service above TUN / Clash API, those above
+# egress). Nothing here forms a second opinion — every fact comes from the function that
+# already owns that judgment.
+#
+# READ-ONLY, absolutely. `doctor` runs when the machine is already broken, so it must not
+# destroy the evidence: it writes no file, touches no service, and main() keeps it off
+# _init_files() / _resolve_clash_port(), the two writers on the shared start-up path.
+
+DOCTOR_OK, DOCTOR_UNKNOWN, DOCTOR_PROBLEM = 0, 1, 2     # ordered: OK < UNKNOWN < PROBLEM
+# Values are translation KEYS, resolved at print time — LANG is assigned in main(), after
+# import, so a pre-rendered table would freeze English (same reason as _status_text()).
+DOCTOR_MARK = {DOCTOR_OK: "OK", DOCTOR_UNKNOWN: "UNKNOWN", DOCTOR_PROBLEM: "PROBLEM"}
+DOCTOR_EXIT = {DOCTOR_OK: 0, DOCTOR_UNKNOWN: 2, DOCTOR_PROBLEM: 1}
+DOCTOR_MSG_LINES = 5        # at most this many verbatim lines of a checker message
+
+
+def _plain(text):
+    """Foreign text (a tool's output, an exception message) made safe for the non-TTY
+    output contract: CR and ESC removed, trailing whitespace stripped. Never abridges.
+
+    Everything doctor prints that it did not write itself goes through here, so "no \\r and
+    no ESC in a redirected report" is a property of this code rather than a hope about
+    other programs' colour detection.
+
+    A complete CSI sequence -- ESC "[" <params 0x30-0x3F> <intermediates 0x20-0x2F>
+    <final 0x40-0x7E> -- is removed WHOLE, because sing-box colours its output even into a
+    pipe: `sing-box check` on a config with a missing rule-set emits, measured on 1.13.15
+    with stdout=PIPE, b'\\x1b[31mFATAL\\x1b[0m[0000] initialize router: ...'. Dropping the
+    ESC byte alone left the residue "[31mFATAL[0m" on the one row this report leans on.
+    Only a COMPLETE sequence goes, so no real text can be eaten -- the "[0000]" above is
+    logrus' elapsed-time field, not a sequence, and it survives. Other escape forms (OSC,
+    charset selection) keep the older ESC-only behaviour: none has been observed from
+    these tools and each needs its own terminator grammar. Scanned by hand, not with `re`,
+    to keep the fix inside this function; `re` is still not imported by bin/sc.
+    """
+    text = text.replace("\r", "")
+    if "\x1b" not in text:
+        return text.rstrip()            # the common path, byte-for-byte as before
+    out = []
+    i = 0
+    n = len(text)
+    while True:
+        j = text.find("\x1b", i)
+        if j < 0:
+            out.append(text[i:])
+            break
+        out.append(text[i:j])
+        k = j + 1
+        if text[k:k + 1] == "[":
+            k += 1
+            while k < n and "\x30" <= text[k] <= "\x3f":
+                k += 1
+            while k < n and "\x20" <= text[k] <= "\x2f":
+                k += 1
+            if k < n and "\x40" <= text[k] <= "\x7e":
+                i = k + 1               # complete CSI: drop it entirely
+                continue
+        i = j + 1                       # not a complete CSI: drop the ESC byte only
+    return "".join(out).rstrip()
+
+
+def _doctor_run(cmd):
+    """(returncode, merged stdout+stderr) of one read-only probe command.
+
+    3.6-safe deliberately: stdout=PIPE + stderr=STDOUT + .decode(), never the 3.7-only
+    convenience keywords. Merging stderr keeps a tool's diagnostics inside the report
+    instead of leaking around it. OSError (a missing tool) is left to the caller, which is
+    how "the tool is not installed" becomes that section's UNKNOWN row, not a traceback.
+    """
+    r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    return r.returncode, _plain(r.stdout.decode("utf-8", "replace"))
+
+
+def _first_line(text):
+    """First non-blank line of a tool's output, or ""."""
+    for line in text.splitlines():
+        if line.strip():
+            return line
+    return ""
+
+
+def _doctor_binary():
+    """S1 — where the sing-box binary is, and what version it reports."""
+    path = shutil.which(SB_BIN)
+    if not path:
+        return [(DOCTOR_PROBLEM, "sing-box binary", t("not found on PATH")),
+                (DOCTOR_UNKNOWN, "sing-box version", t("no sing-box binary on PATH"))]
+    rows = [(DOCTOR_OK, "sing-box binary", path)]
+    try:
+        code, out = _doctor_run([SB_BIN, "version"])
+    except OSError as e:
+        rows.append((DOCTOR_UNKNOWN, "sing-box version",
+                     t("cannot determine: {e}", e=_plain(str(e)))))
+        return rows
+    line = _first_line(out)
+    if code != 0 or not line:
+        rows.append((DOCTOR_UNKNOWN, "sing-box version",
+                     t("the binary produced no version line (exit {code})", code=code)))
+    else:
+        rows.append((DOCTOR_OK, "sing-box version", line))
+    return rows
+
+
+def _doctor_rulesets():
+    """S2 — one row per rule-set: status and size from the SAME single read.
+
+    The head of the owner's failure chain, which is why it prints above the config check.
+    """
+    states = ruleset_states()
+    summary_cls = DOCTOR_OK
+    usable = 0
+    rows = []
+    for _tag, fname, status, _digest, size in states:
+        if status == "usable":
+            usable += 1
+            cls = DOCTOR_OK
+        else:
+            cls = DOCTOR_PROBLEM
+            summary_cls = DOCTOR_PROBLEM
+        reason = _status_text(status)
+        if size is None:
+            # No complete read happened, so there is no honest byte count to print.
+            value = t("{reason}, size unavailable", reason=reason)
+        else:
+            value = t("{reason}, {size} bytes", reason=reason, size=size)
+        rows.append((cls, fname, value))
+    summary = (summary_cls, "rule-sets",
+               t("{n}/{total} usable", n=usable, total=len(states)))
+    return [summary] + rows
+
+
+def _doctor_config():
+    """S3 — is there a config, and does the sing-box checker accept it?
+
+    Opens the file only to learn whether it is readable: an EACCES is "cannot read", never
+    "absent". A missing binary makes the check UNKNOWN — never "config invalid".
+    """
+    try:
+        with CFG_PATH.open("rb"):
+            pass
+    except FileNotFoundError:
+        return [(DOCTOR_PROBLEM, "configuration",
+                 t("no file at {path}", path=str(CFG_PATH)))]
+    except OSError as e:
+        return [(DOCTOR_UNKNOWN, "configuration",
+                 t("cannot read {path}: {e}", path=str(CFG_PATH), e=_plain(str(e))))]
+    rows = [(DOCTOR_OK, "configuration", str(CFG_PATH))]
+    if not shutil.which(SB_BIN):
+        rows.append((DOCTOR_UNKNOWN, "sing-box check", t("no sing-box binary on PATH")))
+        return rows
+    try:
+        code, out = _doctor_run([SB_BIN, "check", "-c", str(CFG_PATH)])
+    except OSError as e:
+        rows.append((DOCTOR_UNKNOWN, "sing-box check",
+                     t("cannot determine: {e}", e=_plain(str(e)))))
+        return rows
+    if code == 0:
+        rows.append((DOCTOR_OK, "sing-box check", t("no error reported")))
+        return rows
+    # The checker's own words, quoted whole and indented: the only rows without a marker,
+    # which is exactly what makes them recognisable as quotation.
+    lines = [line for line in out.splitlines() if line.strip()]
+    if not lines:
+        # A checker that fails without saying anything still owes the reader a fact, and
+        # its exit code is the only one this path has. Never print a header that promises
+        # detail and then nothing — least of all on the broken host doctor exists for.
+        rows.append((DOCTOR_PROBLEM, "sing-box check",
+                     t("the checker reported an error, no message (exit {code})",
+                       code=code)))
+        return rows
+    rows.append((DOCTOR_PROBLEM, "sing-box check", t("the checker reported an error:")))
+    for line in lines[:DOCTOR_MSG_LINES]:
+        rows.append((None, None, "    " + line))
+    if len(lines) > DOCTOR_MSG_LINES:
+        rows.append((None, None, "    " + t("... {n} more line(s) not shown",
+                                            n=len(lines) - DOCTOR_MSG_LINES)))
+    return rows
+
+
+def _doctor_service():
+    """S4 — running now, and registered to start at boot: two separate facts.
+
+    The init-system check runs FIRST, so is_running()'s hard False on a host with neither
+    systemd nor OpenRC is never rendered as "not running".
+
+    Both facts are read from the init system rather than from settings["default_tun"]:
+    that key records what `sc on/off` was last told to do, while the init system is the
+    authority on what will actually happen at boot. A disagreement between them is itself
+    a defect worth seeing, and only the authority can show it.
+    """
+    if not SYSTEMD and not OPENRC:
+        cause = t("no init system detected (neither systemd nor OpenRC)")
+        return [(DOCTOR_UNKNOWN, "service", cause),
+                (DOCTOR_UNKNOWN, "boot autostart", cause)]
+    init = "systemd" if SYSTEMD else "OpenRC"
+    running = is_running()
+    rows = [(DOCTOR_OK if running else DOCTOR_PROBLEM, "service",
+             t("running (via {init})", init=init) if running
+             else t("not running (via {init})", init=init))]
+    try:
+        if SYSTEMD:
+            code, out = _doctor_run(["systemctl", "is-enabled", SERVICE])
+            state = _first_line(out)
+            enabled = (code == 0 and state == "enabled")
+        else:
+            _code, out = _doctor_run(["rc-update", "show", "default"])
+            enabled = any(SERVICE in line.split() for line in out.splitlines())
+            state = t("not in the default runlevel")
+    except OSError as e:
+        rows.append((DOCTOR_UNKNOWN, "boot autostart",
+                     t("cannot determine: {e}", e=_plain(str(e)))))
+        return rows
+    if enabled:
+        rows.append((DOCTOR_OK, "boot autostart", t("enabled")))
+    else:
+        rows.append((DOCTOR_PROBLEM, "boot autostart",
+                     t("not enabled ({state})", state=_plain(state))))
+    return rows
+
+
+def _doctor_tun():
+    """S5 — does this project's TUN device exist, and what addresses does it carry?
+
+    `ip`'s operstate is deliberately not printed: for a TUN device it reads literally
+    UNKNOWN and would collide with the outcome-class vocabulary.
+    """
+    try:
+        code, out = _doctor_run(["ip", "-br", "addr", "show", TUN_IFACE])
+    except OSError as e:
+        return [(DOCTOR_UNKNOWN, "TUN interface",
+                 t("cannot query: {e}", e=_plain(str(e))))]
+    fields = []
+    for line in out.splitlines():
+        parts = line.split()
+        if parts and parts[0].split("@")[0] == TUN_IFACE:
+            fields = parts
+            break
+    if code != 0 or not fields:
+        return [(DOCTOR_PROBLEM, "TUN interface",
+                 t("{iface} does not exist", iface=TUN_IFACE))]
+    addrs = fields[2:]      # name, operstate, then every address
+    return [(DOCTOR_OK, "TUN interface", TUN_IFACE),
+            (DOCTOR_OK if addrs else DOCTOR_PROBLEM, "TUN addresses",
+             ", ".join(addrs) if addrs else t("(none)"))]
+
+
+def _doctor_clash():
+    """S6 — the persisted Clash API port, and whether it answers.
+
+    The port comes from settings only. doctor never probes for a free port (that would
+    report "unreachable" as a tautology) and never reads the module-level CLASH_PORT,
+    which a doctor run deliberately leaves unresolved.
+    """
+    port = _saved_clash_port()
+    if port is None:
+        return [(DOCTOR_UNKNOWN, "Clash API", t("no port recorded in settings.json")),
+                (DOCTOR_UNKNOWN, "Clash API responding", t("not probed — no port recorded"))]
+    rows = [(DOCTOR_OK, "Clash API", "127.0.0.1:%d" % port)]
+    answer = clash_api("GET", "/configs", port=port)
+    # `is not None`: an empty body legitimately answers with {}, which is falsy.
+    if answer is not None:
+        rows.append((DOCTOR_OK, "Clash API responding", t("yes")))
+    else:
+        rows.append((DOCTOR_PROBLEM, "Clash API responding",
+                     t("no answer within the 3s timeout")))
+    return rows
+
+
+def _doctor_egress():
+    """S7 — the observed public egress address.
+
+    Unconditional, unlike `sc status`: "the service is down and my egress IP is my ISP
+    address" is a confirmation, not noise. Makes no claim about whether it is proxied.
+    """
+    try:
+        return [(DOCTOR_OK, "egress IP", _plain(_egress_ip()))]
+    except Exception as e:
+        return [(DOCTOR_PROBLEM, "egress IP", t("(error: {e})", e=_plain(str(e))))]
+
+
+# THE print order, and the only place it is decided: reading this tuple top to bottom is
+# the review of the causal ordering. No probe prints another section's rows.
+DOCTOR_SECTIONS = (
+    ("sing-box binary", _doctor_binary),
+    ("rule-sets", _doctor_rulesets),
+    ("configuration", _doctor_config),
+    ("service", _doctor_service),
+    ("TUN interface", _doctor_tun),
+    ("Clash API", _doctor_clash),
+    ("egress IP", _doctor_egress),
+)
+
+
+def _doctor_print(cls, label, value):
+    """One report row, flushed. `cls is None` prints a verbatim quoted line.
+
+    The row shape — "[<class>] <label>: <value>" with the brackets and the ": " outside
+    t() — is pinned here: it is what makes every row greppable and quotable on its own.
+    No padding is computed anywhere, so zh's double-width text cannot misalign anything.
+    """
+    if cls is None:
+        print(value, flush=True)
+    else:
+        print("[" + t(DOCTOR_MARK[cls]) + "] " + t(label) + ": " + value, flush=True)
+
+
+def cmd_doctor(args):
+    """The driver: per-section isolation, streaming, and the exit status."""
+    worst = DOCTOR_OK
+    for label_key, probe in DOCTOR_SECTIONS:
+        try:
+            rows = probe()
+        except Exception as e:
+            # `Exception`, never BaseException and never a bare except: KeyboardInterrupt
+            # must still interrupt the 8 s egress wait. One failing probe costs its own
+            # section's facts and nothing else — every label is still printed.
+            rows = [(DOCTOR_UNKNOWN, None,
+                     t("this check could not run: {e}", e=_plain(str(e))))]
+        for cls, label, value in rows:
+            # Flushed per row: without it the whole report would sit in the block buffer
+            # when stdout is a pipe, which is precisely the bug-report case.
+            _doctor_print(cls, label_key if label is None else label, value)
+            if cls is not None:
+                worst = max(worst, cls)
+    sys.exit(DOCTOR_EXIT[worst])
 
 
 def cmd_mode(args):
@@ -1403,6 +1833,11 @@ COMMANDS
   on                          Start sing-box and enable on boot
   off                         Stop sing-box and disable on boot
   status                      Show service status, TUN interface, active node, egress IP
+  doctor                      Diagnose the install: seven read-only checks, causal order
+                                changes nothing — no config, no download, no restart
+                                exit 0 = every section OK
+                                exit 1 = at least one PROBLEM
+                                exit 2 = no PROBLEM, but at least one UNKNOWN
   mode <rule|global|direct>   Switch route mode (live)
                                 rule   = rule-based routing (default)
                                 global = everything via proxy
@@ -1455,6 +1890,11 @@ HELP_ZH = """sc —— sing-box 命令行管理工具
   on                          启动 sing-box 并设置开机自启
   off                         停止 sing-box 并取消开机自启
   status                      查看服务状态、TUN 接口、当前节点、出口 IP
+  doctor                      一键体检：按因果顺序执行七项只读检查
+                                全程只读 —— 不生成配置、不下载、不重启、不修复
+                                退出码 0 = 七项全部正常
+                                退出码 1 = 至少一项异常
+                                退出码 2 = 没有异常，但至少一项未知
   mode <rule|global|direct>   切换路由模式（即时生效）
                                 rule   = 按规则分流（默认）
                                 global = 全部走代理
@@ -1498,9 +1938,6 @@ def cmd_help(args):
 
 def main():
     global LANG, CLASH_PORT
-    _init_files()
-    LANG = _load_lang()
-    CLASH_PORT = _resolve_clash_port()
     parser = argparse.ArgumentParser(prog="sc", add_help=False)
     sub = parser.add_subparsers(dest="cmd")
     sub.add_parser("ls"); sub.add_parser("now")
@@ -1508,6 +1945,7 @@ def main():
     p = sub.add_parser("add"); p.add_argument("url", nargs="?")
     p = sub.add_parser("rm"); p.add_argument("spec")
     sub.add_parser("on"); sub.add_parser("off"); sub.add_parser("status")
+    sub.add_parser("doctor")
     p = sub.add_parser("mode"); p.add_argument("mode")
     p = sub.add_parser("default-tun"); p.add_argument("value")
     p = sub.add_parser("sysproxy"); p.add_argument("value")
@@ -1520,9 +1958,25 @@ def main():
     sub.add_parser("help")
 
     args = parser.parse_args()
+    # The start-up path WRITES: _init_files() creates /etc/sing-box, /etc/sing-box/rules
+    # and /var/lib/sing-box and seeds nodes.json / settings.json, and _resolve_clash_port()
+    # persists a freshly probed port on first run. `doctor` must reach neither: on a broken
+    # or fresh host the emptiness of those very paths IS the diagnosis, and a diagnostic
+    # that creates them destroys the evidence it was run to collect.
+    # This is a positive opt-out naming ONE command: every other command — including every
+    # command added later — takes the else arm with no action by anyone, so the failure
+    # mode of forgetting this mechanism is "a new read-only command wrote files", never
+    # "an existing command lost its initialisation".
+    if args.cmd == "doctor":
+        LANG = _load_lang()     # reads settings.json, tolerates its absence, writes nothing
+    else:
+        _init_files()
+        LANG = _load_lang()
+        CLASH_PORT = _resolve_clash_port()
     handlers = {
         "ls": cmd_ls, "now": cmd_now, "use": cmd_use, "add": cmd_add, "rm": cmd_rm,
-        "on": cmd_on, "off": cmd_off, "status": cmd_status, "mode": cmd_mode,
+        "on": cmd_on, "off": cmd_off, "status": cmd_status, "doctor": cmd_doctor,
+        "mode": cmd_mode,
         "default-tun": cmd_default_tun, "sysproxy": cmd_sysproxy,
         "update-rules": cmd_update_rules, "update-interval": cmd_update_interval,
         "log": cmd_log, "reload": cmd_reload, "uninstall": cmd_uninstall,
