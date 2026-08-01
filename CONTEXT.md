@@ -84,6 +84,43 @@ T-13's `01_REQUIREMENT_ANALYSIS.md` calls this a "credential-bearing file"; use 
 document* from here on.
 _Avoid_: secret file, private file, sensitive config, protected file
 
+**base template**:
+The data form of the configuration document `sc` starts from, holding every part that does not
+depend on run-time state. It ships inside `bin/sc` because `install.sh` fetches an enumerated
+artifact list and the CLI must stay a single self-contained file.
+_Avoid_: default config, skeleton, config template string
+
+**overlay**:
+One ordered transformation applied to the accumulated configuration document — objects merge by
+depth, arrays only under an explicit directive. The user override is the last overlay and goes
+through the same merge implementation as any shipped one; there is never a second merge.
+_Avoid_: patch, layer, mixin, fragment (a fragment is a *file* that may hold an overlay)
+
+**directive**:
+An explicit array-merge instruction inside an overlay — `$prepend`, `$append`, `$replace`, or the
+positional form that inserts relative to a matched anchor element. Required because DNS and route
+rule order carries meaning, so a default array merge would be silently wrong. Directives are read
+only at merge positions, never inside a value being inserted wholesale.
+_Avoid_: operator, strategy, merge mode
+
+**user override**:
+The user-owned document `sc` reads and never writes, creates, or deletes, applied last. It is what
+makes a hand-made customization survive `sc reload` / `use` / `add`. Distinct from the systemd
+timer's `override.conf` drop-in, which is unrelated.
+_Avoid_: user config, custom config, local config, patch file
+
+**drift**:
+The state where `/etc/sing-box/config.json` on disk differs from the document `sc` last generated,
+i.e. someone hand-edited a generated artifact. `sc` states drift before replacing the file and names
+the user override as the durable place for the change; it does not block and does not back up.
+_Avoid_: dirty config, manual change, out-of-sync
+
+**drift record**:
+The sha256 digest of `config.json` as `sc` last installed it, kept at `/etc/sing-box/.config.sha256`
+and rewritten only after a successful install. It is a digest, never a copy — a second copy of the
+generated document would be a second credential document on disk. Absent means *unknown*, not drift.
+_Avoid_: config hash file, checksum, snapshot, backup
+
 ## Project intent
 
 **singbox-cli is a headless v2rayN.** Stated by the owner 2026-08-01: 「初衷是实现一个类似于非桌面版

@@ -27,14 +27,15 @@ key-parity check (T-11); B.3 (lint) is still `SKIP`.
 
 | Section | What lives there |
 |---|---|
-| `# Paths` | `CFG_DIR` / `CFG_PATH` / `NODES_PATH` / `SETTINGS_PATH` / `RULES_DIR`, `CRED_MODE` (THE mode of every credential document, `0o600`), `SB_BIN`, `TUN_IFACE`, Clash-API port range. Only ever referenced *inside* function bodies, so a test harness can repoint them after import. |
+| `# Paths` | `CFG_DIR` / `CFG_PATH` / `NODES_PATH` / `SETTINGS_PATH` / `RULES_DIR` / `OVERRIDE_PATH` (the user's own fragment) / `STATE_PATH` (the drift record, `.config.sha256`), `CRED_MODE` (THE mode of every credential document, `0o600`), `SB_BIN`, `TUN_IFACE`, Clash-API port range. The **seven path constants** are only ever referenced *inside* function bodies, so a test harness can repoint them after import. **`TUN_IFACE` is the exception and no longer obeys that contract**: `CONFIG_BASE` captures it at *import* time (it is a compile-time constant, and the base template names it directly rather than through a placeholder), so a harness that repoints it after import silently gets the old device name in the emitted config. Repoint it before loading the module, or not at all. |
 | `# Rule-set constants` | `SRS_MAGIC`, `SRS_MIN_BYTES`, `RULESET_FILES` (filename → path relative to a base), `RULESET_BASES` (ordered mirrors), `RULE_ANSWER_KEYS`. |
 | `# Auto-elevate` | `os.execvp("sudo", ...)` at **import time** when not root. A harness must neutralise this line to load the file as a module. |
 | `# i18n` | `TRANSLATIONS` (English source string → `zh`) and `t()`. |
 | `# State files` | `_write_private`, `_init_files`, `load/save_nodes`, `load/save_settings`. `_init_files()` is reachable only from `main()`, so importing touches nothing under `/etc`; its nodes branch is now nothing but a `save_nodes()` call. |
 | `# Share-URL parsers` | `parse_vless / vmess / trojan / ss / hy2 / tuic` → dispatched by `parse_share_url`. |
 | `# Rule-sets` | The usability model — see "Reusable utilities" below. |
-| `# Config generation` | `generate_config()` builds the whole `config.json` literal, filters it by the usable rule-set set, installs it through `_write_private()` (0600 from before its first byte, atomic replace — **not** a post-write `chmod`), then runs `sing-box check`. An `OSError` there is one translated stderr line + `return False`, never a traceback. Also holds the two apply helpers `restart_service()` and `reload_or_restart()`. |
+| `# Config composition` | The layer `config.json` is built *from*: `OverrideError`, `DIRECTIVES` / `_directive_list()`, `OVERRIDE_MAX_BYTES`, `CONFIG_BASE` (the base template — a module-level dict literal whose key order IS emission order), `_dig`, `_directive_of`, `_anchor_index`, `_apply_directive`, `_merge`, `_load_override`, `_compose`, `_runtime_overlay`. See "Reusable utilities" below. |
+| `# Config generation` | `generate_config()` **composes** `config.json` (base → run-time overlay → user override), filters it by the rule-set tags the composed document defines, warns about drift, installs it through `_write_private()` (0600 from before its first byte, atomic replace — **not** a post-write `chmod`), records the digest, then runs `sing-box check`. An `OSError` there is one translated stderr line + `return False`, never a traceback. Also holds the drift trio `_config_digest()` / `_record_generated()` / `_warn_drift()` and the two apply helpers `restart_service()` and `reload_or_restart()`. |
 | `# Clash API` | `clash_api(method, path, data=None, port=None)`, `is_running()`. `port=None` means "the port `main()` resolved"; only `sc doctor` passes one explicitly. |
 | `# Commands` | One `cmd_<name>(args)` per subcommand. Includes the `# doctor` block: class constants + `_plain()` / `_doctor_run()` / `_doctor_print()`, seven probes returning rows as data, the `DOCTOR_SECTIONS` print order, and `cmd_doctor()` (driver: isolation, streaming, exit status). |
 | `HELP_EN` / `HELP_ZH` | Two hand-aligned help blocks; descriptions start at column 30, sub-options at column 32. |
@@ -48,7 +49,13 @@ key-parity check (T-11); B.3 (lint) is still `SKIP`.
 | One file's on-disk facts | `ruleset_state(path)` → `(status, digest, size)` | same | The ONE reader of a `.srs` on disk, from one chunked read. `digest` is sha256 of the full content and `size` is that read's real byte count (**never `st_size`**), or both `None` — and `size is None` ⟺ `digest is None` ⟺ status ∈ `absent / unreadable` ⟺ no complete read (a readable *empty* file gets a real digest and a real `0`). `sc doctor` prints the size that decided the status, so its report cannot contradict itself. `ruleset_status(path)` is its status-only view; it has no in-tree caller today and is kept as the named per-file adapter. |
 | Per-file rule-set state | `ruleset_report()` → `[(tag, filename, status)]`, `usable_tags(report)` | same | Pure query: no network, no service, no config, writes nothing. `status` is a flat `str`: `usable / absent / bad-magic / too-small / unreadable`. Built as `_status_view(ruleset_states())`; `ruleset_states()` is the same list with the digest **and size** appended (5-tuples). `_status_view()` is the shield: it is where a widening of the snapshot tuple stops, which is why `generate_config()` / `usable_tags()` / `_warn_degraded()` destructure 3-tuples and need no edit when it widens. |
 | "Did any rule-set's content change?" | `changed_usable_tags(before, after)` | same | Both args are `ruleset_states()` snapshots; returns the sorted tags that are usable *after* and whose bytes really differ. Paired by tag, never by list index. This — not "the download succeeded" — is what `sc update-rules` restarts on. |
-| Drop dangling rule-set refs | `_filter_rules(rules, usable)` | same | Called for **both** `dns.rules` and `route.rules` with the same set. Do not add an array-name parameter. |
+| Drop dangling rule-set refs | `_filter_rules(rules, usable)` | same | Called for **both** `dns.rules` and `route.rules` with the same set. Do not add an array-name parameter. Since T-14 the set is the tags the *composed document* defines, not `usable_tags(report)` — identical by construction with no override, and it is what stops a user-defined rule-set having every rule referencing it deleted. It is computed **before** the empty-`route.rule_set` deletion. |
+| Apply a configuration fragment | `_merge(target, overlay, at="")` | `bin/sc` `# Config composition` | THE merge: objects by depth, arrays only under a directive from `DIRECTIVES`. The run-time overlay, any future shipped overlay and the user's `override.json` all go through it — a second one would be a second opinion about what "apply a fragment" means. Errors are `OverrideError` carrying an already-translated sentence. |
+| "Is this value a directive?" | `_directive_of(value, where)` | same | The ONE place a `$…` key is recognised, and it runs only on a value being merged *into* the document. `_apply_directive()` has **no edge back to `_merge()`**, which is why an element inserted into an array is copied verbatim and its nested keys are never interpreted. Do not add that edge. |
+| The base of the emitted config | `CONFIG_BASE` + `_compose(overlays)` | same | `_compose` deep-copies `CONFIG_BASE` per call; `_filter_rules` mutates surviving rules in place and `generate_config` deletes a key, so anything short of a deep copy corrupts the template for the *second* call in one process. Key order in the literal is emission order — never alphabetise or re-indent it into a different shape. |
+| Run-time content of the config | `_runtime_overlay(nodes, active, report)` | same | Node outbounds, the `proxy` selector, the trailing `direct`, `route.rule_set` and the Clash API address, as one overlay. Reads `RULES_DIR` and `CLASH_PORT` **at call time** (a harness repoints the first, `main()` assigns the second after import); `TUN_IFACE` is in `CONFIG_BASE` instead. Every value lands on a key the base already has, which is what preserves its emitted position. |
+| The user's own config fragment | `_load_override()` + `OVERRIDE_PATH` | same | Reads, never creates/writes/deletes. `os.stat` **before** any `open()` — `stat()` does not block on a FIFO and `open()` would. Whitespace-only / zero-byte counts as absent; every other non-object content is malformed. |
+| "Was config.json changed behind our back?" | `_config_digest()` / `_record_generated()` / `_warn_drift()` | `bin/sc` `# Config generation` | `_config_digest()` hashes the file **on disk**, so the record and the check cannot form two opinions and the record is locale-independent. `_record_generated()` runs only after a successful `_write_private()`. No record ⇒ *unknown* ⇒ silence, which is what keeps the upgrade path quiet on existing hosts. Never stores a copy of the document — a digest holds no credential bytes. |
 | Validated multi-mirror fetch | `_ruleset_bases()`, `_temp_path()`, `_clear_stale_temps()`, `_fetch_to_temp()` | same | Chunked read, progress on a TTY only, atomic temp-then-replace, per-run dead-base marking. |
 | This project's TUN device name | `TUN_IFACE` | `bin/sc` `# Paths` | The single definition. `generate_config()`'s `interface_name`, `sc status`'s `ip addr show` and `sc doctor`'s S5 all consume it; renaming the device stays one edit. |
 | The public egress address | `_egress_ip()` | `bin/sc` (next to `_resolve_clash_port`) | The single query: endpoint literal + the 8 s timeout + decode, in one place. Raises on failure; **byte-faithful on purpose** — `sc status` prints its value verbatim, so scrubbing belongs at the *caller* (`_plain()`), never inside it. `sc status` and `sc doctor` can therefore never report different addresses. |
@@ -64,6 +71,9 @@ key-parity check (T-11); B.3 (lint) is still `SKIP`.
 ## Patterns to follow
 
 - **Config is regenerated, never patched.** Change `nodes.json` / `settings.json`, then call `generate_config()`.
+- **A change to the emitted config goes in `CONFIG_BASE` or in an overlay — never back into
+  `generate_config()` as a literal.** The user's `override.json` is the last overlay and goes
+  through the same `_merge()`; there is exactly one merge implementation and it stays that way.
 - **Every user-facing string is an English sentence used as the translation key**, with a `zh` entry
   carrying the *same* placeholder set. Namespaced keys (`ls.idx`) print literally in English — a
   pre-existing defect, not a pattern to copy.
@@ -108,9 +118,15 @@ key-parity check (T-11); B.3 (lint) is still `SKIP`.
       sys.modules["os"] = os                     # restore IMMEDIATELY, in a finally
   ```
 
-  Then repoint `sc.CFG_DIR / CFG_PATH / NODES_PATH / SETTINGS_PATH / RULES_DIR` into a `mkdtemp()`
-  root, set `sc.SYSTEMD = sc.OPENRC = False`, `sc.CLASH_PORT = 29090`, `sc.LANG = "en"|"zh"`, and
-  `sc.SB_BIN = <stub script>` (a repointable constant — no `PATH` games). Because `bin/sc` resolves
+  Then repoint all **seven** path constants —
+  `sc.CFG_DIR / CFG_PATH / NODES_PATH / SETTINGS_PATH / RULES_DIR / OVERRIDE_PATH / STATE_PATH` —
+  into a `mkdtemp()` root, set `sc.SYSTEMD = sc.OPENRC = False`, `sc.CLASH_PORT = 29090`,
+  `sc.LANG = "en"|"zh"`, and
+  `sc.SB_BIN = <stub script>` (a repointable constant — no `PATH` games). **Assert that every one of
+  the seven resolves inside the temp root** — that assertion, not vigilance, is what stops a
+  forgotten constant writing under `/etc`; the last two are under `/etc/sing-box` and were added
+  after the recipe was first written. `TUN_IFACE` is *not* repointable after import (see `# Paths`).
+  Because `bin/sc` resolves
   `os` from `sc.__dict__`, monkeypatching `sc.os.replace` patches the shim only, never the harness's
   own `os` — restore it in a `finally` regardless. **Never drive `_init_files()`**: one of its
   `mkdir` calls hard-codes `/var/lib/sing-box` as a `Path` literal — the only directory in the

@@ -53,3 +53,48 @@ fixture detail with no live consumer.
     was choosing `SRS_MIN_BYTES`; that constant is now committed in `bin/sc` and `docs/dev-map.md`
     carries the usability model, so nothing an agent does today turns on remembering the 696-byte
     figure. Re-measurable in one `curl` if it ever matters again.
+
+## Rotated 2026-08-01 (during `config-composition-layer` / T-14 archive)
+
+`archive-task.sh` harvested T-14's 4 insights but again did **not** rotate — its threshold counts
+**bullets** (25 after the harvest, under the 30 it compares against) while `verify_all` F.4 counts
+**lines** (34 against a 30 cap), so the two can never agree and the rotation is dead code for any
+index with a header. The PM rotated these four by hand. Chosen by rule 70's "what no longer earns
+its line": three come from areas that are closed and quiet, and one is a one-time process
+observation of the kind rule 70's own adversarial check assigns to a stage doc rather than the
+always-loaded index.
+
+- 2026-07-31 · `systemd-analyze verify` only catches an unresolvable absolute `ExecStart`; a bare PATH lookup, CRLF line endings and `/usr/bin/env` indirection all exit 0, so it proves a wrong-path defect is gone but is not general unit lint · evidence: fix-rules-update-execstart
+  - **Why rotated:** the **defect it scoped is shipped and the area is quiet**. T-09 is delivered, the
+    unit's `ExecStart` is correct, and no open row touches `systemd/`. What survives of it is a
+    caveat on `.harness/rules/50-singbox-cli.md:138`'s standing lint suggestion — a caveat that costs
+    a line of the always-loaded index every task, to be spent by whichever future task next edits a
+    unit file. That task can re-derive it from this file.
+
+- 2026-07-31 · A systemd timer's stamp advances when the timer elapses and *enqueues* the job, not when the service succeeds, so a unit failing `203/EXEC` still advanced its stamp weekly and `Persistent=true` produces no catch-up burst once the command is fixed · evidence: fix-rules-update-execstart
+  - **Why rotated:** **the question it answered is settled and closed.** It existed to rule on whether
+    fixing T-09's `ExecStart` would trigger a `Persistent=true` catch-up burst; it would not.
+    `BATCH_PLAN.md:186-189` records the companion finding (`Persistent=true` is already present and
+    already installed) and closes P3-2 with "Nothing to change". QA additionally found the unit has
+    **never run** on this host, so the stamp claim has no live consumer here at all.
+
+- 2026-08-01 · The `curl-7_29_0` git tag is not a valid version-dated source for option-floor claims — `curlver.h` at that tag still reads `7.28.2-DEV`; only the released `curl-7.29.0.tar.gz` (now under `curl.se/download/archeology/`, the plain `download/` path 404s) dates itself correctly · evidence: install-binary-download-progress
+  - **Why rotated:** a **settled one-off version question**. The 7.29 option floor it guarded was
+    established by two independent readers during T-08 and the conclusion is written into
+    `docs/tasks.md:21`; the download-flag policy block is shipped. Nothing an agent does today turns
+    on re-checking a 2013 curl tag, and if the floor is ever reopened this entry is one grep away.
+
+- 2026-07-31 · An acceptance criterion of the form "no occurrence of `<literal>` anywhere in the repository" is self-violating, because the requirement document stating it contains the literal · evidence: fix-rules-update-execstart
+  - **Why rotated:** **not project-specific hard-won fact.** Rule 70's adversarial check ("one-time
+    observation about a task → write it in a stage doc that gets archived") and rule 05's ("would
+    someone reasonable derive this in under 10 minutes?") both place this outside the index. It is a
+    writing caution about ACs, generic to any repository, from a task that is closed. Substituted in
+    for the progress-redraw throttle entry — see the note below.
+
+**Deviation from the proposed set:** the fourth proposed removal — the progress-redraw fixture
+throttle entry (`install-binary-download-progress`) — was **kept**. It is still load-bearing:
+`docs/tasks.md:47-49` files it as an open row ("AC-3's non-vacuity is carried by the server
+**throttle**, not the fixture size, with no guard") against a harness **T-07 inherits**, and the
+T-13 rotation above deleted its predecessor precisely on the grounds that this entry supersedes it —
+dropping it now would leave the corrected reading nowhere in the index while the uncorrected one is
+already gone. The self-violating-AC entry was rotated in its place.

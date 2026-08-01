@@ -249,6 +249,27 @@
 - **Origin:** T-13 `config-write-permission-hardening`,
   `docs/features/config-write-permission-hardening/02_SOLUTION_DESIGN.md` §3.4.
 
+## override-as-confd-fragment-directory
+- **Decision:** declined (the user override is a single file, `/etc/sing-box/override.json`).
+- **Why:** rule 85's counter-rule asks which of T-14's five nameable consumers the extra surface serves,
+  and the answer is none. T-15/T-16/T-17 ship their overlays as code **inside `bin/sc`** — the same
+  reason D-11 keeps the base template there (`install.sh` fetches an enumerated artifact list,
+  `install.sh:412-417`, and is out of scope), so they never write a file under `/etc/sing-box`. T-21's
+  rule-source profiles are a *selection* problem whose natural home is a `settings.json` key choosing
+  among in-script overlays; and even if it wanted a shipped fragment it could not install one, because
+  `install.sh` is out of scope and `sc` never writes the override (T-14 B-9) — the directory would ship
+  empty on every host. For the one consumer that exists today, user customization, a directory is
+  strictly worse: `sc` may not create it, so the user must `mkdir` before their first customization, and
+  "is there an override?" becomes a directory scan with per-entry malformed-ness (BC-8…BC-10 × N) plus a
+  lexicographic-ordering rule to document, instead of one `stat`. One adapter means a hypothetical seam,
+  not a real one. **Unblock path (cheap by construction):** `_load_override()` is the single function
+  turning a *location* into overlay documents and `_compose()` already takes a **list** of overlays, so a
+  real second producer changes that one function's body and nothing else — no change to the merge, the
+  base template, or the composition order.
+- **Origin:** T-14 `config-composition-layer` §8 D-16 (the analyst deliberately handed the choice to
+  stage 2 with the trade-off written out), decided in
+  `docs/features/config-composition-layer/02_SOLUTION_DESIGN.md` §3.
+
 ## shared-atomic-write-helper-with-ruleset-downloader
 - **Decision:** declined (`_write_private()` and the rule-set downloader's `_temp_path()` /
   `_clear_stale_temps()` / `_fetch_to_temp()` stay separate; what they share is one stdlib call,

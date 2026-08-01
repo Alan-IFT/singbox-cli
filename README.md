@@ -190,6 +190,8 @@ User runs the sc CLI:
 | sing-box config (auto-generated) | `/etc/sing-box/config.json` (mode 600) |
 | Node list (with credentials) | `/etc/sing-box/nodes.json` (mode 600) |
 | Settings | `/etc/sing-box/settings.json` |
+| Your own config overrides (optional, yours) | `/etc/sing-box/override.json` |
+| Record of what `sc` last generated (internal) | `/etc/sing-box/.config.sha256` |
 | Rulesets | `/etc/sing-box/rules/*.srs` |
 | systemd service | `/etc/systemd/system/sing-box.service` (systemd only) |
 | Auto-update timer | `/etc/systemd/system/sing-box-rules-update.timer` (systemd only) |
@@ -199,6 +201,55 @@ User runs the sc CLI:
 | Password-less sudo | `/etc/sudoers.d/sc` |
 | Uninstall script | `/usr/local/lib/singbox-cli/uninstall.sh` |
 | Logs | `journalctl -u sing-box` or `sc log` (systemd); `sc log` reads `/var/log/sing-box/` on OpenRC |
+
+## 🛠 Custom configuration (`override.json`)
+
+`config.json` is **generated**: `sc reload`, `sc add` and `sc rm` rewrite it from scratch every time, and `sc use` and `sc update-rules` may do so as well, so anything you hand-edit there is discarded without a word. Put your changes in `/etc/sing-box/override.json` instead. `sc` never creates, writes or deletes that file, and applies it **last** — over everything `sc` composes — so it survives every regeneration and survives re-running `install.sh`.
+
+An override that is absent, empty, or `{}` changes nothing. One that cannot be applied stops the command **before anything is written**: `config.json` is left exactly as it was, the running service is not touched, and the message names the file and the problem.
+
+**Objects merge by depth.** A key you do not mention keeps its value and its position:
+
+```json
+{ "log": { "level": "debug" } }
+```
+
+→ only `log.level` changes; every other key of `log`, and its position, stays as it was.
+
+**Arrays change only under an explicit directive**, because "add one DNS rule" and "replace every DNS rule" must never look the same:
+
+| Directive | Effect |
+|---|---|
+| `$replace` | the array becomes exactly the value you give |
+| `$prepend` | your elements go in front of the existing ones |
+| `$append` | your elements go after the existing ones |
+| `$before` | your elements go immediately before the element matched by `match` |
+| `$after` | your elements go immediately after the element matched by `match` |
+
+`$before` / `$after` take `{"match": {…}, "values": […]}`. `match` selects by subset equality — every key/value in it must equal the element's — and must match **exactly one** element; zero or several is an error, never a silent no-op. Anchors rather than numeric indices, because sing-box evaluates `dns.rules` and `route.rules` in order and an index is wrong the moment anything inserts earlier.
+
+Example — insert an AAAA-suppressing DNS rule immediately after the `clash_mode: Direct` rule:
+
+```json
+{
+  "dns": {
+    "rules": {
+      "$after": {
+        "match": { "clash_mode": "Direct" },
+        "values": [
+          { "action": "predefined", "rcode": "NOERROR", "query_type": [28] }
+        ]
+      }
+    }
+  }
+}
+```
+
+Values you insert are copied verbatim: nothing inside them is re-interpreted, so an inserted rule carrying its own `rule_set` or `domain_suffix` array is emitted exactly as written. A bare array where the generated config already has one is refused with a message naming the directives; a bare array at a key the generated config does not have is simply accepted and creates it.
+
+> **`sc` depends on parts of the config it generates.** Removing `experimental.clash_api.external_controller`, or renaming the `proxy` outbound, yields a file `sing-box check` still accepts while `sc use` and `sc status` stop working. `sc` does not stop you — it is your file.
+
+**If you already hand-edited `config.json`**, the next command that regenerates it prints one line on stderr: that the file was changed outside `sc`, that the change is about to be replaced, and where to put it so it lasts. The comparison is against `/etc/sing-box/.config.sha256`, a digest of what `sc` last wrote; a host that has never run this version has no record yet, so nothing is printed until after its first regeneration.
 
 ## 🗑 Uninstall
 

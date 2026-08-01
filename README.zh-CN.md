@@ -190,6 +190,8 @@ sc help
 | sing-box 配置（自动生成） | `/etc/sing-box/config.json`（mode 600） |
 | 节点列表（含密码） | `/etc/sing-box/nodes.json`（mode 600） |
 | 设置 | `/etc/sing-box/settings.json` |
+| 你自己的配置覆盖（可选，归你管） | `/etc/sing-box/override.json` |
+| `sc` 上次生成内容的记录（内部用） | `/etc/sing-box/.config.sha256` |
 | 规则集 | `/etc/sing-box/rules/*.srs` |
 | systemd 服务 | `/etc/systemd/system/sing-box.service`（仅 systemd） |
 | 自动更新 timer | `/etc/systemd/system/sing-box-rules-update.timer`（仅 systemd） |
@@ -199,6 +201,55 @@ sc help
 | 免密 sudo | `/etc/sudoers.d/sc` |
 | 卸载脚本 | `/usr/local/lib/singbox-cli/uninstall.sh` |
 | 日志 | `journalctl -u sing-box` 或 `sc log`（systemd）；OpenRC 下 `sc log` 读取 `/var/log/sing-box/` |
+
+## 🛠 自定义配置（`override.json`）
+
+`config.json` 是**生成物**：`sc reload`、`sc add`、`sc rm` 每次都会把它整份重写，`sc use` 和 `sc update-rules` 也可能重写，所以你在那里手改的内容会被悄无声息地丢掉。请改成写 `/etc/sing-box/override.json`。`sc` 从不创建、不写入、也不删除这个文件，并且把它放在**最后**应用 —— 覆盖在 `sc` 组合出的一切之上 —— 因此它能挺过每一次重新生成，也能挺过重新执行 `install.sh`。
+
+不存在、内容为空、或者就是 `{}` 的覆盖文件，等于什么都没改。无法应用的覆盖文件会让命令**在写入任何东西之前就停下**：`config.json` 保持原样，运行中的服务不受影响，报错会指名这个文件和具体问题。
+
+**对象按层级合并。** 你没提到的键保留原值和原位置：
+
+```json
+{ "log": { "level": "debug" } }
+```
+
+→ 只有 `log.level` 变了；`log` 的其他键及其位置都原封不动。
+
+**数组只在显式指令下才会变**，因为「加一条 DNS 规则」和「换掉全部 DNS 规则」绝不能长得一样：
+
+| 指令 | 效果 |
+|---|---|
+| `$replace` | 数组变成你给的这份，仅此而已 |
+| `$prepend` | 你的元素放到已有元素前面 |
+| `$append` | 你的元素放到已有元素后面 |
+| `$before` | 你的元素紧挨着 `match` 命中的那个元素之前 |
+| `$after` | 你的元素紧挨着 `match` 命中的那个元素之后 |
+
+`$before` / `$after` 的值是 `{"match": {…}, "values": […]}`。`match` 按子集相等匹配 —— 其中每个键值都要与元素的相等 —— 且必须**恰好命中一个**元素；命中 0 个或多个都是错误，绝不会静默地什么都不做。用锚点而不是数字下标，是因为 sing-box 按顺序求值 `dns.rules` 和 `route.rules`，而只要有人往前面插一条，下标就错了。
+
+示例 —— 在 `clash_mode: Direct` 那条规则后面紧接着插入一条抑制 AAAA 的 DNS 规则：
+
+```json
+{
+  "dns": {
+    "rules": {
+      "$after": {
+        "match": { "clash_mode": "Direct" },
+        "values": [
+          { "action": "predefined", "rcode": "NOERROR", "query_type": [28] }
+        ]
+      }
+    }
+  }
+}
+```
+
+你插入的值是原样拷贝：里面的内容不会被再次解释，所以一条自带 `rule_set` 或 `domain_suffix` 数组的规则会照原样输出。在生成配置已有数组的位置直接写一个裸数组会被拒绝，报错里会列出可用指令；而在生成配置里本来没有的键上写裸数组则直接接受并创建它。
+
+> **`sc` 依赖它自己生成的一部分配置。** 删掉 `experimental.clash_api.external_controller`，或者把 `proxy` 出站改名，得到的文件 `sing-box check` 照样接受，但 `sc use` 和 `sc status` 会失灵。`sc` 不会拦你 —— 这是你的文件。
+
+**如果你已经手改过 `config.json`**，下一条重新生成它的命令会在 stderr 打一行：该文件被 `sc` 以外的方式改过、这次改动即将被覆盖、以及应该把它写到哪里才能长久保留。比对的依据是 `/etc/sing-box/.config.sha256`，也就是 `sc` 上次写入内容的摘要；从没跑过这个版本的机器还没有这份记录，所以在它第一次重新生成之前不会打印任何东西。
 
 ## 🗑 卸载
 

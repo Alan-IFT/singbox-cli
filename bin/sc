@@ -2,11 +2,13 @@
 """sc — sing-box CLI manager. Run `sc help` for usage."""
 import argparse
 import base64
+import copy
 import hashlib
 import json
 import os
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -21,6 +23,17 @@ CFG_PATH = CFG_DIR / "config.json"
 NODES_PATH = CFG_DIR / "nodes.json"
 SETTINGS_PATH = CFG_DIR / "settings.json"
 RULES_DIR = CFG_DIR / "rules"
+# The user's own configuration fragment, applied last over everything sc composes.
+# USER-OWNED: sc never creates it, never writes it, never deletes it — which is exactly
+# why a hand-edit made here survives `sc reload` / `use` / `add` and re-running install.sh,
+# while a hand-edit to config.json does not.
+OVERRIDE_PATH = CFG_DIR / "override.json"
+# What sc last generated, as a sha256 hex digest of config.json — never a copy of it, so
+# no second set of credential bytes reaches disk. Lives under CFG_DIR rather than
+# /var/lib/sing-box because _init_files() hard-codes that directory as a Path literal, so
+# it is the one place a redirected-paths test harness cannot repoint; uninstall.sh removes
+# /etc/sing-box/ wholesale, so this leaves no residue either way.
+STATE_PATH = CFG_DIR / ".config.sha256"
 # THE mode of every credential document this tool writes. Single definition; the only
 # reader today is _write_private(). Precedent for a named single-reader constant:
 # SRS_MIN_BYTES below.
@@ -221,6 +234,34 @@ TRANSLATIONS = {
         "no answer within the 3s timeout": "3 秒超时内无响应",
         "not probed — no port recorded": "未探测 —— 没有记录端口",
         "this check could not run: {e}": "该项检查无法执行：{e}",
+        # config composition — the user override and the drift statement. None of these
+        # may contain 失败, which is the load-bearing grep literal of "failed: {e}" above.
+        "Cannot use {path}: {problem}": "无法使用 {path}：{problem}",
+        "{path} was modified outside sc — those changes are about to be replaced; put them in {override} to keep them.":
+            "{path} 曾被 sc 以外的方式修改，这些改动即将被覆盖；如需保留，请写入 {override}。",
+        "not valid JSON ({err})": "不是有效的 JSON（{err}）",
+        "the top level must be a JSON object": "顶层必须是一个 JSON 对象",
+        "not a regular file": "不是普通文件",
+        "a symbolic link whose target {target} does not exist":
+            "是一个符号链接，但其目标 {target} 不存在",
+        "cannot be read ({err})": "无法读取（{err}）",
+        "not valid UTF-8 text": "不是有效的 UTF-8 文本",
+        "larger than {n} bytes": "超过 {n} 字节",
+        "at {at}: an existing array must be changed with one of {directives}":
+            "在 {at}：修改已有数组必须使用 {directives} 之一",
+        "at {at}: unknown directive {name} — use one of {directives}":
+            "在 {at}：未知指令 {name} —— 请使用 {directives} 之一",
+        "at {at}: {name} cannot be combined with other keys in the same object":
+            "在 {at}：{name} 不能与同一对象中的其他键并存",
+        "at {at}: {name} can only be applied to an array that already exists":
+            "在 {at}：{name} 只能作用于已存在的数组",
+        "at {at}: the value of {name} must be an array": "在 {at}：{name} 的值必须是数组",
+        "at {at}: {name} needs an object with \"match\" and \"values\"":
+            "在 {at}：{name} 需要一个含 \"match\" 与 \"values\" 的对象",
+        "at {at}: {name} matched {count} elements, but exactly one is required — match: {anchor}":
+            "在 {at}：{name} 匹配到 {count} 个元素，但必须恰好匹配 1 个 —— match：{anchor}",
+        "the top level": "顶层",
+        "at {at}: this must stay an array": "在 {at}：这里必须仍然是数组",
     },
 }
 
@@ -972,17 +1013,460 @@ def _fetch_to_temp(url, tmp, prefix, tty):
             sys.stdout.flush()
 
 
+# ============ Config composition ============
+# The emitted document is COMPOSED, never written as one literal: CONFIG_BASE holds
+# everything that does not depend on run-time state, _runtime_overlay() carries everything
+# that does, and the user's own override.json is applied last. All three go through the
+# ONE merge implementation, _merge() — a second one would be a second opinion about what
+# "apply a fragment" means.
+
+
+class OverrideError(Exception):
+    """A user override that cannot be applied. Carries an already-translated problem
+    sentence; the ONE place it is rendered is main()'s handler.
+
+    Deliberately a direct Exception subclass rather than a ValueError: an unrelated
+    ValueError raised by a bug somewhere below must never reach the user dressed up as
+    "your override file is wrong".
+    """
+
+
+# The array-merge vocabulary. Reserved names: an object used as a merge value may not mix
+# a directive key with non-directive keys. $before / $after take an anchor rather than a
+# numeric index on purpose — an index computed against the base is wrong the moment an
+# earlier overlay inserts, which is precisely the case two future overlays into dns.rules
+# would hit.
+DIRECTIVES = ("$prepend", "$append", "$replace", "$before", "$after")
+# An override is hand-written; a megabyte is already three orders of magnitude more than
+# the document it patches. Enforced on the READ, never on st_size, so a file that grows
+# between the stat and the read cannot get past it.
+OVERRIDE_MAX_BYTES = 1024 * 1024
+
+
+def _directive_list():
+    """The directive vocabulary as one readable string — a tuple's repr is not a name."""
+    return ", ".join(DIRECTIVES)
+
+
+# THE base template: every key/value of the emitted document that does not depend on
+# run-time state, AT ITS EMITTED POSITION. Moved here verbatim from generate_config();
+# key order IS emission order (json.dumps preserves insertion order), so this literal must
+# never be alphabetised, re-indented into a different shape, or otherwise reordered.
+#
+# Three values are position-holding placeholders that _runtime_overlay() replaces on every
+# single run and that can therefore never be emitted: "outbounds", "route"."rule_set" and
+# "experimental"."clash_api"."external_controller". They exist so that the run-time value
+# lands on a key that ALREADY EXISTS — assigning to an existing dict key never moves it,
+# and that one fact is what keeps the composed bytes identical to the literal's.
+#
+# TUN_IFACE is captured here at IMPORT time because it is a compile-time constant (never
+# reassigned anywhere in this file). CLASH_PORT and RULES_DIR are not — main() assigns the
+# first after import and a test harness repoints the second — which is why exactly those
+# two are read at call time, by _runtime_overlay(). See docs/dev-map.md.
+CONFIG_BASE = {
+    "log": {"level": "warn", "timestamp": True},
+    "dns": {
+        "servers": [
+            {"server": "119.29.29.29", "type": "udp", "tag": "local_local"},
+            {"server": "cloudflare-dns.com", "domain_resolver": "hosts_dns",
+             "path": "/dns-query", "type": "https", "tag": "remote_dns", "detour": "proxy"},
+            {"server": "119.29.29.29", "domain_resolver": "local_local",
+             "type": "udp", "tag": "direct_dns"},
+            {"predefined": {
+                "dns.google": ["8.8.8.8", "8.8.4.4"],
+                "cloudflare-dns.com": ["104.16.249.249", "104.16.248.249"],
+                "one.one.one.one": ["1.1.1.1", "1.0.0.1"],
+                "dns.alidns.com": ["223.5.5.5", "223.6.6.6"],
+                "doh.pub": ["1.12.12.12", "120.53.53.53"],
+                "dot.pub": ["1.12.12.12", "120.53.53.53"],
+            }, "type": "hosts", "tag": "hosts_dns"},
+        ],
+        "rules": [
+            {"server": "hosts_dns", "ip_accept_any": True},
+            {"server": "remote_dns", "clash_mode": "Global"},
+            {"server": "direct_dns", "clash_mode": "Direct"},
+            {"action": "predefined", "rcode": "NOERROR", "query_type": [64, 65]},
+            {"server": "remote_dns", "rule_set": ["geosite-google"]},
+            {"server": "direct_dns", "rule_set": ["geosite-private"]},
+            {"server": "direct_dns", "domain_suffix": [
+                "alidns.com", "doh.pub", "dot.pub", "360.cn", "onedns.net"]},
+            {"server": "direct_dns", "rule_set": ["geosite-cn"]},
+        ],
+        "final": "remote_dns",
+        "independent_cache": True,
+    },
+    "inbounds": [
+        {"type": "tun", "tag": "tun-in", "interface_name": TUN_IFACE,
+         "address": ["172.19.0.1/30"], "mtu": 9000,
+         "auto_route": True, "strict_route": True, "stack": "gvisor"},
+    ],
+    "outbounds": [],        # placeholder — _runtime_overlay() $replaces it
+    "route": {
+        "default_domain_resolver": {"server": "direct_dns"},
+        "auto_detect_interface": True,
+        "rules": [
+            {"outbound": "direct", "process_name": ["sing-box"]},
+            {"action": "sniff"},
+            {"protocol": ["dns"], "action": "hijack-dns"},
+            {"outbound": "direct", "clash_mode": "Direct"},
+            {"outbound": "proxy",  "clash_mode": "Global"},
+            {"network": ["udp"], "port": [443], "action": "reject"},
+            {"outbound": "proxy",  "rule_set": ["geosite-google"]},
+            {"outbound": "direct", "ip_is_private": True},
+            {"outbound": "direct", "rule_set": ["geosite-private"]},
+            {"outbound": "direct", "domain_suffix": [
+                "alidns.com", "doh.pub", "dot.pub", "360.cn", "onedns.net"]},
+            {"outbound": "direct", "rule_set": ["geoip-cn"]},
+            {"outbound": "direct", "rule_set": ["geosite-cn"]},
+        ],
+        "rule_set": [],     # placeholder — _runtime_overlay() $replaces it
+        "final": "proxy",
+    },
+    "experimental": {
+        "cache_file": {"enabled": True, "path": "/var/lib/sing-box/cache.db",
+                       "store_fakeip": False},
+        "clash_api": {"external_controller": ""},    # placeholder — set per run
+    },
+}
+
+
+def _dig(doc, path):
+    """The value at a dotted path, or None when any step is missing or not an object."""
+    cur = doc
+    for step in path.split("."):
+        if not isinstance(cur, dict) or step not in cur:
+            return None
+        cur = cur[step]
+    return cur
+
+
+def _directive_of(value, where):
+    """Classify a dict that is being merged INTO the document: (name, payload) when it is
+    a directive object, None when it is a plain object to be merged by depth.
+
+    THE one place a directive is recognised. _apply_directive() has no edge back here, so
+    a value INSERTED into an array is never classified — which is what makes "directives
+    are interpreted only at merge positions" a property of the call graph rather than a
+    rule someone has to remember. An inserted rule may therefore contain any key at all,
+    nested arrays included, and is emitted verbatim.
+    """
+    keys = [k for k in value if isinstance(k, str) and k.startswith("$")]
+    if not keys:
+        return None
+    if len(keys) != len(value) or len(keys) > 1:
+        # Mixing a directive with ordinary keys, or two directives in one object: both
+        # would need an application order nobody stated, and both are far more likely to
+        # be a typo than an intent.
+        raise OverrideError(t("at {at}: {name} cannot be combined with other keys in "
+                              "the same object", at=where, name=keys[0]))
+    if keys[0] not in DIRECTIVES:
+        raise OverrideError(t("at {at}: unknown directive {name} — use one of "
+                              "{directives}", at=where, name=keys[0],
+                              directives=_directive_list()))
+    return (keys[0], value[keys[0]])
+
+
+def _anchor_index(current, match, name, where):
+    """Index of the SINGLE element matching `match` by subset equality: every key/value of
+    the anchor equals the element's.
+
+    Zero matches or several is an error, never a silent no-op — an overlay that quietly
+    does nothing is the failure mode this whole mechanism exists to prevent, and it is
+    indistinguishable from a working one until someone reads the emitted document.
+    """
+    if not isinstance(match, dict):
+        raise OverrideError(t("at {at}: {name} needs an object with \"match\" and "
+                              "\"values\"", at=where, name=name))
+    hits = [i for i, element in enumerate(current)
+            if isinstance(element, dict)
+            and all(k in element and element[k] == v for k, v in match.items())]
+    if len(hits) != 1:
+        raise OverrideError(t("at {at}: {name} matched {count} elements, but exactly one "
+                              "is required — match: {anchor}", at=where, name=name,
+                              count=len(hits),
+                              anchor=json.dumps(match, sort_keys=True,
+                                                ensure_ascii=False)))
+    return hits[0]
+
+
+def _apply_directive(current, name, payload, where):
+    """A NEW list: `current` with one directive applied. `current` is never mutated.
+
+    Every value taken from an overlay is deep-copied IN, so no overlay is aliased into the
+    document: _filter_rules()'s in-place edits cannot reach the caller's node objects, and
+    a second generate_config() in the same process starts from identical inputs.
+    """
+    if name in ("$before", "$after"):
+        if not isinstance(payload, dict) or set(payload) != set(("match", "values")):
+            raise OverrideError(t("at {at}: {name} needs an object with \"match\" and "
+                                  "\"values\"", at=where, name=name))
+        if not isinstance(payload["values"], list):
+            raise OverrideError(t("at {at}: the value of {name} must be an array",
+                                  at=where, name=name))
+        i = _anchor_index(current, payload["match"], name, where)
+        if name == "$after":
+            i += 1
+        return current[:i] + copy.deepcopy(payload["values"]) + current[i:]
+    if not isinstance(payload, list):
+        raise OverrideError(t("at {at}: the value of {name} must be an array",
+                              at=where, name=name))
+    if name == "$replace":
+        return copy.deepcopy(payload)
+    if name == "$prepend":
+        return copy.deepcopy(payload) + current
+    return current + copy.deepcopy(payload)             # $append
+
+
+def _merge(target, overlay, at=""):
+    """THE merge implementation: merge `overlay` into the object `target`, in place.
+
+    Objects merge by depth; arrays change ONLY under an explicit directive; a key absent
+    from the overlay keeps its current value and its current position. That last clause is
+    load-bearing for byte-identity — assigning to a key a dict already has never moves it.
+
+    A bare array where the document already holds one is an error naming the directives
+    (a user writing one dns rule to ADD it and silently getting a one-rule DNS section
+    would still pass `sing-box check` while misrouting everything), while a bare array at
+    a key the document does not have is simply accepted: there is no existing array to be
+    ambiguous about. A directive at a key that does not exist is likewise an error, not a
+    silent create — a misspelt path is the likeliest user error of all.
+    """
+    root = _directive_of(overlay, at or t("the top level"))
+    if root is not None:
+        raise OverrideError(t("at {at}: {name} can only be applied to an array that "
+                              "already exists", at=at or t("the top level"),
+                              name=root[0]))
+    for key, value in overlay.items():
+        where = (at + "." + key) if at else key
+        if isinstance(value, dict):
+            directive = _directive_of(value, where)
+            if directive is None:
+                if isinstance(target.get(key), dict):
+                    _merge(target[key], value, where)
+                else:
+                    target[key] = copy.deepcopy(value)
+            elif isinstance(target.get(key), list):
+                target[key] = _apply_directive(target[key], directive[0], directive[1],
+                                               where)
+            else:
+                raise OverrideError(t("at {at}: {name} can only be applied to an array "
+                                      "that already exists", at=where,
+                                      name=directive[0]))
+        elif isinstance(value, list):
+            if isinstance(target.get(key), list):
+                raise OverrideError(t("at {at}: an existing array must be changed with "
+                                      "one of {directives}", at=where,
+                                      directives=_directive_list()))
+            target[key] = copy.deepcopy(value)
+        else:
+            target[key] = value                         # scalars, JSON null included
+
+
+def _load_override():
+    """The user's override document, or None when there is none.
+
+    NEVER creates, writes or deletes the file: that is the whole reason a change made
+    there survives what a change to config.json does not.
+
+    os.stat comes BEFORE any open(): stat() does not block on a FIFO and open() would, so
+    it is this ORDERING — not the S_ISREG test on its own — that stops a device or fifo at
+    that path hanging the CLI forever. A symlink resolving to a regular file is fine
+    (os.stat follows it and S_ISREG judges the target); users legitimately symlink their
+    configuration into a version-controlled directory.
+
+    A whitespace-only or zero-byte file counts as ABSENT, not malformed: `touch
+    override.json` expresses "nothing yet", and whitespace cannot encode a typo. Every
+    other non-object content stays malformed.
+
+    A DANGLING symlink is malformed, not absent (BC-27/D-17): absent means "the user
+    expressed no override", while a link is an affirmative act naming a target, and a
+    moved or mistyped target is exactly a typo. ruleset_state() already decides this same
+    filesystem shape the same way (see its comment) — one file, one opinion.
+    """
+    try:
+        st = os.stat(str(OVERRIDE_PATH))
+    except FileNotFoundError:
+        # os.stat FOLLOWS links, which is what makes a link to a regular file work
+        # (D-14) and what makes a BROKEN one arrive here dressed as absent. islink is
+        # an lstat, so it does not follow; it is false for a path with no entry at all
+        # AND for a missing parent component, which is what keeps BC-7 and BC-27's
+        # final-component-only boundary intact. It never raises. This arm is entered on
+        # every override-less run, so the not-a-link outcome must stay a silent None:
+        # one extra lstat, no output, same return value (AC-31, protecting AC-1).
+        if os.path.islink(str(OVERRIDE_PATH)):
+            # realpath, not readlink: readlink names only the IMMEDIATE target, so on a
+            # chain a -> b -> c it names b, not the component that is actually missing.
+            # Neither is raise-free: racing either needs write access to root-owned /etc.
+            raise OverrideError(t("a symbolic link whose target {target} does not exist",
+                                  target=os.path.realpath(str(OVERRIDE_PATH))))
+        return None
+    except OSError as e:
+        raise OverrideError(t("cannot be read ({err})", err=e.strerror or str(e)))
+    if not stat.S_ISREG(st.st_mode):
+        raise OverrideError(t("not a regular file"))
+    try:
+        with open(str(OVERRIDE_PATH), "rb") as fh:
+            raw = fh.read(OVERRIDE_MAX_BYTES + 1)       # cap the READ, not st_size
+    except OSError as e:
+        raise OverrideError(t("cannot be read ({err})", err=e.strerror or str(e)))
+    if len(raw) > OVERRIDE_MAX_BYTES:
+        raise OverrideError(t("larger than {n} bytes", n=OVERRIDE_MAX_BYTES))
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        raise OverrideError(t("not valid UTF-8 text"))
+    if not text.strip():
+        return None
+    try:
+        doc = json.loads(text)
+    except ValueError as e:
+        raise OverrideError(t("not valid JSON ({err})", err=str(e)))
+    if not isinstance(doc, dict):
+        raise OverrideError(t("the top level must be a JSON object"))
+    return doc
+
+
+def _compose(overlays):
+    """The composed document: CONFIG_BASE with each overlay merged in, in order.
+
+    deepcopy, not a reference: _filter_rules() mutates surviving rules in place and
+    generate_config() deletes route.rule_set, so anything short of a deep copy would
+    corrupt the template for the SECOND call in the same process.
+    """
+    doc = copy.deepcopy(CONFIG_BASE)
+    for overlay in overlays:
+        _merge(doc, overlay)
+    return doc
+
+
+def _runtime_overlay(nodes, active, report):
+    """The one carrier of run-time content, expressed as an overlay so that the shipped
+    path exercises _merge() on every single run rather than only when a user has written
+    an override.
+
+    Each value lands on a key CONFIG_BASE already defines, which is what preserves its
+    emitted position: outbounds and route.rule_set are $replace'd, and
+    external_controller reaches its slot by depth-merge over an existing scalar. The
+    selector's own nested "outbounds" array sits INSIDE a directive payload, so it is
+    copied verbatim and never re-interpreted.
+
+    RULES_DIR and CLASH_PORT are read here, at call time. TUN_IFACE deliberately is not:
+    it is a compile-time constant and CONFIG_BASE names it directly.
+    """
+    node_tags = [n["tag"] for n in nodes]
+    selector = {
+        "type": "selector",
+        "tag": "proxy",
+        "outbounds": node_tags + ["direct"],
+        "default": active or "direct",
+        "interrupt_exist_connections": True,
+    }
+    return {
+        "outbounds": {"$replace":
+                      [selector] + nodes + [{"type": "direct", "tag": "direct"}]},
+        "route": {"rule_set": {"$replace": [
+            {"tag": tag, "type": "local", "format": "binary",
+             "path": str(RULES_DIR / fname)}
+            for tag, fname, status in report if status == "usable"
+        ]}},
+        "experimental": {
+            "clash_api": {"external_controller": f"127.0.0.1:{CLASH_PORT}"},
+        },
+    }
+
+
+
 # ============ Config generation ============
 
+def _config_digest():
+    """sha256 hex of config.json AS IT IS ON DISK, or None when it cannot be read.
+
+    THE single definition of "which document is this" for drift purposes: the record
+    writer and the drift check both call it, so the two can never form different opinions
+    about what "unchanged" means. Hashing the FILE rather than the in-memory text is what
+    makes the record locale-independent and makes "what was recorded" and "what is on
+    disk" the same question by construction.
+
+    Deliberately separate from ruleset_state(), which answers a different question about a
+    different file and must not grow a second job.
+    """
+    digest = hashlib.sha256()
+    try:
+        with CFG_PATH.open("rb") as fh:
+            while True:
+                chunk = fh.read(65536)
+                if not chunk:
+                    break
+                digest.update(chunk)
+    except OSError:
+        return None
+    return digest.hexdigest()
+
+
+def _record_generated():
+    """Record what sc just installed. Called ONLY after a successful _write_private() of
+    config.json, so the record can never claim a document that never reached disk.
+
+    Best-effort, in the shape _resolve_clash_port() already uses for a derived value: the
+    realistic causes of a failure here (ENOSPC, EROFS) would have failed the config.json
+    write one line earlier, and an absent record degrades to "unknown" — never to a false
+    drift warning. The record is a 65-byte hex digest and holds no credential bytes, and
+    it still goes through the one writer at 0600, which costs nothing and settles the
+    question.
+    """
+    digest = _config_digest()
+    if digest is None:
+        return
+    try:
+        _write_private(STATE_PATH, digest + "\n")
+    except OSError:
+        pass
+
+
+def _warn_drift():
+    """One stderr line when config.json on disk is not what sc last generated.
+
+    Loud, and never blocking: a drifted host must still be able to switch nodes and re-run
+    install.sh, so a diagnostic may not lock the user out. Nothing is backed up either —
+    that would put a second copy of credential bytes on disk to solve a problem the
+    override file solves properly.
+
+    NO record means UNKNOWN and says nothing. Every host upgrading from a build before
+    this one has no record, and a warning that fires on 100% of installs at first upgrade
+    teaches people to ignore exactly the warning that has to stay loud.
+
+    Reads config.json into memory only; writes nothing, and never logs its content.
+    """
+    try:
+        recorded = STATE_PATH.read_text().strip()
+    except (OSError, ValueError):
+        return
+    if not recorded:
+        return
+    current = _config_digest()
+    if current is None or current == recorded:
+        return
+    sys.stderr.write("⚠️  " + t(
+        "{path} was modified outside sc — those changes are about to be replaced; put "
+        "them in {override} to keep them.",
+        path=CFG_PATH, override=OVERRIDE_PATH) + "\n")
+
+
 def generate_config():
+    # The override is parsed FIRST, before any state is read or written, so an unreadable
+    # or malformed one costs the user nothing at all. A merge-time fault still lands after
+    # the active-node rewrite below, because that side effect and its ordering are pinned
+    # behaviour; it is idempotent and touches neither config.json nor the service.
+    override = _load_override()
+
     nodes_data = load_nodes()
     nodes = nodes_data["nodes"]
     active = nodes_data.get("active")
 
-    # The ONE rule-set query. The same `usable` set drives the definition list and both
-    # reference arrays, so a tag can never be referenced without being defined.
+    # The ONE rule-set query. The same report drives the definition list and, through the
+    # composed document, both reference arrays — so a tag can never be referenced without
+    # being defined.
     report = ruleset_report()
-    usable = usable_tags(report)
 
     node_tags = [n["tag"] for n in nodes]
     if active not in node_tags:
@@ -990,91 +1474,32 @@ def generate_config():
         nodes_data["active"] = active
         save_nodes(nodes_data)
 
-    selector = {
-        "type": "selector",
-        "tag": "proxy",
-        "outbounds": (node_tags or []) + ["direct"],
-        "default": active or "direct",
-        "interrupt_exist_connections": True,
-    }
+    overlays = [_runtime_overlay(nodes, active, report)]
+    if override is not None:
+        overlays.append(override)       # the user's document is applied LAST, over all
+    config = _compose(overlays)
 
-    config = {
-        "log": {"level": "warn", "timestamp": True},
-        "dns": {
-            "servers": [
-                {"server": "119.29.29.29", "type": "udp", "tag": "local_local"},
-                {"server": "cloudflare-dns.com", "domain_resolver": "hosts_dns",
-                 "path": "/dns-query", "type": "https", "tag": "remote_dns", "detour": "proxy"},
-                {"server": "119.29.29.29", "domain_resolver": "local_local",
-                 "type": "udp", "tag": "direct_dns"},
-                {"predefined": {
-                    "dns.google": ["8.8.8.8", "8.8.4.4"],
-                    "cloudflare-dns.com": ["104.16.249.249", "104.16.248.249"],
-                    "one.one.one.one": ["1.1.1.1", "1.0.0.1"],
-                    "dns.alidns.com": ["223.5.5.5", "223.6.6.6"],
-                    "doh.pub": ["1.12.12.12", "120.53.53.53"],
-                    "dot.pub": ["1.12.12.12", "120.53.53.53"],
-                }, "type": "hosts", "tag": "hosts_dns"},
-            ],
-            "rules": [
-                {"server": "hosts_dns", "ip_accept_any": True},
-                {"server": "remote_dns", "clash_mode": "Global"},
-                {"server": "direct_dns", "clash_mode": "Direct"},
-                {"action": "predefined", "rcode": "NOERROR", "query_type": [64, 65]},
-                {"server": "remote_dns", "rule_set": ["geosite-google"]},
-                {"server": "direct_dns", "rule_set": ["geosite-private"]},
-                {"server": "direct_dns", "domain_suffix": [
-                    "alidns.com", "doh.pub", "dot.pub", "360.cn", "onedns.net"]},
-                {"server": "direct_dns", "rule_set": ["geosite-cn"]},
-            ],
-            "final": "remote_dns",
-            "independent_cache": True,
-        },
-        "inbounds": [
-            {"type": "tun", "tag": "tun-in", "interface_name": TUN_IFACE,
-             "address": ["172.19.0.1/30"], "mtu": 9000,
-             "auto_route": True, "strict_route": True, "stack": "gvisor"},
-        ],
-        "outbounds": [selector] + nodes + [{"type": "direct", "tag": "direct"}],
-        "route": {
-            "default_domain_resolver": {"server": "direct_dns"},
-            "auto_detect_interface": True,
-            "rules": [
-                {"outbound": "direct", "process_name": ["sing-box"]},
-                {"action": "sniff"},
-                {"protocol": ["dns"], "action": "hijack-dns"},
-                {"outbound": "direct", "clash_mode": "Direct"},
-                {"outbound": "proxy",  "clash_mode": "Global"},
-                {"network": ["udp"], "port": [443], "action": "reject"},
-                {"outbound": "proxy",  "rule_set": ["geosite-google"]},
-                {"outbound": "direct", "ip_is_private": True},
-                {"outbound": "direct", "rule_set": ["geosite-private"]},
-                {"outbound": "direct", "domain_suffix": [
-                    "alidns.com", "doh.pub", "dot.pub", "360.cn", "onedns.net"]},
-                {"outbound": "direct", "rule_set": ["geoip-cn"]},
-                {"outbound": "direct", "rule_set": ["geosite-cn"]},
-            ],
-            "rule_set": [
-                {"tag": tag, "type": "local", "format": "binary",
-                 "path": str(RULES_DIR / fname)}
-                for tag, fname, status in report if status == "usable"
-            ],
-            "final": "proxy",
-        },
-        "experimental": {
-            "cache_file": {"enabled": True, "path": "/var/lib/sing-box/cache.db",
-                           "store_fakeip": False},
-            "clash_api": {"external_controller": f"127.0.0.1:{CLASH_PORT}"},
-        },
-    }
+    # NOT schema validation — that is `sing-box check`'s job. Exactly the three arrays the
+    # block below indexes into, so an override that turns one of them into a scalar earns
+    # a sentence rather than a traceback. It cannot fire when there is no override.
+    for at in ("dns.rules", "route.rules", "route.rule_set"):
+        if not isinstance(_dig(config, at), list):
+            raise OverrideError(t("at {at}: this must stay an array", at=at))
 
-    # Degrade per file: drop every rule that references a rule-set we did not define,
-    # in BOTH rule arrays. An unusable rule-set costs routing granularity, never start-up.
+    # Degrade per file: drop every rule that references a rule-set the composed document
+    # does not DEFINE, in BOTH rule arrays. The tags come from the document rather than
+    # from usable_tags(report) — identical by construction when there is no override,
+    # since the overlay builds route.rule_set from exactly the usable entries of the same
+    # report, and it is what stops a user-defined rule-set having every rule referencing
+    # it silently deleted. Computed BEFORE the empty-case deletion below.
+    defined = set(d.get("tag") for d in config["route"]["rule_set"]
+                  if isinstance(d, dict))
     if not config["route"]["rule_set"]:
         del config["route"]["rule_set"]     # an absent optional field beats an empty one
-    config["dns"]["rules"] = _filter_rules(config["dns"]["rules"], usable)
-    config["route"]["rules"] = _filter_rules(config["route"]["rules"], usable)
+    config["dns"]["rules"] = _filter_rules(config["dns"]["rules"], defined)
+    config["route"]["rules"] = _filter_rules(config["route"]["rules"], defined)
     _warn_degraded(report)
+    _warn_drift()       # stderr only, and BEFORE the file it warns about is replaced
 
     # Ordering versus `sing-box check` is unchanged: the config is written first.
     try:
@@ -1083,6 +1508,7 @@ def generate_config():
         sys.stderr.write("⚠️  " + t("Could not write {path}: {err}",
                                     path=CFG_PATH, err=_plain(e.strerror or str(e))) + "\n")
         return False
+    _record_generated()     # only after the document really reached disk
 
     r = subprocess.run([SB_BIN, "check", "-c", str(CFG_PATH)],
                        capture_output=True, text=True)
@@ -1090,7 +1516,6 @@ def generate_config():
         sys.stderr.write("⚠️  " + t("Config check failed:\n{stderr}", stderr=r.stderr) + "\n")
         return False
     return True
-
 
 def restart_service():
     if SYSTEMD:
@@ -2051,7 +2476,21 @@ def main():
         "lang": cmd_lang,
         "help": cmd_help, None: cmd_help,
     }
-    handlers.get(args.cmd, cmd_help)(args)
+    try:
+        handlers.get(args.cmd, cmd_help)(args)
+    except OverrideError as e:
+        # THE one rendering site for a user override that cannot be applied. Assembling
+        # the whole sentence here and passing it through _plain() ONCE is what makes the
+        # non-TTY contract true for every foreign fragment inside it (a key name, an
+        # anchor, an OS message) without a _plain() call at each raise site. The newline
+        # collapse is separate on purpose: _plain() removes CR and CSI sequences but not
+        # \n, and a JSON key may legally contain one — `sc reload` output is captured
+        # into the install log, which wants one complete line per fact.
+        # This names OVERRIDE_PATH unconditionally, which is truthful only while the
+        # user's document is the only overlay that can fail. A later task shipping a
+        # content overlay that can raise must revisit this line.
+        sys.exit(_plain(t("Cannot use {path}: {problem}",
+                          path=OVERRIDE_PATH, problem=str(e)).replace("\n", " ")))
 
 
 if __name__ == "__main__":
