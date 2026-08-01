@@ -23,3 +23,33 @@ they were the oldest lines (rule 70: "Cuts are made by removing what doesn't ear
     carries results and per-file causes; stderr carries aggregates and warnings"* — which the developer
     agent reads before writing code. The index line duplicated a rule that already lives closer to the
     work.
+
+## Rotated 2026-08-01 (during `config-write-permission-hardening` / T-13 archive)
+
+The index stood at its 30-line cap before T-13 harvested anything, and `archive-task.sh`'s rotation
+is still broken (it harvests but does not rotate — the same defect T-05 recorded). The PM rotated
+these three by hand **before** running the script, so the harvest lands at exactly 30 lines and F.4
+never turns WARN. Chosen by rule 70's "what no longer earns its line", not oldest-first: one is
+factually superseded, one was superseded by a later refinement of the same trap, and one is a
+fixture detail with no live consumer.
+
+- 2026-08-01 · `check-i18n-parity.sh` (now `verify_all` B.2) renders both languages *through* `install.sh`'s own `LANG_CHOICE` dispatch, so breaking that dispatch makes it render the **en** table twice, agree on every comparison, print `OK: 41 keys, both languages` and exit 0 while the zh path is entirely unreachable — a committed gate that passes by rendering the same table twice · evidence: install-version-query-abort
+  - **Why rotated:** **superseded by a fix.** Commit `49506f8` added a `--- 3b. self-check` step to
+    `check-i18n-parity.sh` (`:98-107`) that `die2`s when the two renders come back byte-identical, so
+    the false-green path this line warns about is closed in the committed gate. T-13's gate reviewer
+    established that R-7's *other* blind spot is still live and it replaces this line in the index —
+    keeping both would have spent two of thirty lines on one gate.
+
+- 2026-07-31 · `http.client.HTTPResponse.read(n)` blocks until it has all `n` bytes, so a 64 KiB chunk loop emits exactly one progress redraw for any body under 64 KiB — progress fixtures must exceed the chunk size or they assert nothing · evidence: config-degrade-missing-rulesets
+  - **Why rotated:** **superseded by a later, more accurate reading of the same trap**, which is
+    already in the index: *"a progress-redraw fixture's non-vacuity is carried by the server's
+    **throttle**, not the body size — an 8 MiB body with `sleep=0` yields `states=1` exactly like a
+    1 KiB body"* (`install-binary-download-progress`). That entry says explicitly that it refines this
+    one, and acting on this line alone (make the body bigger) produces a fixture that still asserts
+    nothing. Keeping the superseded version alongside its correction is worse than dropping it.
+
+- 2026-07-31 · The smallest real MetaCubeX rule-set (`geosite-private.srs`) is 696 bytes, and all four configured mirror bases return byte-identical content · evidence: config-degrade-missing-rulesets
+  - **Why rotated:** a **fixture measurement with no live consumer**. It was load-bearing while T-02
+    was choosing `SRS_MIN_BYTES`; that constant is now committed in `bin/sc` and `docs/dev-map.md`
+    carries the usability model, so nothing an agent does today turns on remembering the 696-byte
+    figure. Re-measurable in one `curl` if it ever matters again.

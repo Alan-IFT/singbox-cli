@@ -187,7 +187,7 @@ sc help
 |---|---|
 | sing-box 二进制 | `/usr/local/bin/sing-box` |
 | sc CLI | `/usr/local/bin/sc` |
-| sing-box 配置（自动生成） | `/etc/sing-box/config.json` |
+| sing-box 配置（自动生成） | `/etc/sing-box/config.json`（mode 600） |
 | 节点列表（含密码） | `/etc/sing-box/nodes.json`（mode 600） |
 | 设置 | `/etc/sing-box/settings.json` |
 | 规则集 | `/etc/sing-box/rules/*.srs` |
@@ -215,6 +215,7 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/Alan-IFT/singbox-cl
 ## ⚠️ 安全考虑
 
 - `nodes.json` 包含节点密码/UUID，权限 600，仅 root 可读
+- `config.json` 由 `nodes.json` 生成，内嵌同样的凭据，因此同样是权限 600。两者都是先写进一个「落第一个字节之前就已经是 600」的新文件，再原子地移动到正式路径，所以它们在任何一个瞬间都不会被 root 以外的人读到 —— 包括正在被写入的那一瞬间。附带的影响：`sing-box check -c /etc/sing-box/config.json` 现在需要 root 才能执行，这是应有的行为
 - `sc` CLI 通过 sudoers NOPASSWD 实现免密，规则范围只限 `/usr/local/bin/sc` 这一个二进制
 - `sc` 自身是 root 拥有，普通用户无法修改，所以 NOPASSWD 不会被绕过
 - 若机器多用户共享，请评估是否需要把 NOPASSWD 改为有密码

@@ -71,6 +71,21 @@
   wants wired into `verify_all` B.2/B.3; AC-19 caps that diff at `install.sh` + `CHANGELOG.md`, so the
   extractor runs at QA time and is pasted into `06_TEST_REPORT.md` for T-07 to commit. This is the
   third row to hit the same wall — the next one should probably widen its own diff instead.
+  **Re-occurrence (fourth):** T-13 `config-write-permission-hardening` §8 D-8 — deferred again, but on a
+  **structural** reason rather than a diff boundary, which is what the previous three rested on. T-13's own
+  binding AC-23 requires `verify_all` to PASS **with zero delta in PASS/WARN/FAIL/SKIP counts** against a
+  pristine `HEAD` clone; `verify_all.sh:77` is a hard-coded `step "B.3" "Lint" "SKIP"`, so wiring any real
+  test step necessarily moves a count and breaks AC-23 as written. Committing a suite *without* wiring it
+  would be strictly worse — an unrun suite is what `baseline.json`'s `test_count: 0` (R-4) already records.
+  The honest scope is three files T-13 has no criteria for: a `verify_all.sh` step, the `verify_all.ps1`
+  mirror (R-6 already records the two diverging) and `baseline.json` (R-4). **Paid down instead of deferred
+  silently:** T-13's `02_SOLUTION_DESIGN.md` §14 V-1 specifies the *neutralisation recipe* as a design
+  artifact — an `os` shim installed in `sys.modules` so `geteuid()` returns 0 and `bin/sc:83`'s branch is
+  never taken, **with no mutation of `bin/sc`'s source** — which is the piece every prior task re-invented
+  and the piece the live-service incident in `.harness/insight-index.md` came from; it goes into
+  `docs/dev-map.md` so the next task inherits a design rather than a blank page. **Unblock path:** its own
+  numbered row scoped to those three files, or a gate ruling that AC-23 means "no regression" rather than
+  "zero delta", in which case the harness ships inside that task as a new `B.4`.
 
 ## t-fmt-default-fallback
 - **Decision:** declined (`t()` in `install.sh` keeps `local fmt` with no default).
@@ -216,3 +231,36 @@
   settings key) and does not wrap shared **procedure**.
 - **Origin:** T-05 `sc-doctor`, `docs/features/sc-doctor/02_SOLUTION_DESIGN.md` §3.5, against rule 85's
   "duplicated judgment" test.
+
+## umask-bracket-for-credential-writes
+- **Decision:** declined (`_write_private()` sets the mode with `os.fchmod` on the open descriptor, before
+  the first byte is written; `os.umask()` is never called).
+- **Why:** a `umask(0o077)` bracket around the write looks like the cheap way to defeat the fact that
+  `open(2)`'s mode argument is masked, but it is process-global and not thread-safe: it changes the mode of
+  every file *any* concurrent code creates, and a signal or an exception between set and restore leaves the
+  process' umask altered for everything after it. It also defeats only one of the three facts NFR-1 names —
+  a mode argument is **ignored entirely** for a file that already exists, so a umask bracket still cannot
+  make an existing `0644` `config.json` end at `0600` (that is the reporter's own host, T-13 E-14), and it
+  does nothing about the window between content landing and a trailing `chmod`. The chosen construction
+  attributes each of the three facts to a different element: `mkstemp`'s `O_CREAT|O_EXCL` + `0o600` mode
+  argument (an **upper** bound — CPython `tempfile.py:395` passes it straight to `os.open`, so umask still
+  masks it), `os.fchmod` on the still-empty descriptor (makes it *exactly* `0600`), and `os.replace`
+  (the target is never opened, so its previous mode is irrelevant).
+- **Origin:** T-13 `config-write-permission-hardening`,
+  `docs/features/config-write-permission-hardening/02_SOLUTION_DESIGN.md` §3.4.
+
+## shared-atomic-write-helper-with-ruleset-downloader
+- **Decision:** declined (`_write_private()` and the rule-set downloader's `_temp_path()` /
+  `_clear_stale_temps()` / `_fetch_to_temp()` stay separate; what they share is one stdlib call,
+  `os.replace`).
+- **Why:** the two temp-then-replace paths are the same *shape* and different *jobs*. The rule-set path
+  streams **unvalidated** bytes off a socket, must be interruptible and re-runnable, needs a cross-run stale
+  sweeper because its directory is scanned (`bin/sc:821`), and must not be mode-pinned (T-13 NG-5). The
+  credential path has its content in memory, needs no validation hook, and must **not** have a sweeper in
+  its directory (T-13 BC-10/NG-11 — a sweeper cannot tell a dead run's temp from a concurrent run's without
+  re-deriving `_clear_stale_temps`' prefix-coupling seam, `docs/tasks.md` T-02 note 6). A shared helper
+  would therefore need a mode parameter, a streaming-vs-in-memory split and a validate-before-replace hook:
+  three parameters to serve two callers, i.e. a pass-through with a config object, which fails the deletion
+  test (delete it and no complexity reappears — each caller keeps its own loop either way).
+- **Origin:** T-13 `config-write-permission-hardening`,
+  `docs/features/config-write-permission-hardening/02_SOLUTION_DESIGN.md` §8 D-3, against rule 85.

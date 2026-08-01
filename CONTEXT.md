@@ -75,6 +75,15 @@ A generated `config.json` from which unusable rule-sets and every routing rule r
 have been dropped, so sing-box starts with less routing granularity instead of failing to start.
 _Avoid_: fallback config, broken config, partial config
 
+**credential document**:
+A file this tool creates that holds node credentials — today `/etc/sing-box/config.json` and
+`/etc/sing-box/nodes.json`, plus any temporary object holding their bytes. Every credential
+document is installed by `_write_private()` and is mode `0600` at every instant it holds content,
+never only at the end of a write. `settings.json` and `rules/*.srs` are not credential documents.
+T-13's `01_REQUIREMENT_ANALYSIS.md` calls this a "credential-bearing file"; use *credential
+document* from here on.
+_Avoid_: secret file, private file, sensitive config, protected file
+
 ## Project intent
 
 **singbox-cli is a headless v2rayN.** Stated by the owner 2026-08-01: 「初衷是实现一个类似于非桌面版

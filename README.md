@@ -187,7 +187,7 @@ User runs the sc CLI:
 |---|---|
 | sing-box binary | `/usr/local/bin/sing-box` |
 | sc CLI | `/usr/local/bin/sc` |
-| sing-box config (auto-generated) | `/etc/sing-box/config.json` |
+| sing-box config (auto-generated) | `/etc/sing-box/config.json` (mode 600) |
 | Node list (with credentials) | `/etc/sing-box/nodes.json` (mode 600) |
 | Settings | `/etc/sing-box/settings.json` |
 | Rulesets | `/etc/sing-box/rules/*.srs` |
@@ -215,6 +215,7 @@ This wipes the service unit, `/etc/sing-box/` (incl. nodes), `/var/lib/sing-box/
 ## ⚠️ Security notes
 
 - `nodes.json` contains node credentials/UUIDs, mode 600, root-only readable.
+- `config.json` is generated from `nodes.json` and embeds the same credentials, so it is mode 600 too. Both are written to a fresh file that is already mode 600 before its first byte, then moved into place, so neither is ever readable by anyone but root — not even for the instant it is being written. One consequence: `sing-box check -c /etc/sing-box/config.json` now needs root, as it should.
 - `sc` uses sudoers NOPASSWD, scoped to `/usr/local/bin/sc` only.
 - `sc` is owned by root, regular users cannot modify it, so NOPASSWD cannot be bypassed.
 - For multi-user machines, consider switching NOPASSWD back to password-required.

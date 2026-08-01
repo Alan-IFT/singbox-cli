@@ -9,6 +9,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -20,6 +21,10 @@ CFG_PATH = CFG_DIR / "config.json"
 NODES_PATH = CFG_DIR / "nodes.json"
 SETTINGS_PATH = CFG_DIR / "settings.json"
 RULES_DIR = CFG_DIR / "rules"
+# THE mode of every credential document this tool writes. Single definition; the only
+# reader today is _write_private(). Precedent for a named single-reader constant:
+# SRS_MIN_BYTES below.
+CRED_MODE = 0o600
 LIB_DIR = Path("/usr/local/lib/singbox-cli")
 SERVICE = "sing-box"
 # THE name of this project's TUN device. One definition, three consumers:
@@ -96,6 +101,7 @@ TRANSLATIONS = {
         "Error: '{spec}' matches multiple nodes:\n  {names}": "错误：'{spec}' 匹配多个节点：\n  {names}",
         "Error: no node matches '{spec}' (try `sc ls`)": "错误：未找到匹配 '{spec}' 的节点（请运行 `sc ls`）",
         "Error: {e}": "错误：{e}",
+        "Could not write {path}: {err}": "无法写入 {path}：{err}",
         "Error: mode must be one of rule / global / direct": "错误：模式必须是 rule / global / direct 之一",
         "Error: argument must be on or off": "错误：参数必须为 on 或 off",
         "Error: cannot determine target user": "错误：无法确定目标用户",
@@ -303,13 +309,67 @@ def t(s, **kwargs):
 
 # ============ State files ============
 
+def _write_private(path, text):
+    """Install `text` at `path` as a regular file at mode exactly CRED_MODE, atomically.
+
+    Three facts make "0600 at every instant" true and each is carried by a DIFFERENT
+    element — none of them is a chmod after the write, which is the window this exists
+    to remove:
+
+      * mkstemp creates a NEW object under an unpredictable name in `path`'s own
+        directory with O_CREAT|O_EXCL|O_NOFOLLOW and mode 0o600. open(2)'s mode argument
+        is masked by the umask, so it is an UPPER bound: the object can appear at 0600 or
+        narrower, never wider — and it is empty at that instant.
+      * os.fchmod on the still-empty descriptor makes the mode exactly 0600 whatever the
+        umask cleared, and it runs BEFORE the first byte, so no content is ever behind a
+        wider mode.
+      * os.replace() is rename(2): it swaps a directory entry and never touches the
+        inode, so the mode travels with the content and the target's PREVIOUS mode is
+        irrelevant (an O_CREAT mode argument would have been ignored for an existing
+        file). It is atomic, so a concurrent reader sees one whole document; and it
+        replaces a symlinked target with this regular file instead of writing through it.
+
+    dir= is load-bearing twice: os.replace across filesystems raises EXDEV, and a default
+    TMPDIR would put credential bytes outside the configuration directory.
+
+    Raises OSError — the caller renders it, as _egress_ip() and _fetch_to_temp() do. The
+    target is never opened for writing, so every failure leaves the previous document
+    byte-identical, and no temporary survives either outcome.
+    """
+    fd, tmp = tempfile.mkstemp(
+        dir=str(path.parent),
+        prefix=path.name + ".tmp." + str(os.getpid()) + ".")
+    try:
+        os.fchmod(fd, CRED_MODE)
+        fh = os.fdopen(fd, "w")          # fh owns the fd from here
+        fd = -1
+        try:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())        # surface ENOSPC BEFORE the replace, never after
+        finally:
+            fh.close()
+        os.replace(tmp, str(path))
+        tmp = None
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        if tmp is not None:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+
 def _init_files():
     CFG_DIR.mkdir(parents=True, exist_ok=True)
     RULES_DIR.mkdir(parents=True, exist_ok=True)
     Path("/var/lib/sing-box").mkdir(parents=True, exist_ok=True)
     if not NODES_PATH.exists():
-        NODES_PATH.write_text(json.dumps({"active": None, "nodes": []}, indent=2))
-        os.chmod(NODES_PATH, 0o600)
+        # Through save_nodes() so "how the node store is written" is stated once:
+        # json.dumps of a pure-ASCII literal is byte-identical with or without
+        # ensure_ascii=False, and this path inherits save_nodes()' loud failure.
+        save_nodes({"active": None, "nodes": []})
     if not SETTINGS_PATH.exists():
         SETTINGS_PATH.write_text(json.dumps(
             {"default_tun": True, "mode": "rule", "lang": "en"}, indent=2))
@@ -320,8 +380,11 @@ def load_nodes():
 
 
 def save_nodes(d):
-    NODES_PATH.write_text(json.dumps(d, indent=2, ensure_ascii=False))
-    os.chmod(NODES_PATH, 0o600)
+    try:
+        _write_private(NODES_PATH, json.dumps(d, indent=2, ensure_ascii=False))
+    except OSError as e:
+        sys.exit(t("Could not write {path}: {err}",
+                   path=NODES_PATH, err=_plain(e.strerror or str(e))))
 
 
 def load_settings():
@@ -1013,8 +1076,13 @@ def generate_config():
     config["route"]["rules"] = _filter_rules(config["route"]["rules"], usable)
     _warn_degraded(report)
 
-    CFG_PATH.write_text(json.dumps(config, indent=2, ensure_ascii=False))
-    os.chmod(CFG_PATH, 0o600)
+    # Ordering versus `sing-box check` is unchanged: the config is written first.
+    try:
+        _write_private(CFG_PATH, json.dumps(config, indent=2, ensure_ascii=False))
+    except OSError as e:
+        sys.stderr.write("⚠️  " + t("Could not write {path}: {err}",
+                                    path=CFG_PATH, err=_plain(e.strerror or str(e))) + "\n")
+        return False
 
     r = subprocess.run([SB_BIN, "check", "-c", str(CFG_PATH)],
                        capture_output=True, text=True)

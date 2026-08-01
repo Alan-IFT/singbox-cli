@@ -117,6 +117,7 @@ selector 出站类型支持运行时切换默认节点。`sc use <name>` 实际�
 | 资产 | 保护手段 |
 |---|---|
 | `nodes.json`（含密码/UUID） | mode 600，仅 root 可读 |
+| `config.json`（由 nodes.json 生成，内嵌同样的凭据） | mode 600，仅 root 可读；先建一个空文件并把权限设成 600，再写内容、原子替换，所以写入过程中也不会宽于 600 |
 | `sc` CLI 自身 | mode 755 root:root，普通用户改不动 |
 | sudoers NOPASSWD | 范围限定为 `/usr/local/bin/sc`，不是 ALL |
 | sing-box 进程 | systemd 启动，root 权限运行（TUN 需要 CAP_NET_ADMIN） |

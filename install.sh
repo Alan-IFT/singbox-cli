@@ -183,6 +183,13 @@ t() {
             fail_log)            fmt="详细错误已记录在 %s" ;;
             fail_nolog)          fmt="%s 不可写，本次的详细错误没有保存；请直接运行上面的命令查看错误输出。" ;;
             step6_nolog)         fmt="  ⚠️ 规则集下载失败，%s 不可写，详细原因未能保存，稍后用 'sc update-rules' 重试" ;;
+            perm_header)         fmt="▶ 检查凭据文件权限（%s）..." ;;
+            perm_ok)             fmt="  ✔ %s：权限 %s —— 未改动" ;;
+            perm_absent)         fmt="  · %s：不存在 —— 无需检查" ;;
+            perm_fixed)          fmt="  ⚠️ %s：原权限 %s —— 已收紧为 %s" ;;
+            perm_problem)        fmt="  ❌ %s：权限 %s 无法收紧 —— 请手动执行：chmod %s %s" ;;
+            perm_unknown)        fmt="  ❌ %s：读不到权限 —— 请手动检查" ;;
+            perm_skip)           fmt="  ❌ %s：不是普通文件 —— 未改动" ;;
         esac
     else
         case "$key" in
@@ -227,6 +234,13 @@ t() {
             fail_log)            fmt="The detailed error was written to %s" ;;
             fail_nolog)          fmt="%s is not writable, so the detailed error was not saved — run the commands above to see it." ;;
             step6_nolog)         fmt="  ⚠️ Ruleset download failed — %s is not writable, so the cause was not saved; retry later with 'sc update-rules'" ;;
+            perm_header)         fmt="▶ Checking credential file permissions in %s ..." ;;
+            perm_ok)             fmt="  ✔ %s: mode %s — left unchanged" ;;
+            perm_absent)         fmt="  · %s: not present — nothing to check" ;;
+            perm_fixed)          fmt="  ⚠️ %s: mode was %s — narrowed to %s" ;;
+            perm_problem)        fmt="  ❌ %s: mode %s could not be narrowed — run: chmod %s %s" ;;
+            perm_unknown)        fmt="  ❌ %s: its mode could not be read — check it by hand" ;;
+            perm_skip)           fmt="  ❌ %s: not a regular file — left untouched" ;;
         esac
     fi
     if [ "$#" -gt 0 ]; then
@@ -285,6 +299,67 @@ install_report() {
         t fail_nolog "$INSTALL_LOG"
     fi
     return 1
+}
+
+# ----------------- credential permission sweep -----------------
+# THE one place this script names the directory it sweeps and the documents it sweeps.
+# Both are referenced ONLY inside sweep_credential_modes(), which is what makes the
+# section verifiable against a temp dir: a harness extracts the function, defines these
+# three variables itself and never runs the installer. Same discipline as bin/sc's path
+# constants — "only ever referenced inside function bodies, so a test harness can repoint
+# them" (docs/dev-map.md, "Paths" row).
+CRED_DIR="/etc/sing-box"
+# settings.json is deliberately absent: it carries no credential, and narrowing it is a
+# user-visible change nobody asked for. rules/*.srs and the directory itself are out by
+# the same rule.
+CRED_FILES=(config.json nodes.json)
+CRED_MODE=600
+
+# Reports the mode of every credential document and narrows — never widens — any found
+# wider than CRED_MODE. Structurally incapable of terminating the installer under
+# `set -euo pipefail`: every command whose status can be non-zero sits in an `if`
+# condition or a `case`, which are set -e's exempt contexts. Reads nothing from PHASE_*
+# and writes nothing to it, so install_report()'s derivation and the exit status are
+# untouched.
+sweep_credential_modes() {
+    local f path mode newmode
+    t perm_header "$CRED_DIR"
+    for f in "${CRED_FILES[@]}"; do
+        path="$CRED_DIR/$f"
+        # -L before -e: a broken symlink is a symlink, not an absent file. `chmod`
+        # FOLLOWS a symlink (Linux has no lchmod) while GNU `stat` does NOT dereference
+        # unless given -L — so without this guard the sweep would read the LINK's own
+        # mode (777), decide it needs narrowing, and chmod the link's DESTINATION, i.e.
+        # an arbitrary path a planted link chose for it. The guard must stay first.
+        if [ -L "$path" ];   then t perm_skip   "$path"; continue; fi
+        if [ ! -e "$path" ]; then t perm_absent "$path"; continue; fi
+        if [ ! -f "$path" ]; then t perm_skip   "$path"; continue; fi
+        mode=""
+        if ! mode=$(stat -c '%a' "$path" 2>/dev/null); then mode=""; fi
+        # Validate BEFORE any arithmetic: $((8#$mode)) on unexpected text is a syntax
+        # error, which is non-zero AND prints — the silent-abort class this file has a
+        # history of.
+        case "$mode" in
+            [0-7]|[0-7][0-7]|[0-7][0-7][0-7]|[0-7][0-7][0-7][0-7]) ;;
+            *) t perm_unknown "$path"; continue ;;
+        esac
+        if [ $((8#$mode & 8#077)) -eq 0 ]; then
+            t perm_ok "$path" "$mode"          # 0600 or narrower: no chmod is issued
+            continue
+        fi
+        if ! chmod "$CRED_MODE" "$path" 2>/dev/null; then
+            t perm_problem "$path" "$mode" "$CRED_MODE" "$path"
+            continue
+        fi
+        # Re-read rather than assert the intent: the line states what IS, not what we asked for.
+        newmode=""
+        if ! newmode=$(stat -c '%a' "$path" 2>/dev/null); then newmode=""; fi
+        if [ "$newmode" = "$CRED_MODE" ]; then
+            t perm_fixed "$path" "$mode" "$newmode"
+        else
+            t perm_problem "$path" "$mode" "$CRED_MODE" "$path"
+        fi
+    done
 }
 
 # ----------------- language choice -----------------
@@ -526,6 +601,13 @@ if /usr/local/bin/sc reload >>"$LOG_SINK" 2>&1; then
         fi
     fi
 fi
+
+# ----------------- credential permissions -----------------
+# Between the last install step and the closing report: the banner stays the final
+# output and install_report()'s derivation from PHASE_CONFIG/PHASE_SERVICE is untouched.
+# `|| true` makes "the sweep cannot change the run's outcome" true by construction
+# rather than by an audit of every line inside it.
+sweep_credential_modes || true
 
 # The closing report and the exit status come from the same derivation, so the
 # installer cannot print success for a run that did not install a working service.

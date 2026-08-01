@@ -27,14 +27,14 @@ key-parity check (T-11); B.3 (lint) is still `SKIP`.
 
 | Section | What lives there |
 |---|---|
-| `# Paths` | `CFG_DIR` / `CFG_PATH` / `NODES_PATH` / `SETTINGS_PATH` / `RULES_DIR`, `SB_BIN`, `TUN_IFACE`, Clash-API port range. Only ever referenced *inside* function bodies, so a test harness can repoint them after import. |
+| `# Paths` | `CFG_DIR` / `CFG_PATH` / `NODES_PATH` / `SETTINGS_PATH` / `RULES_DIR`, `CRED_MODE` (THE mode of every credential document, `0o600`), `SB_BIN`, `TUN_IFACE`, Clash-API port range. Only ever referenced *inside* function bodies, so a test harness can repoint them after import. |
 | `# Rule-set constants` | `SRS_MAGIC`, `SRS_MIN_BYTES`, `RULESET_FILES` (filename → path relative to a base), `RULESET_BASES` (ordered mirrors), `RULE_ANSWER_KEYS`. |
 | `# Auto-elevate` | `os.execvp("sudo", ...)` at **import time** when not root. A harness must neutralise this line to load the file as a module. |
 | `# i18n` | `TRANSLATIONS` (English source string → `zh`) and `t()`. |
-| `# State files` | `_init_files`, `load/save_nodes`, `load/save_settings`. `_init_files()` is reachable only from `main()`, so importing touches nothing under `/etc`. |
+| `# State files` | `_write_private`, `_init_files`, `load/save_nodes`, `load/save_settings`. `_init_files()` is reachable only from `main()`, so importing touches nothing under `/etc`; its nodes branch is now nothing but a `save_nodes()` call. |
 | `# Share-URL parsers` | `parse_vless / vmess / trojan / ss / hy2 / tuic` → dispatched by `parse_share_url`. |
 | `# Rule-sets` | The usability model — see "Reusable utilities" below. |
-| `# Config generation` | `generate_config()` builds the whole `config.json` literal, filters it by the usable rule-set set, writes 0600, then runs `sing-box check`. Also holds the two apply helpers `restart_service()` and `reload_or_restart()`. |
+| `# Config generation` | `generate_config()` builds the whole `config.json` literal, filters it by the usable rule-set set, installs it through `_write_private()` (0600 from before its first byte, atomic replace — **not** a post-write `chmod`), then runs `sing-box check`. An `OSError` there is one translated stderr line + `return False`, never a traceback. Also holds the two apply helpers `restart_service()` and `reload_or_restart()`. |
 | `# Clash API` | `clash_api(method, path, data=None, port=None)`, `is_running()`. `port=None` means "the port `main()` resolved"; only `sc doctor` passes one explicitly. |
 | `# Commands` | One `cmd_<name>(args)` per subcommand. Includes the `# doctor` block: class constants + `_plain()` / `_doctor_run()` / `_doctor_print()`, seven probes returning rows as data, the `DOCTOR_SECTIONS` print order, and `cmd_doctor()` (driver: isolation, streaming, exit status). |
 | `HELP_EN` / `HELP_ZH` | Two hand-aligned help blocks; descriptions start at column 30, sub-options at column 32. |
@@ -53,7 +53,9 @@ key-parity check (T-11); B.3 (lint) is still `SKIP`.
 | This project's TUN device name | `TUN_IFACE` | `bin/sc` `# Paths` | The single definition. `generate_config()`'s `interface_name`, `sc status`'s `ip addr show` and `sc doctor`'s S5 all consume it; renaming the device stays one edit. |
 | The public egress address | `_egress_ip()` | `bin/sc` (next to `_resolve_clash_port`) | The single query: endpoint literal + the 8 s timeout + decode, in one place. Raises on failure; **byte-faithful on purpose** — `sc status` prints its value verbatim, so scrubbing belongs at the *caller* (`_plain()`), never inside it. `sc status` and `sc doctor` can therefore never report different addresses. |
 | The persisted Clash API port | `_saved_clash_port()` | same | The single **reader** of `settings["clash_api_port"]`: reads, never probes, never writes. `_resolve_clash_port()` is the single **writer** and calls it first. `sc doctor` uses only the reader — probing would return a port free by construction and then report it unreachable. |
-| Foreign text made output-safe | `_plain(text)` | `bin/sc` `# doctor` | CR + ESC removed, trailing whitespace stripped. Applied at the call sites to every tool's output and every `{e}`, which is what makes "a redirected report contains no `\r` and no ESC" a property of the code. |
+| Write a credential document | `_write_private(path, text)` | `bin/sc` `# State files` | THE only way `config.json` / `nodes.json` reach disk. `mkstemp(dir=path.parent)` → `fchmod(fd, CRED_MODE)` **while the object is still empty** → write/flush/fsync → `os.replace`. Each element carries a different guarantee and none is optional: the `fchmod` is what makes the mode *exactly* 0600 (umask masks `mkstemp`'s mode argument — at umask `0o277` it alone yields **0400**); the fresh `O_EXCL` name + `replace` is what makes the target's *previous* mode irrelevant and defeats a symlinked target; the ordering is what removes the write-then-`chmod` window. Never add a `chmod` after the content. `dir=` is mandatory (`EXDEV`; and `TMPDIR` would put credential bytes outside the config dir). Raises `OSError`; the caller renders it. **Not** for `settings.json` — it carries no credential and pinning its mode is a user-visible change nobody asked for. |
+| Foreign text made output-safe | `_plain(text)` | `bin/sc` `# doctor` | CR + ESC removed, trailing whitespace stripped. Applied at the call sites to every tool's output and every `{e}`, which is what makes "a redirected report contains no `\r` and no ESC" a property of the code. Since T-13 it has callers outside `# doctor` (`save_nodes`, `generate_config` render `e.strerror` through it), so it is a general utility that merely *lives* in the doctor block. |
+| Credential-mode sweep in the installer | `sweep_credential_modes()` + `CRED_DIR` / `CRED_FILES` / `CRED_MODE` | `install.sh`, right after `install_report()` | Called as `sweep_credential_modes \|\| true` between step 7 and `install_report`. States each credential document's mode and narrows — **never** widens — anything wider than 600. Reads/writes no `PHASE_*`, so the banner and exit status are untouched. The three variables are referenced only inside the function so a harness can repoint them; both functions anchor at column 0 so `sed -n '/^sweep_credential_modes() {/,/^}/p'` extracts them without executing the installer. The `[ -L ]` guard is first because `chmod` **follows** a symlink while GNU `stat` does **not** — without it the sweep reads the link's own 777 and chmods the link's destination. |
 | Bilingual output | `t(s, **kwargs)` + `TRANSLATIONS` | `bin/sc` `# i18n` | `TRANSLATIONS` has **no `en` table** — `t()` returns the key itself in English. |
 | Warning to stderr | `sys.stderr.write("⚠️  " + t(...) + "\n")` | `generate_config`, `_warn_degraded` | The `⚠️` prefix stays outside `t()`. |
 | Apply a config change | `generate_config()` → `restart_service()` / `reload_or_restart()` / `clash_api()` | `bin/sc` | Node and mode switches go through the Clash API; structural changes need a restart. |
@@ -90,6 +92,35 @@ key-parity check (T-11); B.3 (lint) is still `SKIP`.
   `SYSTEMD = OPENRC = False` — otherwise it restarts the developer's real sing-box service.
   (Neutralise the *sudo re-exec* specifically: `cmd_uninstall` legitimately calls `os.execvp("bash", …)`,
   so a blanket "no `os.execvp`" guard refuses to load a healthy file.)
+  **The recipe — use this one, do not re-invent it** (T-13; it neutralises the re-exec *without*
+  mutating `bin/sc`'s source, so a refactor of the elevate block cannot defeat it, and it fails
+  closed if `geteuid` moves):
+
+  ```python
+  assert os.geteuid() != 0                       # refuse to run as root, loudly
+  sc = types.ModuleType("sc")
+  shim = types.ModuleType("os"); shim.__dict__.update(os.__dict__)
+  shim.geteuid = lambda: 0                       # the elevate branch is simply not taken
+  sys.modules["os"] = shim
+  try:
+      exec(compile(open("bin/sc").read(), "bin/sc", "exec"), sc.__dict__)
+  finally:
+      sys.modules["os"] = os                     # restore IMMEDIATELY, in a finally
+  ```
+
+  Then repoint `sc.CFG_DIR / CFG_PATH / NODES_PATH / SETTINGS_PATH / RULES_DIR` into a `mkdtemp()`
+  root, set `sc.SYSTEMD = sc.OPENRC = False`, `sc.CLASH_PORT = 29090`, `sc.LANG = "en"|"zh"`, and
+  `sc.SB_BIN = <stub script>` (a repointable constant — no `PATH` games). Because `bin/sc` resolves
+  `os` from `sc.__dict__`, monkeypatching `sc.os.replace` patches the shim only, never the harness's
+  own `os` — restore it in a `finally` regardless. **Never drive `_init_files()`**: one of its
+  `mkdir` calls hard-codes `/var/lib/sing-box` as a `Path` literal — the only directory in the
+  function not built from a repointable constant — so it writes to the real `/var/lib` even in a
+  fully redirected fixture; its nodes branch is now just a `save_nodes()` call, which a fixture
+  covers directly.
+- Don't verify `install.sh` by running it. Extract the function under test with
+  `sed -n '/^name() {/,/^}/p'`, source it into a `bash -uo pipefail -c` child alongside the
+  extracted `t()`, and shadow externals (`chmod() { return 1; }`, `stat() { return 1; }`) to inject
+  faults without root. Precedent: `.harness/scripts/check-i18n-parity.sh:48`, T-08, T-11, T-13.
 - Don't give `sc doctor` a second opinion about anything the codebase already decides — it consumes
   `ruleset_states()` / `_status_text()` / `is_running()` / `clash_api()` / `_saved_clash_port()` /
   `_egress_ip()` / `SYSTEMD` / `OPENRC`, and it must stay that way.
