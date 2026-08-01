@@ -74,3 +74,12 @@ _Avoid_: silent failure, crash, set -e bug
 A generated `config.json` from which unusable rule-sets and every routing rule referencing them
 have been dropped, so sing-box starts with less routing granularity instead of failing to start.
 _Avoid_: fallback config, broken config, partial config
+
+## Project intent
+
+**singbox-cli is a headless v2rayN.** Stated by the owner 2026-08-01: 「初衷是实现一个类似于非桌面版
+的 V2rayN；所以完全可以抄 V2rayN 的一些逻辑」. Treat 2dust/v2rayN as the roadmap reference for *what*
+the tool should do — failover groups, per-node latency, selectable rule-source profiles, subscription
+handling — while remembering its *implementation* of rule-set downloading is thinner than this
+project's (no retry, no fallback, no checksum; see `docs/batches/default/BATCH_PLAN.md` notes).
+Copying a v2rayN behaviour is endorsed; copying its download code would be a regression.

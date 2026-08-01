@@ -27,6 +27,7 @@
 | T-18 | status-egress-via-clash-api | Fix `sc status`'s egress-IP probe, which cannot work in pure-TUN mode because it assumes a local inbound that does not exist, and report a bare traceback when it fails. | full | T-15 | pending |
 | T-19 | ruleset-staleness-visibility | Make stale rule-sets loud: report each file's age in `sc status`, and make the systemd timer actually fail when updates fail instead of only printing. | full | — | pending |
 | T-20 | doctor-extended-checks | Extend `sc doctor` with the checks that need features landing after it — rule-set age, per-node latency, DNS timing, config drift, file permissions, and IPv6 consistency — each reported as a conclusion with a next step. | full | T-05, T-13, T-14, T-15, T-16 | pending |
+| T-21 | ruleset-source-strategy-from-v2rayn | Decide the rule-set source strategy against v2rayN's, which this project is a headless equivalent of: whether to add GitHub *Releases* assets (CDN-backed, unlike raw.githubusercontent), whether to mirror the rules into a repo this project controls, and whether source *sets* should be user-selectable rather than just mirror order. | explore | T-14 | pending |
 | T-07 | restricted-network-regression-test | Add a repeatable restricted-network regression test that blocks `github.com` / `raw.githubusercontent.com` in a container or VM, runs the full one-liner install, and asserts the five expected end-state conditions from the failure report. | full | T-01, T-02 | pending |
 
 ## Notes (optional)
@@ -59,6 +60,26 @@
     code (Bash/curl vs Python/urllib) but must share the visual language.
   - Note the existing ruleset code already writes to `.tmp` then `.replace()` — T-02's atomic-write
     requirement is partly satisfied already; keep it rather than reinventing it.
+- **v2rayN研究 2026-08-01 (owner: 「singbox-cli 初衷是实现一个类似于非桌面版的 V2rayN；完全可以抄 V2rayN 的一些逻辑」).**
+  Read 2dust/v2rayN's actual update path before filing anything. Findings, evidence-backed:
+  - **Their download logic is WEAKER than what T-02 already shipped.** `DownloadFileAsync` has no
+    retry, no fallback, and no checksum; it copies the temp file over the target with
+    `overwrite=true` regardless of content. Only `TryDownloadString()` has a two-strategy fallback.
+    We already have ordered multi-base fallback, SRS-magic + size validation, atomic replace, and
+    per-run dead-base marking. Do not regress toward theirs.
+  - **They download THROUGH the local proxy** (`socks5://127.0.0.1:port` via `GetWebProxy`), which is
+    direct counter-evidence to the field report's "考虑规则下载走 direct 而非 proxy" suggestion.
+    Neither is obviously right; T-21 should decide with measurement, not assumption.
+  - **What IS worth copying** — three things, none of which we have:
+    1. `.dat` files come from **GitHub Releases** (`/releases/latest/download/{0}.dat`), not raw
+       paths. Release assets are served from a different CDN than `raw.githubusercontent.com`.
+    2. Their `.srs` come from **`2dust/sing-box-rules`, a repo they control** — a mirror they own
+       rather than a third party's raw path.
+    3. Sources are **selectable sets** (Loyalsoldier / russia-v2ray-rules / Iran-v2ray-rules), i.e. a
+       rule-source *profile*, not merely mirror ordering. That composes with T-14's override.
+  - **Project framing recorded:** singbox-cli is intended as a headless v2rayN. T-15 (urltest group +
+    per-node latency) and T-14 (user-owned config) are already v2rayN-shaped; treat v2rayN's feature
+    set as a roadmap reference rather than copying its implementation, which is thinner than ours.
 - **Ingest 2026-08-01 — second field report (two production hosts, Ubuntu 24.04, pure TUN).**
   Ten numbered items. Triaged against work already delivered in this batch **before** filing, so the
   pool records what is genuinely outstanding rather than re-litigating shipped work:
