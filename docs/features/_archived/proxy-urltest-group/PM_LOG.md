@@ -563,3 +563,46 @@ silently omitted.
    while the file would sit at 34 lines against F.4's 30).
 5. `archive-task.sh --task proxy-urltest-group`.
 6. `verify_all.sh` re-run on the archived tree, then commit + push per rule 80.
+
+### Delivery close-out (executed)
+
+- **`archive-task.sh` run**: harvested 4 insights, moved all 9 stage docs + this log to
+  `docs/features/_archived/proxy-urltest-group/`, exit 0. **Its rotation branch did not fire**, third
+  confirmation of R-18: 21 + 4 = 25 bullets against its own 30, while the file stood at 34 lines
+  against F.4's 30.
+- **Hand-rotation done.** Four entries moved to `docs/features/_archived/insight-history.md` with the
+  reason each stopped earning its line, chosen by rule 70's criterion rather than oldest-first: the
+  `>>"$LOG"`/`tee` entry (blunt form of a family whose sharp form is still indexed, wider class filed
+  as R-3); the systemd `PATH` entry (`systemctl show-environment` answers it in a minute — below
+  rule 05's derivability bar); the `archive-task.sh` first-physical-line entry (**stale in its literal
+  claim** — the script now carries a local awk fix that joins continuation lines, and R-18 is the
+  better home for the residual `/harness-upgrade`-reverts-it risk); and the fswatch/`log.level=warn`
+  entry (its decision is a delivered decline recorded in T-10's board row). **One kept deliberately**:
+  the progress-throttle entry, because the 2026-08-01 rotation note had already declined to drop it
+  on grounds that still hold, and re-dropping it would delete the corrected reading while its
+  uncorrected predecessor is already gone. Index back to **30 lines, F.4 PASS**.
+- **`docs/tasks.md` rotation — an unplanned obligation this delivery created.** With T-15's row and
+  R-19…R-22 filed, the board hit **308 lines** and **F.5 turned WARN** just as F.6 cleared. Rule 70
+  rule 3 assigns this to the PM, so the eight oldest Completed rows moved to a new
+  `docs/tasks-archive.md`, keeping **T-15** and **T-14** — T-14 being the composition layer the
+  remaining batch tasks (T-16 / T-17 / T-21) build on, so it is the one historical row they must
+  read. The archive header records the real cause for whoever hits it next: the cap was reached by
+  **row length**, not row count (ten rows against rule 70's ~30 trigger), so the durable fix is
+  shorter outcome paragraphs, not more rotation. The board pointer was added *inside* the existing
+  header blockquote line so the fix did not spend a line on itself.
+- **Final gate: `PASS 17 / WARN 0 / FAIL 0 / SKIP 1`** — better than the batch baseline (16/1), both
+  doc-size WARNs cleared. Only SKIP is B.3 lint, pre-existing. `07_DELIVERY.md` and the board row
+  were both corrected to this measured figure rather than left at the composition-time estimate.
+- **Committed and pushed** per rule 80's standing authorization: `6778711`, 22 files,
+  **+3119/−38**, pushed `1e454b6..6778711` to `origin/main` (fetched first; `origin` had not moved).
+  Preconditions checked before staging: no FAIL, diff confined to what `07_DELIVERY.md` claims, no
+  credential or real share-link in the diff (the two `vless://` grep hits are pre-existing README
+  placeholder text in hunk context), nothing under `/etc/sing-box/` captured. **`docs/batches/**` was
+  deliberately left unstaged** — those are the batch coordinator's files, not this task's, and rule 80
+  forbids a blind `git add -A`.
+- **One hard-safety event, handled without override.** `guard-rm.sh` blocked the first commit attempt
+  — *"could not parse nested pwsh command safely"*, triggered by the heredoc form of the message, not
+  by anything destructive (the command contained no `rm`). I did **not** set
+  `HARNESS_ALLOW_OUTSIDE_RM=1`; overriding a guard because it inconvenienced me is the failure mode
+  the guard exists to prevent. Re-issued as `git commit -F <scratchpad file>`, which the guard parses
+  cleanly. Worth a row if it recurs: the guard's parser treats a heredoc body as a nested command.
