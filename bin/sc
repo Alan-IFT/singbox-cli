@@ -45,6 +45,15 @@ SERVICE = "sing-box"
 # Renaming the device must stay a one-line edit — a probe left on the old name would
 # report a false PROBLEM on a perfectly healthy host.
 TUN_IFACE = "sb-tun"
+# THE tag of the auto-select group — the `urltest` outbound that probes every node and
+# routes to the fastest responding one. One definition; every consumer reads this name and
+# no consumer spells the literal. Deliberately language-neutral: tags live in config.json,
+# so `sc lang` must not be able to move it.
+AUTO_TAG = "auto"
+# The outbound tags `sc` emits itself. No node may carry one of these — two outbounds with
+# the same tag is a config sing-box rejects, and an ambiguous `sc use` besides. Built FROM
+# AUTO_TAG so that constant stays the single definition.
+RESERVED_TAGS = frozenset(("proxy", "direct", AUTO_TAG))
 # The Clash API only ever talks to `sc` itself over loopback, so the exact port
 # is irrelevant — we auto-probe a free one in a high range to avoid clashing
 # with other local services (xray / clash / cockpit all default to 9090). Once
@@ -176,6 +185,10 @@ TRANSLATIONS = {
         "ls.type": "协议",
         "ls.name": "名称",
         "ls.address": "地址",
+        # An English sentence used as the key, NOT a sixth `ls.*` — those five print
+        # literally in English because TRANSLATIONS has no `en` table, and that defect is
+        # not a pattern to copy.
+        "Delay": "延迟",
         # cmd_uninstall fallback
         "Uninstall script not found: {script}\nUse the one-line command to uninstall:\n  sudo bash -c \"$(curl -fsSL https://raw.githubusercontent.com/Alan-IFT/singbox-cli/main/uninstall.sh)\"":
             "卸载脚本不存在：{script}\n请用一行命令卸载：\n  sudo bash -c \"$(curl -fsSL https://raw.githubusercontent.com/Alan-IFT/singbox-cli/main/uninstall.sh)\"",
@@ -1339,6 +1352,50 @@ def _compose(overlays):
     return doc
 
 
+def _auto_group_emitted(node_tags):
+    """Is the auto-select group present in the document this run emits?
+
+    THE single condition, consumed by _valid_selection(), _runtime_overlay(), cmd_ls() and
+    cmd_use() — never re-spelled inline, so "the group exists" cannot acquire a second
+    meaning at one of the four call sites.
+
+    Two clauses, and both are load-bearing:
+      * at zero nodes the group would have an empty member list, which is a document
+        sing-box rejects and a state nothing here may reach;
+      * on a host whose nodes.json ALREADY holds a node tagged AUTO_TAG (an upgrade, or a
+        share link whose fragment landed there before this build existed), emitting the
+        group would put two outbounds with the same tag in the document and fail
+        `sing-box check` on the very first `sc reload` after the upgrade. So we emit
+        nothing and say nothing; renaming the node heals it.
+    """
+    return bool(node_tags) and AUTO_TAG not in node_tags
+
+
+def _valid_selection(active, node_tags):
+    """THE judge of "is this selection valid, and what does it become if not".
+
+    Total over every value nodes.json can hold — None, a node tag, AUTO_TAG, a string a
+    human typed into the file by hand — and its result is ALWAYS an outbound the same run
+    defines. All three places sc picks on the user's behalf (config generation's stale
+    repair, `sc add` onto an empty list, `sc rm` of the active node) call it, so none of
+    them can form a second opinion.
+
+    Pure: reads no file, writes nothing, prints nothing.
+
+    A selection the user made is never overridden — the first clause returns it unchanged,
+    which is what makes an upgrade quiet: an existing host's active node is still valid, so
+    nothing moves. Where sc used to pick node_tags[0] (an arbitrary node) it now picks the
+    auto-select group, which is strictly better and overrides nobody.
+    """
+    if active in node_tags:
+        return active
+    if active == AUTO_TAG and _auto_group_emitted(node_tags):
+        return active
+    if _auto_group_emitted(node_tags):
+        return AUTO_TAG
+    return node_tags[0] if node_tags else None
+
+
 def _runtime_overlay(nodes, active, report):
     """The one carrier of run-time content, expressed as an overlay so that the shipped
     path exercises _merge() on every single run rather than only when a user has written
@@ -1354,16 +1411,42 @@ def _runtime_overlay(nodes, active, report):
     it is a compile-time constant and CONFIG_BASE names it directly.
     """
     node_tags = [n["tag"] for n in nodes]
+    auto = _auto_group_emitted(node_tags)
+    # The auto-select group. Every key is emitted explicitly, including url: this binary
+    # compiles in a generate_204 default, and stating it here is what stops a future
+    # binary's default from silently moving the probe. https (not http) on purpose — the
+    # failure this whole feature exists for is a TLS handshake that hangs, and a
+    # plain-HTTP 204 would score exactly that node as healthy. interval is the upper bound
+    # on unattended failover latency; tolerance keeps the group from re-selecting on
+    # jitter alone. interrupt_exist_connections is deliberately ABSENT: on a group the
+    # switch is automatic and can be caused by a 51 ms improvement, so an inbound
+    # connection is left to drain on the old member — and sing-box interrupts sc's own
+    # internal connections (the DoH transport that carries remote_dns) on re-selection
+    # regardless of this option, so DNS still follows the healthy node.
+    group = {
+        "type": "urltest",
+        "tag": AUTO_TAG,
+        "outbounds": list(node_tags),
+        "url": "https://www.gstatic.com/generate_204",
+        "interval": "3m",
+        "tolerance": 50,
+        "idle_timeout": "30m",
+    }
     selector = {
         "type": "selector",
         "tag": "proxy",
-        "outbounds": node_tags + ["direct"],
-        "default": active or "direct",
+        "outbounds": ([AUTO_TAG] if auto else []) + node_tags + ["direct"],
+        # Through the one judge, so `default` is always an element of the array above.
+        "default": _valid_selection(active, node_tags) or "direct",
         "interrupt_exist_connections": True,
     }
     return {
+        # The group sits immediately after the selector and before the nodes, so at zero
+        # nodes this expression collapses to exactly what it was before this feature
+        # existed — the fresh-install document is byte-identical by construction.
         "outbounds": {"$replace":
-                      [selector] + nodes + [{"type": "direct", "tag": "direct"}]},
+                      [selector] + ([group] if auto else []) + nodes
+                      + [{"type": "direct", "tag": "direct"}]},
         "route": {"rule_set": {"$replace": [
             {"tag": tag, "type": "local", "format": "binary",
              "path": str(RULES_DIR / fname)}
@@ -1468,9 +1551,15 @@ def generate_config():
     # being defined.
     report = ruleset_report()
 
+    # The stale-selection repair, and the only writer of nodes.json in this function.
+    # Persist ONLY when the judge returns something other than what was loaded: an
+    # unconditional save would rewrite nodes.json on every single regeneration, and
+    # `active` being the auto-select group is a valid selection the judge returns
+    # unchanged, not something to repair away.
     node_tags = [n["tag"] for n in nodes]
-    if active not in node_tags:
-        active = node_tags[0] if node_tags else None
+    repaired = _valid_selection(active, node_tags)
+    if repaired != active:
+        active = repaired
         nodes_data["active"] = active
         save_nodes(nodes_data)
 
@@ -1559,6 +1648,53 @@ def is_running():
     return False
 
 
+def stored_delays(port=None):
+    """THE reader of "what delay does the running sing-box report per outbound".
+
+    Returns (delays, current): delays maps an outbound tag to its last stored round-trip
+    in ms, current is the node the auto-select group is on right now (or None).
+
+    It READS; it measures nothing. The Clash API serves a url-test *history* — a value the
+    process already had, produced by the auto-select group's own probing. A node nobody has
+    probed simply has no entry, which is a fact to render, never one to fabricate.
+
+    Prints nothing, writes nothing, issues at most ONE GET and never a PUT/PATCH/DELETE,
+    takes no `sc ls`-specific argument — so `sc doctor` can call it later unchanged. The
+    is_running() guard is INSIDE the function so every future caller inherits it: on a
+    stopped host there is no request at all and therefore no 3 s wait.
+
+    Every shape check is an isinstance test and there is no try/except: a malformed body
+    must not reach a traceback, and a bare except would hide a real defect just as well as
+    it hides a malformed body. bool is excluded explicitly — it is an int in Python, and
+    `True` is not a delay.
+    """
+    if not is_running():
+        return {}, None
+    body = clash_api("GET", "/proxies", port=port)
+    delays = {}
+    current = None
+    if not isinstance(body, dict):
+        return delays, current
+    proxies = body.get("proxies")
+    if not isinstance(proxies, dict):
+        return delays, current
+    for tag, entry in proxies.items():
+        if not isinstance(entry, dict):
+            continue
+        history = entry.get("history")
+        if isinstance(history, list) and history:
+            last = history[-1]
+            if isinstance(last, dict):
+                ms = last.get("delay")
+                if isinstance(ms, int) and not isinstance(ms, bool) and ms > 0:
+                    delays[tag] = ms
+        if tag == AUTO_TAG:
+            now = entry.get("now")
+            if isinstance(now, str) and now:
+                current = now
+    return delays, current
+
+
 # ============ Helpers ============
 
 def _resolve_node(spec):
@@ -1585,7 +1721,11 @@ def _resolve_node(spec):
 
 
 def _unique_tag(tag, existing):
-    if tag not in existing:
+    # The reserved tags are rejected by the minter itself rather than by its caller, so
+    # "no node ever carries a tag sc emits" is a property of the one place tags are made
+    # and a future second caller inherits it. A share link whose fragment is `auto`
+    # therefore becomes `auto #2` instead of colliding with the auto-select group.
+    if tag not in existing and tag not in RESERVED_TAGS:
         return tag
     i = 2
     while f"{tag} #{i}" in existing:
@@ -1602,11 +1742,31 @@ def cmd_ls(args):
     if not nodes:
         print(t("(no nodes — use `sc add <link>` to add)"))
         return
-    print(f"{t('ls.idx'):>4}  {t('ls.active'):2}  {t('ls.type'):10}  {t('ls.name'):30}  {t('ls.address'):25}")
+    # One call, one request, before anything is printed. `-` is the unknown marker: a node
+    # nobody has probed has no stored delay, and `0` would read as "instant" while a blank
+    # cell reads as "zero".
+    delays, current = stored_delays()
+
+    def _delay_cell(tag):
+        return f"{delays[tag]} ms" if tag in delays else "-"
+
+    # The delay column is appended LAST, so no existing column's width or position moves
+    # and `sc use <n>` sees the same index numbers it always did.
+    print(f"{t('ls.idx'):>4}  {t('ls.active'):2}  {t('ls.type'):10}  {t('ls.name'):30}  {t('ls.address'):25}"
+          f"  {t('Delay'):>9}")
+    if _auto_group_emitted([n["tag"] for n in nodes]):
+        # The auto-select group, first and WITHOUT an index number — it is not a node and
+        # must not enter _resolve_node()'s index space. Its address cell names the node it
+        # is on right now, which is the one place `sc` states that fact.
+        auto_addr = f"→ {current}" if current else "-"
+        auto_marker = "●" if active == AUTO_TAG else " "
+        print(f"{'':>4}  {auto_marker:2}  {'urltest':10}  {AUTO_TAG:30}  {auto_addr[:25]:25}"
+              f"  {_delay_cell(AUTO_TAG):>9}")
     for i, n in enumerate(nodes, 1):
         marker = "●" if n["tag"] == active else " "
         addr = f"{n['server']}:{n['server_port']}"
-        print(f"{i:>4}  {marker:2}  {n['type']:10}  {n['tag'][:30]:30}  {addr[:25]:25}")
+        print(f"{i:>4}  {marker:2}  {n['type']:10}  {n['tag'][:30]:30}  {addr[:25]:25}"
+              f"  {_delay_cell(n['tag']):>9}")
 
 
 def cmd_now(args):
@@ -1615,16 +1775,29 @@ def cmd_now(args):
 
 
 def cmd_use(args):
-    nodes_data, node = _resolve_node(args.spec)
-    nodes_data["active"] = node["tag"]
+    # The reserved tag is decided BEFORE _resolve_node() is consulted, so a node named
+    # `auto-jp` can never swallow `sc use auto` through that function's substring
+    # fallback. The extra read costs only the run in which the user typed the reserved
+    # word, and nothing else about this command moves.
+    tag = None
+    if args.spec == AUTO_TAG:
+        nodes_data = load_nodes()
+        if _auto_group_emitted([n["tag"] for n in nodes_data["nodes"]]):
+            tag = AUTO_TAG
+    if tag is None:
+        # `sc use auto` on a host with no nodes, or on one whose own node is tagged
+        # `auto`, lands here — i.e. on exactly the behaviour of before this feature.
+        nodes_data, node = _resolve_node(args.spec)
+        tag = node["tag"]
+    nodes_data["active"] = tag
     save_nodes(nodes_data)
     if is_running():
-        r = clash_api("PUT", "/proxies/proxy", {"name": node["tag"]})
+        r = clash_api("PUT", "/proxies/proxy", {"name": tag})
         if r is not None:
-            print(t("Switched to: {tag}", tag=node["tag"]))
+            print(t("Switched to: {tag}", tag=tag))
             return
     if reload_or_restart():
-        print(t("Switched to: {tag} (service restarted)", tag=node["tag"]))
+        print(t("Switched to: {tag} (service restarted)", tag=tag))
 
 
 def cmd_add(args):
@@ -1639,7 +1812,11 @@ def cmd_add(args):
     outbound["tag"] = _unique_tag(outbound["tag"], existing)
     nodes_data["nodes"].append(outbound)
     if not nodes_data.get("active"):
-        nodes_data["active"] = outbound["tag"]
+        # Through the one judge rather than "the node just added": on a fresh install the
+        # first `sc add` therefore selects the auto-select group, so failover is on by
+        # default without any host's existing selection being touched.
+        nodes_data["active"] = _valid_selection(
+            nodes_data.get("active"), [n["tag"] for n in nodes_data["nodes"]])
     save_nodes(nodes_data)
     if reload_or_restart():
         print(t("Added: {tag} ({type} → {server}:{port})",
@@ -1653,7 +1830,9 @@ def cmd_rm(args):
     nodes_data, node = _resolve_node(args.spec)
     nodes_data["nodes"] = [n for n in nodes_data["nodes"] if n["tag"] != node["tag"]]
     if nodes_data.get("active") == node["tag"]:
-        nodes_data["active"] = nodes_data["nodes"][0]["tag"] if nodes_data["nodes"] else None
+        # Same judge as everywhere else — never node_tags[0] again.
+        nodes_data["active"] = _valid_selection(
+            None, [n["tag"] for n in nodes_data["nodes"]])
     save_nodes(nodes_data)
     reload_or_restart()
     print(t("Removed: {tag}", tag=node["tag"]))
@@ -2319,7 +2498,9 @@ USAGE
 COMMANDS
   ls                          List all nodes (● = currently active)
   now                         Show the currently active node
-  use <name|index>            Switch active node (instant via Clash API, no restart)
+  use <name|index|auto>       Switch active node (instant via Clash API, no restart)
+                                auto = the auto-select group: sing-box probes every node
+                                       and moves traffic to the fastest that answers
   add <share-link>            Add a node from a share link
                               Supports vless / vmess / trojan / ss / hysteria2 / tuic
   rm <name|index>             Remove a node
@@ -2376,7 +2557,9 @@ HELP_ZH = """sc —— sing-box 命令行管理工具
 命令
   ls                          列出所有节点（● 表示当前激活）
   now                         显示当前激活节点
-  use <名称|序号>             切换激活节点（通过 Clash API 即时生效，不重启）
+  use <名称|序号|auto>        切换激活节点（通过 Clash API 即时生效，不重启）
+                                auto = 自动选择组：由 sing-box 探测所有节点，
+                                       自动把流量切到响应最快的那个
   add <分享链接>              从分享链接添加节点
                               支持 vless / vmess / trojan / ss / hysteria2 / tuic
   rm <名称|序号>              删除节点

@@ -76,12 +76,31 @@ sc add 'vless://uuid@host:443?security=reality&pbk=...&fp=chrome&flow=xtls-rprx-
 ### Switch node
 
 ```bash
-sc ls                  # list all nodes
+sc ls                  # list all nodes, with their delay
 sc use 1               # by index
 sc use US              # by name fragment
+sc use auto            # the auto-select group (see below)
 ```
 
 Switching is applied instantly via the Clash API — **no service restart**.
+
+### Auto-select the fastest node
+
+With at least one node added, `sc` also emits an **auto-select group** tagged `auto`: sing-box probes every node every 3 minutes against `https://www.gstatic.com/generate_204` and routes traffic to the fastest one that answers. `sc use auto` selects that group, so a node that slows down — or starts refusing connections — stops carrying traffic, and stops carrying DNS with it, without anyone having to type a command; the switch happens on the **next probe round**, which means up to about 3 minutes of failing requests before it lands, not an instant cut-over. One failure this does not cover: a node that still accepts connections and then never answers hangs the probe instead of failing it, and a probe that never finishes never revises the choice — in testing the group stayed on such a node for as long as the test ran. If traffic is dead and the group has not moved, switch by hand. `sc use <name>` still pins a single node exactly as before; a fresh install selects the group on the first `sc add`, and an existing install keeps the node it was already on until you run `sc use auto`.
+
+`sc ls` shows the group on a row of its own, with no index number, and its address column names the node the group is on right now:
+
+```text
+ls.idx  ls.active  ls.type     ls.name       ls.address        Delay
+      ●   urltest     auto          → JP-2           141 ms
+   1      vless       US-1          1.1.1.1:443      210 ms
+   2      vless       JP-2          2.2.2.2:443      141 ms
+   3      vless       SG-3          3.3.3.3:443           -
+```
+
+The delay figure is **not a measurement `sc` takes**: it is a value the running sing-box already holds, produced by the group's own probing and read once over the Clash API. It therefore exists only while the group is in use — on a host pinned to a single node the group is idle, probing stops, and the column shows `-` everywhere (or keeps showing the last values it had). `-` means "no stored delay", never "0 ms" and never "unreachable"; with the service stopped `sc` issues no query at all and every cell is `-`.
+
+> **If one of your own nodes is already tagged `auto`**, that host gets **no** auto-select group — two outbounds may not share a tag. `sc use auto` there pins *that node*, so the `Switched to: auto` it prints does **not** mean failover is on. Rename the node and the group appears by itself on the next `sc reload`.
 
 ### Switch route mode
 
@@ -276,7 +295,7 @@ This wipes the service unit, `/etc/sing-box/` (incl. nodes), `/var/lib/sing-box/
 PRs welcome. Top priorities:
 
 - [ ] Subscription link auto-update
-- [ ] urltest support beyond selector (auto-pick the fastest node)
+- [x] urltest support beyond selector (auto-pick the fastest node)
 - [x] RHEL / Fedora / Arch family support
 - [ ] `sc ping` for node latency testing
 - [ ] Node import/export (JSON backup)

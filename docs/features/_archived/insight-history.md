@@ -98,3 +98,45 @@ throttle entry (`install-binary-download-progress`) — was **kept**. It is stil
 T-13 rotation above deleted its predecessor precisely on the grounds that this entry supersedes it —
 dropping it now would leave the corrected reading nowhere in the index while the uncorrected one is
 already gone. The self-violating-AC entry was rotated in its place.
+
+## Rotated 2026-08-13 (during `proxy-urltest-group` / T-15 archive)
+
+`archive-task.sh` harvested 4 new insights and again did **not** auto-rotate — R-18's diagnosis
+confirmed a third time: the script's threshold counts **bullets** (21 + 4 = 25, under its 30) while
+`verify_all` F.4 counts **lines** (34 against a 30 cap), so on any index carrying a header the branch
+can never fire. The PM rotated these four by hand.
+
+Selection follows rule 70's "what no longer earns its line", not oldest-first. Each was chosen
+because a committed artefact, a filed open row, or a sharper sibling entry now carries the knowledge:
+
+- 2026-07-31 · Under `set -euo pipefail`, redirecting a command to an unwritable path fails *before* the command runs, so a bare `>>"$LOG"` guard would record a healthy step as failed; and a `tee` pipeline would let a logging fault flip a healthy phase under `pipefail` · evidence: install-enable-start-split
+- 2026-07-31 · The systemd manager's default service `PATH` on this project's hosts includes `/usr/local/bin`, which is the only reason `bin/sc`'s bare `SB_BIN = "sing-box"` lookup resolves when the CLI runs from a unit rather than a login shell · evidence: fix-rules-update-execstart
+- 2026-07-31 · `.harness/scripts/archive-task.sh` harvests only the FIRST physical line of each `## Insight` bullet, silently truncating any wrapped entry and dropping its `· evidence:` tag — write index bullets as one physical line · evidence: fix-rules-update-execstart
+- 2026-08-01 · sing-box does watch local rule-set files (`sagernet/fswatch`, literals `watch rule-set file` / `reload rule-set `), but `generate_config()` emits `"log": {"level": "warn"}`, so any Info-level success line is never written on this project's hosts — the watcher cannot be trusted because there is no channel to observe it working · evidence: ruleset-update-no-needless-restart
+
+Why each stopped earning its line:
+
+1. **The `>>"$LOG"` / `tee` entry** is the blunt form of a family whose sharp form is still in the
+   index — `VAR=$(cmd | grep …)` aborting *at the assignment* under `pipefail` — and the wider class
+   is filed as R-3 with five named sites. Keeping both spends two lines on one lesson.
+2. **The systemd `PATH` entry** is a host fact that `systemctl show-environment` answers in under a
+   minute, which is exactly the "derivable in <10 minutes" bar `05-insight-index.md` rejects. It was
+   worth recording when `sing-box-rules-update.service` was being fixed; it is not worth a permanent
+   line now that the unit ships correct.
+3. **The `archive-task.sh` first-physical-line entry** is now **stale in its literal claim**: the
+   script carries a local awk fix (`archive-task.sh:51-71`) that joins continuation lines, so a
+   wrapped bullet is harvested whole. The residual risk — that `/harness-upgrade` silently reverts
+   that fix — is filed as **R-18** along with the rotation defect, which is the better home because
+   R-18 names both defects and the file they live in. The authoring convention it taught (one
+   physical line per insight) survives in the PM's own delivery-doc contract.
+4. **The fswatch / `log.level=warn` entry** recorded *why* T-10 declined rule-set hot-apply. That
+   decline is now a delivered decision recorded in T-10's `docs/tasks.md` row ("recorded as a
+   **deferred decline**, not a rejection"), and no live code path depends on the observation. The
+   sibling entry that *is* still load-bearing — `/providers/rules` being a compatibility stub — stays
+   in the index, and was cited by T-15's own brief.
+
+**Deliberately kept** (re-examined this rotation and left in place): the progress-redraw **throttle**
+entry. The 2026-08-01 rotation note above already declined to drop it on the ground that
+`docs/tasks.md` files it as an open row against a harness T-07 inherits, and that reasoning is
+unchanged — rotating it now would delete the corrected reading while its uncorrected predecessor is
+already gone.
