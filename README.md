@@ -110,6 +110,33 @@ sc mode global         # everything via proxy
 sc mode direct         # everything direct
 ```
 
+### IPv6 name resolution
+
+```bash
+sc ipv6 auto           # answer AAAA empty unless this host has a global IPv6 address (default)
+sc ipv6 on             # always resolve AAAA normally
+sc ipv6 off            # always answer AAAA empty
+sc ipv6 show           # print the setting and the decision it produces
+```
+
+On a host that cannot use IPv6, an AAAA lookup for a name this config sends to the proxied resolver — in `rule` mode every name outside the table below, in `global` everything but the `hosts` table, in `direct` none at all — still travels there, and while a node accepts the connection but never answers, that lookup produces nothing at all, measured at sing-box's own 10.0 s per-query deadline. Suppression removes that lookup entirely: the generated config answers AAAA (query type 28), and the SVCB / HTTPS types 64 and 65, with an **empty `NOERROR`** locally, asking no resolver at all. `auto` decides it by reading `/proc/net/if_inet6` once — "this host has a global IPv6 address" means an address inside `2000::/3` on an interface that is neither loopback nor `sb-tun`; link-local (`fe80::/10`) and unique-local (`fc00::/7`) addresses never count, and this project's own TUN device is excluded by name because it always carries one. `on` and `off` override that judgment by hand.
+
+The setting is persisted in `/etc/sing-box/settings.json`; an absent key means `auto`, and a value that is none of the three is named on stderr and treated as `auto`. If the address list cannot be read at all, `sc` assumes the host **does** have IPv6 (so nothing becomes unreachable) and says so in one line. `sc ipv6 <value>` regenerates the config and restarts sing-box **only when the effective decision actually changes** — otherwise it says nothing changed and leaves the service alone. `sc ipv6 show` only reports what the setting is and what it decides: it never changes the `ipv6` setting, regenerates no config and touches the service in no way — but, like every command except `sc doctor`, it still runs the ordinary start-up path first, which on a fresh host creates `/etc/sing-box` and `/var/lib/sing-box` and seeds `nodes.json` / `settings.json`, and on **any** host that has not yet recorded a valid Clash API port — a fresh install, or one upgraded from a version that predates the port auto-probe — probes for a free port and writes it into `settings.json`.
+
+The rule that carries this is evaluated **first**, ahead of both routing-mode rules, so it applies in `rule`, `global` and `direct` alike — the modes you switch to when something is already broken — and it references no ruleset, so a host whose `.srs` files are missing still gets it.
+
+**Which names still resolve while every node is unusable** — measured against a node that accepts the connection and then never answers:
+
+| Route mode | Answered without any node | Left unanswered |
+|---|---|---|
+| `rule` | the names in the built-in `hosts` table, the five domestic suffixes (`alidns.com`, `doh.pub`, `dot.pub`, `360.cn`, `onedns.net`), and every suppressed query type — plus, while the rulesets are usable, the names `geosite-cn` and `geosite-private` match | everything else, foreign names included |
+| `global` | the `hosts` table and the suppressed query types only — you asked for everything to go through the proxy | everything else |
+| `direct` | everything: in this mode no name is sent to the proxied resolver at all | — |
+
+**With all four rulesets unusable** (the degraded config `sc` already warns about), the `rule` row above shrinks to the `hosts` table, the five domestic suffixes and the suppressed query types; every other name waits for a usable node or for the rulesets to come back. `global`'s row is already shorter than that, and `direct`'s does not depend on the rulesets at all.
+
+**What this does not do.** There is no second resolver and no wait to configure. When the proxied resolver is reached but does not answer, sing-box abandons that query at its own fixed per-query deadline (10.0 s in 1.13.15 — no key this project emits can change it), returns nothing, and consults no one else; the error you finally see comes from your own client's timeout. A `NXDOMAIN` or `SERVFAIL` from the proxied resolver is relayed verbatim, never re-asked elsewhere, so no name is exposed to the domestic resolver as a consequence of a failure. A node whose address resolves only over IPv6 needs `sc ipv6 on`.
+
 ### Service control
 
 ```bash

@@ -54,6 +54,12 @@ AUTO_TAG = "auto"
 # the same tag is a config sing-box rejects, and an ambiguous `sc use` besides. Built FROM
 # AUTO_TAG so that constant stays the single definition.
 RESERVED_TAGS = frozenset(("proxy", "direct", AUTO_TAG))
+# THE one source of the host's IPv6 address state. Kernel-owned, read-only, and cheap:
+# one small read answers "does this host hold a global IPv6 address" without a second
+# system query or a second failure mode. Referenced only INSIDE function bodies, so it
+# joins the seven repointable path constants as the eighth (docs/dev-map.md) — without
+# that, the auto decision cannot be driven from a fixture without root.
+IF_INET6_PATH = Path("/proc/net/if_inet6")
 # The Clash API only ever talks to `sc` itself over loopback, so the exact port
 # is irrelevant — we auto-probe a free one in a high range to avoid clashing
 # with other local services (xray / clash / cockpit all default to 9090). Once
@@ -156,6 +162,25 @@ TRANSLATIONS = {
         "GNOME system proxy → {val}": "GNOME 系统代理 → {val}",
         "Ruleset auto-update cadence → {val} (OnCalendar={oc})": "规则集自动更新频率 → {val}（OnCalendar={oc}）",
         "Language → {val}": "语言 → {val}",
+        # IPv6 name resolution. The setting line, the four evidence sentences (one per
+        # effective decision), the detection-failed line, the argument error, the
+        # unrecognised-value line, and the two outcomes of a set. `Reload failed` above is
+        # reused for a failed regeneration — no eleventh string is added here.
+        "IPv6 name resolution → {val}": "IPv6 域名解析 → {val}",
+        "AAAA queries are answered empty (setting: off)": "AAAA 查询直接返回空结果（设置：off）",
+        "AAAA queries are resolved normally (setting: on)": "AAAA 查询正常解析（设置：on）",
+        "AAAA queries are answered empty (setting: auto — this host has no global IPv6 address)":
+            "AAAA 查询直接返回空结果（设置：auto —— 本机没有全局 IPv6 地址）",
+        "AAAA queries are resolved normally (setting: auto — this host has a global IPv6 address on {iface})":
+            "AAAA 查询正常解析（设置：auto —— 本机在 {iface} 上有全局 IPv6 地址）",
+        "Could not read this host's IPv6 addresses ({err}) — assuming it has one, so AAAA queries are resolved normally; set it explicitly with `sc ipv6 on|off`":
+            "无法读取本机的 IPv6 地址（{err}）—— 已按存在处理，AAAA 查询将正常解析；可用 `sc ipv6 on|off` 明确指定",
+        "Error: argument must be one of on / off / auto / show":
+            "错误：参数必须是 on / off / auto / show 之一",
+        "{path}: ipv6 must be one of on / off / auto — using auto":
+            "{path}：ipv6 必须是 on / off / auto 之一 —— 已按 auto 处理",
+        "Nothing changed — the sing-box service was not touched": "设置无变化 —— 未改动 sing-box 服务",
+        "Configuration regenerated; sing-box restarted": "配置已重新生成，sing-box 已重启",
         "OK ({size} bytes)": "成功（{size} 字节）",
         "failed: {e}": "失败：{e}",
         # rule-sets: degradation warning, per-file status, download progress
@@ -1041,7 +1066,19 @@ class OverrideError(Exception):
     Deliberately a direct Exception subclass rather than a ValueError: an unrelated
     ValueError raised by a bug somewhere below must never reach the user dressed up as
     "your override file is wrong".
+
+    `path` names WHOSE document could not be applied, and it is what makes the rendered
+    sentence truthful now that sc composes overlays of its own: OVERRIDE_PATH is set at
+    exactly the sites that handle the USER's document, and the None default means "an
+    overlay sc itself authored", rendered against CFG_PATH. Provenance is therefore a
+    property of the call structure, not of a flag someone has to remember at each raise.
+
+    The default is None rather than CFG_PATH on purpose: CFG_PATH is a module constant a
+    test harness repoints AFTER import, and a class attribute bound at class-creation time
+    would freeze the pre-repoint value.
     """
+
+    path = None
 
 
 # The array-merge vocabulary. Reserved names: an object used as a merge value may not mix
@@ -1098,7 +1135,10 @@ CONFIG_BASE = {
             {"server": "hosts_dns", "ip_accept_any": True},
             {"server": "remote_dns", "clash_mode": "Global"},
             {"server": "direct_dns", "clash_mode": "Direct"},
-            {"action": "predefined", "rcode": "NOERROR", "query_type": [64, 65]},
+            # The suppressed-query-type rule USED to sit here. It is emitted by
+            # _dns_overlay() at index 0 instead — after these two clash_mode rules it
+            # disappeared in exactly the two modes people switch to when something is
+            # broken. One definition, one position; do not re-add a copy here.
             {"server": "remote_dns", "rule_set": ["geosite-google"]},
             {"server": "direct_dns", "rule_set": ["geosite-private"]},
             {"server": "direct_dns", "domain_suffix": [
@@ -1396,6 +1436,153 @@ def _valid_selection(active, node_tags):
     return node_tags[0] if node_tags else None
 
 
+def _ipv6_setting():
+    """THE single reader of settings["ipv6"]: exactly one of "on" / "off" / "auto".
+
+    Absence IS "auto" (nothing ever seeds the key), so a host upgrading to this build and
+    a fresh install behave identically and _init_files() needs no change. Shaped like
+    _saved_clash_port(): an unreadable or malformed settings.json degrades to the default
+    silently, because a setting nobody set is not a failure and this must not become a new
+    way for `sc` to break on a host whose settings.json is already broken.
+
+    A value that is PRESENT but not one of the three is different — that is a hand-edit
+    that did not take effect, so it earns one stderr line naming the file, the key and the
+    three accepted values. `sc ipv6 auto` repairs it.
+
+    Reads one file; writes nothing.
+    """
+    try:
+        settings = load_settings()
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return "auto"
+    if "ipv6" not in settings:
+        return "auto"
+    value = settings["ipv6"]
+    if value in ("on", "off", "auto"):
+        return value
+    sys.stderr.write("⚠️  " + t("{path}: ipv6 must be one of on / off / auto — using "
+                                "auto", path=SETTINGS_PATH) + "\n")
+    return "auto"
+
+
+def _global_ipv6_iface():
+    """(iface, err): the device holding a GLOBAL IPv6 address, and why we could not tell.
+
+    THE predicate behind the `auto` setting and nothing else. "Global" means inside
+    2000::/3 — the first three bits of the address are 001 — on a device that is neither
+    loopback nor this project's own TUN device. Loopback (::1), link-local (fe80::/10) and
+    unique-local (fc00::/7) can never satisfy it arithmetically, and sb-tun is excluded BY
+    NAME because a host running this project always carries a link-local address on it: an
+    "any IPv6 address" test would report every such host as IPv6-capable.
+
+    A default-route test is deliberately not part of this: it would add a second system
+    query and a second failure mode, and `sc ipv6 on|off` already overrides the judgment
+    on the rare host where the two would differ.
+
+    An EMPTY file is a legitimate "no IPv6 at all" — (None, None), not an error. `err` is
+    set only when the source cannot be read (including a source that is not UTF-8 text at
+    all), or when it holds content in which no line at all has the kernel's six-field
+    shape. Never raises; prints nothing; the caller decides what a failure means.
+    """
+    try:
+        text = IF_INET6_PATH.read_text()
+    except OSError as e:
+        return (None, e.strerror or str(e))
+    except UnicodeDecodeError:
+        # A UnicodeDecodeError is a ValueError, NOT an OSError, so it escapes the clause
+        # above and would reach the user as a traceback — the outcome AC-17 forbids and
+        # this function's "never raises" contract denies. Unreachable through the real
+        # kernel file (always ASCII) and reachable through a repointed IF_INET6_PATH,
+        # which is exactly how every fixture drives this function. The codec's own message
+        # is untranslated English, so this reuses the existing "unreadable" key (K-9)
+        # rather than leaking it into a user-facing sentence.
+        return (None, t("unreadable"))
+    parsed = False
+    for line in text.splitlines():
+        # addr(32 hex chars) ifindex prefixlen scope flags device
+        fields = line.split()
+        if len(fields) != 6:
+            continue
+        try:
+            first = int(fields[0][:2], 16)
+        except ValueError:
+            continue
+        parsed = True
+        if (first & 0xE0) != 0x20:          # outside 2000::/3
+            continue
+        if fields[5] == "lo" or fields[5] == TUN_IFACE:
+            continue
+        return (fields[5], None)
+    if text.strip() and not parsed:
+        # Non-empty, and not one line of it is in the shape this kernel file has. Reusing
+        # the existing "unreadable" key rather than adding an eleventh string: the outer
+        # sentence already says what happened and this fills its cause slot.
+        return (None, t("unreadable"))
+    return (None, None)
+
+
+def ipv6_decision():
+    """THE definition of the effective IPv6 decision: (setting, suppress, sentence).
+
+    `setting` is what is persisted, `suppress` is what the emitted document does about
+    AAAA, and `sentence` is the already-translated evidence for it (None only when
+    detection failed, which has already spoken on stderr). Exactly two callers —
+    _dns_overlay() and cmd_ipv6() — and no other code re-derives any part of it, so the
+    document and what `sc ipv6` says about it can never be two opinions.
+
+    Detection failure means DO NOT suppress: the two errors are not symmetric. Suppressing
+    on a host that can use IPv6 makes IPv6-only destinations unreachable, while not
+    suppressing on a host that cannot costs latency the user already has. The assumption is
+    stated out loud so it is never silent.
+
+    The address source is read ONLY under `auto`, so `on` and `off` cost exactly one file
+    read. Writes no file, issues no request, performs no service-affecting action; its only
+    side effect is at most one stderr line.
+    """
+    setting = _ipv6_setting()
+    if setting == "off":
+        return (setting, True, t("AAAA queries are answered empty (setting: off)"))
+    if setting == "on":
+        return (setting, False, t("AAAA queries are resolved normally (setting: on)"))
+    iface, err = _global_ipv6_iface()
+    if err is not None:
+        sys.stderr.write("⚠️  " + t(
+            "Could not read this host's IPv6 addresses ({err}) — assuming it has one, so "
+            "AAAA queries are resolved normally; set it explicitly with "
+            "`sc ipv6 on|off`", err=_plain(err)) + "\n")
+        return (setting, False, None)
+    if iface is not None:
+        return (setting, False, t(
+            "AAAA queries are resolved normally (setting: auto — this host has a global "
+            "IPv6 address on {iface})", iface=_plain(iface)))
+    return (setting, True, t("AAAA queries are answered empty (setting: auto — this host "
+                             "has no global IPv6 address)"))
+
+
+def _dns_overlay():
+    """THE one place the IPv6 decision reaches the emitted document.
+
+    $prepend on dns.rules — an existing directive on an array CONFIG_BASE always defines,
+    so this can never raise and needs no anchor a later edit to the base could break.
+
+    Index 0 is the whole point: it is the one position that precedes BOTH clash_mode rules
+    and every rule whose server is reached through a node outbound, which is what makes the
+    suppression mode-independent (a user switching to `global` because things are broken
+    must not get the stall back) and node-independent. The rule carries no rule_set key, so
+    _filter_rules() keeps it on exactly the degraded host that needs it most.
+
+    Types 64 and 65 (SVCB / HTTPS) are answered in BOTH states: that is what the rule this
+    replaces already did, and moving it must not change it. Only 28 (AAAA) is conditional.
+    An empty NOERROR is the answer, never NXDOMAIN — NXDOMAIN would poison the negative
+    cache for the whole name, its A record included.
+    """
+    suppress = ipv6_decision()[1]
+    return {"dns": {"rules": {"$prepend": [
+        {"action": "predefined", "rcode": "NOERROR",
+         "query_type": ([28, 64, 65] if suppress else [64, 65])},
+    ]}}}
+
+
 def _runtime_overlay(nodes, active, report):
     """The one carrier of run-time content, expressed as an overlay so that the shipped
     path exercises _merge() on every single run rather than only when a user has written
@@ -1540,7 +1727,15 @@ def generate_config():
     # or malformed one costs the user nothing at all. A merge-time fault still lands after
     # the active-node rewrite below, because that side effect and its ordering are pinned
     # behaviour; it is idempotent and touches neither config.json nor the service.
-    override = _load_override()
+    #
+    # The wrapper states WHOSE document is being handled here. It is the call structure,
+    # not a flag at each raise site, that decides which path main() names — so a fault in
+    # an overlay sc itself authored can never be reported as a fault in the user's file.
+    try:
+        override = _load_override()
+    except OverrideError as e:
+        e.path = OVERRIDE_PATH
+        raise
 
     nodes_data = load_nodes()
     nodes = nodes_data["nodes"]
@@ -1563,17 +1758,28 @@ def generate_config():
         nodes_data["active"] = active
         save_nodes(nodes_data)
 
-    overlays = [_runtime_overlay(nodes, active, report)]
+    # sc's own overlays first, then the user's — the user's document is still applied
+    # LAST and still through the ONE _merge(), so the emitted bytes do not depend on it
+    # being a third element of this list rather than a separate call. What the separate
+    # call buys is provenance: two failure sources now have two code sites.
+    config = _compose([_runtime_overlay(nodes, active, report), _dns_overlay()])
     if override is not None:
-        overlays.append(override)       # the user's document is applied LAST, over all
-    config = _compose(overlays)
+        try:
+            _merge(config, override)
+        except OverrideError as e:
+            e.path = OVERRIDE_PATH
+            raise
 
     # NOT schema validation — that is `sing-box check`'s job. Exactly the three arrays the
     # block below indexes into, so an override that turns one of them into a scalar earns
-    # a sentence rather than a traceback. It cannot fire when there is no override.
+    # a sentence rather than a traceback. It cannot fire when there is no override — every
+    # overlay sc composes leaves all three arrays — which is why this raise, too, names the
+    # user's document.
     for at in ("dns.rules", "route.rules", "route.rule_set"):
         if not isinstance(_dig(config, at), list):
-            raise OverrideError(t("at {at}: this must stay an array", at=at))
+            failure = OverrideError(t("at {at}: this must stay an array", at=at))
+            failure.path = OVERRIDE_PATH
+            raise failure
 
     # Degrade per file: drop every rule that references a rule-set the composed document
     # does not DEFINE, in BOTH rule arrays. The tags come from the document rather than
@@ -2228,6 +2434,48 @@ def cmd_mode(args):
     print(t("Route mode → {mode}", mode=mode))
 
 
+def cmd_ipv6(args):
+    """`sc ipv6 on|off|auto|show` — the one surface of the effective IPv6 decision.
+
+    Everything printed comes from ipv6_decision(), including the before/after comparison,
+    so this command cannot form a second opinion about what the document will do.
+
+    A set that leaves the effective decision unchanged touches nothing: `auto` on a host
+    that was already deciding `auto`, or `on` on a host with a global IPv6 address, would
+    otherwise drop every live connection to rewrite the same bytes. The setting is still
+    persisted in that case, which is what makes `sc ipv6 auto` repair a hand-edited
+    unrecognised value.
+
+    NOTE ON SCOPE: "show writes nothing" is a property of THIS function. main()'s start-up
+    path (_init_files() + _resolve_clash_port()) runs for `sc ipv6` exactly as for every
+    other non-doctor command and can create /etc/sing-box and persist a port on a fresh
+    host. `doctor` stays the one positively named read-only command.
+    """
+    val = args.value.lower()
+    if val not in ("on", "off", "auto", "show"):
+        sys.exit(t("Error: argument must be one of on / off / auto / show"))
+    if val == "show":
+        setting, _suppress, sentence = ipv6_decision()
+        print(t("IPv6 name resolution → {val}", val=setting))
+        if sentence is not None:
+            print(sentence)
+        return
+    before = ipv6_decision()[1]
+    settings = load_settings()
+    settings["ipv6"] = val
+    save_settings(settings)
+    setting, after, sentence = ipv6_decision()
+    print(t("IPv6 name resolution → {val}", val=setting))
+    if sentence is not None:
+        print(sentence)
+    if after == before:
+        print(t("Nothing changed — the sing-box service was not touched"))
+        return
+    if not reload_or_restart():
+        sys.exit(t("Reload failed"))
+    print(t("Configuration regenerated; sing-box restarted"))
+
+
 def cmd_default_tun(args):
     val = args.value.lower()
     if val not in ("on", "off"):
@@ -2516,6 +2764,10 @@ COMMANDS
                                 rule   = rule-based routing (default)
                                 global = everything via proxy
                                 direct = everything direct
+  ipv6 <on|off|auto|show>     Whether AAAA (IPv6) queries are resolved or answered empty
+                                auto = answer empty unless this host has a global IPv6
+                                       address (the default; on / off decide it by hand)
+                                show = print the setting and the decision it produces
   default-tun <on|off>        Toggle boot autostart of sing-box independently
   sysproxy <on|off>           Toggle GNOME system proxy (HTTP/SOCKS 7890; usually unneeded with TUN)
   update-rules [--mirror URL] Update .srs rulesets now (several mirrors are tried in
@@ -2575,6 +2827,10 @@ HELP_ZH = """sc —— sing-box 命令行管理工具
                                 rule   = 按规则分流（默认）
                                 global = 全部走代理
                                 direct = 全部直连
+  ipv6 <on|off|auto|show>     AAAA（IPv6）查询是正常解析还是直接返回空结果
+                                auto = 本机没有全局 IPv6 地址时返回空结果（默认；
+                                       on / off 为手动指定）
+                                show = 显示当前设置以及它得出的结论
   default-tun <on|off>        单独控制开机是否自启 sing-box
   sysproxy <on|off>           开关 GNOME 系统代理（HTTP/SOCKS 7890，TUN 模式下一般不用）
   update-rules [--mirror URL] 立即更新 .srs 规则集文件（按顺序尝试多个镜像，
@@ -2623,6 +2879,7 @@ def main():
     sub.add_parser("on"); sub.add_parser("off"); sub.add_parser("status")
     sub.add_parser("doctor")
     p = sub.add_parser("mode"); p.add_argument("mode")
+    p = sub.add_parser("ipv6"); p.add_argument("value")
     p = sub.add_parser("default-tun"); p.add_argument("value")
     p = sub.add_parser("sysproxy"); p.add_argument("value")
     p = sub.add_parser("update-rules")
@@ -2652,7 +2909,7 @@ def main():
     handlers = {
         "ls": cmd_ls, "now": cmd_now, "use": cmd_use, "add": cmd_add, "rm": cmd_rm,
         "on": cmd_on, "off": cmd_off, "status": cmd_status, "doctor": cmd_doctor,
-        "mode": cmd_mode,
+        "mode": cmd_mode, "ipv6": cmd_ipv6,
         "default-tun": cmd_default_tun, "sysproxy": cmd_sysproxy,
         "update-rules": cmd_update_rules, "update-interval": cmd_update_interval,
         "log": cmd_log, "reload": cmd_reload, "uninstall": cmd_uninstall,
@@ -2669,11 +2926,14 @@ def main():
         # collapse is separate on purpose: _plain() removes CR and CSI sequences but not
         # \n, and a JSON key may legally contain one — `sc reload` output is captured
         # into the install log, which wants one complete line per fact.
-        # This names OVERRIDE_PATH unconditionally, which is truthful only while the
-        # user's document is the only overlay that can fail. A later task shipping a
-        # content overlay that can raise must revisit this line.
+        # WHICH path is named is decided at the raise site, by e.path: OVERRIDE_PATH at
+        # every site handling the USER's document, and the class default None — rendered
+        # as CFG_PATH here — for a failure inside an overlay sc itself authored. So a
+        # fault sc caused is never reported as a fault in the user's file, and no
+        # exception taxonomy is needed to say so.
         sys.exit(_plain(t("Cannot use {path}: {problem}",
-                          path=OVERRIDE_PATH, problem=str(e)).replace("\n", " ")))
+                          path=e.path or CFG_PATH,
+                          problem=str(e)).replace("\n", " ")))
 
 
 if __name__ == "__main__":

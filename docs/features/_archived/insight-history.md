@@ -140,3 +140,17 @@ entry. The 2026-08-01 rotation note above already declined to drop it on the gro
 `docs/tasks.md` files it as an open row against a harness T-07 inherits, and that reasoning is
 unchanged — rotating it now would delete the corrected reading while its uncorrected predecessor is
 already gone.
+
+## Rotated 2026-08-14 (during `dns-resilience` / T-16 delivery)
+
+Rotated by hand: `archive-task.sh` harvested but did not rotate (R-18 — it counts bullets while
+`verify_all` F.4 counts lines, so on any index carrying a header the branch cannot fire).
+The index stood at 37 lines against a 30-line cap after the harvest.
+
+- YYYY-MM-DD · <one-sentence fact> · evidence: <task-slug or commit-sha>
+- 2026-07-31 · `bin/sc`'s import-time auto-elevate re-execs the **installed** `/usr/local/bin/sc`, not the file under test, and sudo's `env_reset` silently drops `SB_RULES_BASE` — so an un-neutralised test import does not fail, it runs the *installed* tool against the *live* service · evidence: config-degrade-missing-rulesets
+- 2026-07-31 · `失败：` in `bin/sc` output is a load-bearing diagnostic grep meaning "this file was not updated"; any new zh string must avoid it, and `已跳过（…已失败）` is safe only because dead-skips never reach a success line · evidence: config-degrade-missing-rulesets
+- 2026-08-01 · `systemctl is-active` prints `active` on both sides of a restart, so a before/after `is-active` reading cannot detect a service bounce at all — the witness that does is `systemctl show -p MainPID -p ActiveEnterTimestamp`, and the `is-active` check written after T-02's live-restart incident would have passed during that very incident · evidence: ruleset-update-no-needless-restart
+- 2026-08-01 · sing-box's Clash API cannot apply a local `.srs`: the installed binary contains the `/providers/rules` route string but neither `ruleCount` nor `vehicleType`, so the route is a compatibility stub and no rule-set hot-apply path exists through it · evidence: ruleset-update-no-needless-restart
+- 2026-08-01 · A `git worktree` is not a valid pristine baseline for `verify_all.sh` in this repo — `.git` is a *file* in a worktree, so A.1/A.2 turn SKIP and the summary falsely reads `14/4` instead of `16/2`; use a clone · evidence: install-binary-download-progress
+- 2026-08-01 · A progress-redraw fixture's non-vacuity is carried by the server's **throttle**, not the body size — an 8 MiB body with `sleep=0` yields `states=1` exactly like a 1 KiB body, which refines the earlier chunk-size reading of this same trap · evidence: install-binary-download-progress
