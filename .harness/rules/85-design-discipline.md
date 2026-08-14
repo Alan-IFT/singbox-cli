@@ -2,6 +2,11 @@
 
 > Standing directive from the project owner, 2026-07-31: 「优先用好的设计，避免不断的修修补补」
 > — prefer a coherent design; avoid a stream of patches.
+>
+> **Restated a third time 2026-08-14, with an added clause: 「以少就是多（更少的代码或实现能达到
+> 同样的目的）为原则进行决策」** — less is more: between two designs that achieve the same stated
+> purpose, the one with less code and less machinery wins. Promoted from a per-task intervention
+> into this rule because the owner has now stated it three times.
 
 ## When to read
 
@@ -27,6 +32,30 @@ Concretely, before accepting a decomposition, apply these tests:
    split, T-02 ships `path.exists()` and an HTML error page reads as "present".*
 3. **Shape check.** If the module layout mirrors the bug report's section numbers rather than the
    domain, re-derive it from the domain.
+
+## Less is more — the tie-break, and the burden of proof
+
+Between two designs that satisfy the same stated requirement, **take the smaller one**: fewer
+lines, fewer files, fewer new concepts, fewer moving parts to keep correct later. This is a
+tie-break with teeth — it does not merely settle ties, it puts the **burden of proof on the larger
+design**. Stage 2 must state the smaller alternative it rejected and what the extra code buys;
+stage 3 must test that answer rather than accept it.
+
+Apply it concretely:
+
+- Prefer **data over machinery**. A list, a dict entry, or a table row that an existing mechanism
+  already consumes beats a new function; a new function beats a new module.
+- Prefer **reusing an existing seam** over adding a parallel one. If a judgment already has one
+  home, call it — a second opinion of the same fact is the defect, not the feature.
+- Prefer **deleting** to adding. A change that removes a special case while satisfying the
+  requirement is strictly better than one that adds a guard for it.
+- **Not every stated symptom needs its own code.** Two symptoms with one cause get one fix.
+- Count the cost honestly: a design's size is its diff **plus** what every future reader and every
+  future task must now hold in their head.
+
+The two rules compose and do not conflict: 「避免修修补补」 forbids accumulating band-aids,
+「少就是多」 forbids paying for coherence with bulk. A design that needs a lot of code to be
+coherent is usually still the wrong abstraction — look again.
 
 ## The counter-rule — this is not a license to over-build
 
