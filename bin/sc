@@ -4,6 +4,7 @@ import argparse
 import base64
 import copy
 import hashlib
+import http.client
 import json
 import os
 import shutil
@@ -12,7 +13,6 @@ import stat
 import subprocess
 import sys
 import tempfile
-import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -1976,9 +1976,14 @@ def reload_or_restart():
 # ============ Clash API ============
 
 def clash_api(method, path, data=None, port=None):
-    # port=None keeps every existing call site on the port main() resolved; `sc doctor`
-    # passes the persisted port explicitly, because it never resolves (and so never
-    # persists) one of its own.
+    """Ask the local Clash API one question. Returns a JSON object or None, never raises one of the
+    three exception families its own body raises — OSError, ValueError, http.client.HTTPException.
+    Those three are caught rather than their leaves (timeout, refusal, bad status, bad bytes, bad
+    JSON, short body) or a bare Exception, because a leaf enumeration needs re-patching every time
+    a sibling escapes. An empty 2xx body is {}; a body that is not a JSON object is None; only a
+    pathological loopback body can still raise (RecursionError / MemoryError).
+    port=None keeps every call site on the port main() resolved; `sc doctor` passes the persisted
+    port explicitly, because it never resolves (and so never persists) one of its own."""
     url = f"http://127.0.0.1:{port or CLASH_PORT}" + path
     body = json.dumps(data).encode() if data is not None else None
     req = urllib.request.Request(url, data=body, method=method)
@@ -1987,9 +1992,10 @@ def clash_api(method, path, data=None, port=None):
     try:
         with urllib.request.urlopen(req, timeout=3) as r:
             text = r.read().decode()
-            return json.loads(text) if text else {}
-    except (urllib.error.URLError, urllib.error.HTTPError):
+            answer = json.loads(text) if text else {}
+    except (OSError, ValueError, http.client.HTTPException):
         return None
+    return answer if isinstance(answer, dict) else None
 
 
 def is_running():

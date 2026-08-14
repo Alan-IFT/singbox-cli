@@ -78,3 +78,37 @@ Rotated verbatim:
    the highest-leverage open debt touching this file. `rejected-decisions.md:57-73` already says the
    next task "should probably widen its own diff instead"; T-08 could not, because AC-19 pinned the
    shipping diff.
+
+## Rotated 2026-08-14 (during `status-egress-via-clash-api` / T-18 delivery)
+
+T-17 (`telemetry-reject-list`) moved to keep `docs/tasks.md` under its 300-line F.5 cap while T-18
+ filed five new open rows. Also rotated: **R-20**, closed by T-18 exactly as it prescribed (one
+exception envelope at `clash_api()`, no caller-side guard) — its full row text follows the table.
+
+| ID | Slug | Outcome | Completed | Doc folder |
+|---|---|---|---|---|
+| T-17 | telemetry-reject-list | **DELIVERED (row rotated at T-18 delivery)** — the batch goal's own prediction held: **data plus a toggle**. One tuple (`TELEMETRY_NAMES`, 17 names), one settings reader, one overlay `$before`-anchoring a single `{"action":"predefined","rcode":"NXDOMAIN","domain_suffix":[…]}` rule into `dns.rules` at index 2, `sc telemetry block\|allow\|show` defaulting to `block`, six strings — and **one changed line** in `generate_config()` (a third element in the existing `_compose([…])`). No new file, directive, import, rule-set, download or persisted state beyond one key; the FR-10 report (RS-1) is that the layer below could express **everything**. R-16 declined a third time, on T-17's own third reason: its vocabulary would not serve the user-extension case anyway, which needs *element addressing* the `"0"`-key boundary denies. **The rule's position overrides the field report's stated slot, on measurement.** A PM-commissioned read-only probe measured that at the report's slot (after `clash_mode`) a listed name in `global` **and** in `direct` returns `NOERROR` with 1 record **and an upstream stub records the query** — not merely unblocked but **measurably leaked**, in both non-`rule` modes, because each `clash_mode` rule is a catch-all within its mode. Before them: `NXDOMAIN`, 0 records, no receipt, all three modes. Filed as gate condition **C-11** and surfaced to the owner as a rule-25 red-line-4 notice; shipped on the standing grant with the measurement recorded, reversible at one anchor string. The same probe killed a design that was about to be built: **`domain_suffix` is label-boundary aware in 1.13.15**, not a raw character suffix, so the v2ray-era `domain` + `.suffix` pairing would have defended against a false positive **that does not exist in this binary**. **The gate found the defect that mattered (F-2)**: the design published `{"rcode":"NXDOMAIN"}` as the anchor users write their own exception against — but it exists only under `block`, so a user who followed the documented recipe and later ran `sc telemetry allow` hit an uncaught `OverrideError`, exiting 1 **with the setting already persisted and `config.json` never regenerated**. Stage 4 measured it, and stage 5 independently re-derived `$after {"server":"hosts_dns"}` as the **unique** admissible replacement. Under the owner's new **「以少就是多」** clause (landed mid-task as a `NOTE` intervention and promoted into rule 85), the gate ran the test in the *smaller* direction and found no smaller design in code — but found the design **larger than necessary in published surface**, which is F-2 itself. **C-3 dropped a name that does not exist**: `telemetry-coverage.mozilla.org` returned `NXDOMAIN` from four independent resolvers against a resolving control; a corrected spelling was barred as a new member. A curated blocklist proposed a name that was not real, and only a first-hand-corroboration condition caught it. **1 rollback** (documentation only: a dev-map anchor guard that pointed at an element no user writes while the one they do write went unguarded, plus a Summary that reported "0 inconclusive" when a criterion as written was inconclusive). QA rebuilt its rig from scratch rather than trusting stage 4's: **95 observations, 93 pass, 0 fail, 2 INCONCLUSIVE reported as such** (one of them QA's own mis-declared control, reported rather than re-classed), all 16 other listed names observed rather than a 5-name sample, and AC-7's freeze finally run mechanically — `25/25` symbols byte-identical by `ast`+sha256, with the comparator proven non-blind on a 1-space mutant. 5 MINOR ship known (R-28…R-30 + two pre-existing families, each with a HEAD-side control proving it pre-existing). `verify_all PASS 17 / WARN 0 / FAIL 0 / SKIP 1` — batch baseline preserved, never lowered, re-run independently by the PM at three checkpoints. Live service provably untouched throughout (`MainPID=2566751` + `ActiveEnterTimestamp`, never `is-active`); `/usr/local/bin/sc` never invoked. Product diff 5 files, **+427/−6**. | 2026-08-14 | `docs/features/_archived/telemetry-reject-list/` (mode: full) |
+
+**R-20 — closed by T-18, 2026-08-14. Full row text as filed by T-15:**
+
+> **R-20 — `clash_api()`'s `except` does not cover what its own body raises, and `sc ls` is now on
+> that path.** `bin/sc:1635-1638` catches only `URLError`/`HTTPError`, but QA reproduced **four**
+> escaping classes: `TimeoutError` (a port that accepts and never answers — needs no foreign server,
+> a stalled sing-box suffices), `JSONDecodeError` (non-JSON 2xx), `UnicodeDecodeError` (invalid
+> UTF-8), `IncompleteRead` (short body). Two of BC-9's four states therefore fail AC-24's "no
+> traceback on a broken host". **Pre-existing** — HEAD's `sc status` raises the same types, verified
+> against a clone — but T-15 newly puts `sc ls`, the command whose whole point is working on a
+> broken host, on that path. Not fixable inside T-15: `clash_api()` was frozen by AC-28 (byte-identity
+> independently verified) and K-12 forbade a local `try`/`except`. The row is the **class**, not the
+> one body shape the code reviewer first spotted. Note the reviewer's reachability analysis
+> ("needs a *foreign* HTTP server") understates it. Owner: whichever task next opens the Clash API
+> seam; the coherent fix is one exception envelope around `clash_api()`, sibling to R-15's.
+
+**How it closed.** T-18 took exactly the prescribed shape — one envelope at `clash_api()`
+(`except (OSError, ValueError, http.client.HTTPException)` plus an `isinstance(body, dict)` gate),
+no caller-side guard, no call site edited. The row proved **wider than filed**: six escaping classes,
+not four. The fifth is `ConnectionResetError` / `RemoteDisconnected` (`urllib`'s `do_open` wraps only
+`h.request()`'s `OSError` into `URLError` and bare-re-raises everything `h.getresponse()` raises);
+the sixth is `BadStatusLine`, which is neither an `OSError` nor a `ValueError`. Two of the six were
+unknown to the pipeline until its last stage ran — which is why the family tuple was taken over the
+leaf enumeration. Evidence in `docs/features/_archived/status-egress-via-clash-api/06_TEST_REPORT.md`.

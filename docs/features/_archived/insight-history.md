@@ -177,3 +177,17 @@ assignment abort → T-11; `mkstemp` umask and the symlink write-through → T-1
 - 2026-08-01 · `os.path.realpath` is not raise-free on any Python this project targets: `posixpath._joinrealpath` calls `os.readlink` **unguarded** at 3.8.2 and **still** at 3.12.3 — the 3.10 rewrite guarded the `lstat`, not the `readlink` · evidence: config-composition-layer
 - 2026-08-13 · sing-box's `interrupt_exist_connections` governs **external (inbound-originated)** connections only — the binary carries `interrupt.ContextWithIsExternalConnection`/`IsExternalConnectionFromContext` beside `(*Group).Interrupt`, so setting it false *spares* external connections while sing-box's own internal ones (the DoH transport carrying `remote_dns`) are torn down on every re-selection regardless · evidence: proxy-urltest-group
 - 2026-08-13 · sing-box's `GET /proxies` returns entries that are not `sc` outbounds at all — its implicit `GLOBAL` selector among them — so a delay map keyed by the API's own tags is not node-keyed, and a node named after one of them silently inherits that entry's history · evidence: proxy-urltest-group
+
+## Rotated 2026-08-14 (during `status-egress-via-clash-api` / T-18 delivery)
+
+**R-18 confirmed a sixth time** — `archive-task.sh` harvested 4 insights, leaving the index at 34
+against F.4's 30, and its own rotation branch never fired (it counts bullets, F.4 counts lines).
+Chosen by rule 70's "what no longer earns its line", not oldest-first. The first entry below is
+**superseded**: T-18 fixed the defect it describes, and the index now carries the deeper mechanism
+(`do_open`'s asymmetric wrapping) that explains why the enumeration in it was incomplete — six
+escaping classes, not four.
+
+- 2026-08-13 · `clash_api()`'s `except (URLError, HTTPError)` does not cover what its own body raises: a port that accepts and never answers yields `TimeoutError`, a non-JSON 2xx `JSONDecodeError`, invalid UTF-8 `UnicodeDecodeError`, a short body `IncompleteRead` — so every caller, not just the new one, can take a traceback on a host where something other than sing-box holds the Clash port · evidence: proxy-urltest-group
+- 2026-08-14 · `geosite-private` matches the reserved TLD `test`, so a probe name like `probe.test` is **not** "matched by no DNS rule" — it is routed to `direct_dns`, silently invalidating any measurement of the no-rule class that uses a `.test` name · evidence: dns-resilience
+- 2026-08-14 · `dig … ANY` uses TCP, so an `ANY` probe against a UDP-only fixture inbound returns `connection refused` in ~16 ms and measures the harness rather than the document, while `MX`/`TXT` of the same name behave as the no-rule class · evidence: dns-resilience
+- 2026-08-14 · A `predefined` rule with `rcode:"NXDOMAIN"` **and** a non-empty `answer` emits a self-contradictory reply — `status: NXDOMAIN` carrying `ANSWER: 1` — and still passes `sing-box check`; an omitted `rcode` silently means `NOERROR`, and a lowercase `"nxdomain"` is a hard `check` failure, so all three of key-absence, explicitness and case are load-bearing · evidence: telemetry-reject-list

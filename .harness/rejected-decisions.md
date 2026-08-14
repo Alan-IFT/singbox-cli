@@ -332,3 +332,34 @@
   resolvable.
 - **Origin:** T-17 `telemetry-reject-list`, `02_SOLUTION_DESIGN.md` K-5 / RS-4, measured by the
   PM-commissioned probe (Q-C).
+
+## clash-api-bare-except-and-leaf-enumeration
+- **Decision:** declined, both alternatives — `except Exception` in `clash_api()`, and an enumeration
+  of leaf exception classes. Adopted instead: `except (OSError, ValueError, http.client.HTTPException)`
+  plus one `isinstance(body, dict)` gate applied *after* the empty-body `{}`.
+- **Why (`except Exception`, the SMALLER option — one word, no import, one line less):** it was
+  weighed under rule 85's 「少就是多」 tie-break and rejected on a purchase that was tested, not
+  asserted. A genuine defect *inside* `clash_api()` (an `AttributeError` after a refactor, a
+  `TypeError`, a `NameError`) would be reported to the user as `[PROBLEM] Clash API responding` —
+  `sc doctor` asserting the host is broken when `sc` is. `README.md:268` publishes the opposite
+  contract (`[UNKNOWN]` means "the check could not run at all", *never* "the thing being checked is
+  broken"), and with the three families a defect instead reaches `cmd_doctor`'s per-section isolation
+  and prints exactly that. `stored_delays()`'s docstring (`bin/sc:2019-2022`) had already written the
+  same position down. Note `cmd_doctor` itself *does* use `except Exception` and is right to: a
+  **driver** isolating unknown probe code can enumerate nothing, while a four-statement body can.
+- **Why (leaf enumeration — `TimeoutError`, `JSONDecodeError`, `UnicodeDecodeError`, `IncompleteRead`, …):**
+  incomplete the day it ships, which is the 修修补补 shape rule 85 forbids. Proven rather than
+  predicted: R-20 filed **four** leaves, stage 4 measured a fifth (`ConnectionResetError` /
+  `RemoteDisconnected`, from `urllib`'s `do_open` wrapping only `h.request()`'s `OSError` into
+  `URLError` and bare-re-raising everything `h.getresponse()` raises) and stage 6 a sixth
+  (`BadStatusLine`, neither an `OSError` nor a `ValueError`). Two of six were unknown to the pipeline
+  until its last stage ran.
+- **Also declined:** a fourth family for `RecursionError` / `MemoryError`. BC-12 declines that threat
+  model outright — the peer is a process on this host's own loopback, so an attacker in that position
+  already runs code as this user — and catching `MemoryError` is worse than the disease. The residue
+  is *disclosed* instead, in the docstring and in `docs/dev-map.md:39`, rather than papered over with
+  an unqualified "never an exception".
+- **Origin:** T-18 `status-egress-via-clash-api`, `02_SOLUTION_DESIGN.md` K-1 + `02_RATIONALE.md`;
+  tested rather than accepted at stage 3 (`03_RATIONALE.md` §1, hierarchy read from the installed
+  stdlib) and confirmed at stage 5 (CR-4). Filed by the PM at delivery because `.harness/**` was
+  outside the task's permitted diff (design residual R2).
