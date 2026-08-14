@@ -479,3 +479,18 @@ stage 5. Filed by the PM at delivery because `.harness/**` is outside the task's
   `.config.sha256`, T-14), so it is reused rather than recomputed. A diff feature was not requested
   by anyone.
 - **Origin:** T-06 `sc-config-show`, Q-3.
+
+## `blackout-by-sb-rules-base-env-var` — declined 2026-08-14 (T-07)
+- **Decision:** declined. The restricted-network regression makes the four **shipped** sources
+  unreachable by name resolution (`/etc/hosts`), not by pointing `SB_RULES_BASE` at an unreachable
+  URL; the harness in fact refuses to run at all when `SB_RULES_BASE` is set.
+- **Why:** `SB_RULES_BASE` **replaces** `sc`'s source list (`bin/sc:1052-1061`) rather than making
+  the shipped one unreachable, so a run under it proves nothing about the four URLs the product
+  actually ships — a fifth mirror added to `RULESET_BASES` would be untested and the test would
+  still be green. It also cannot cover `github.com` / `raw.githubusercontent.com` /
+  `api.github.com`, which the installer fetches from before step 6 is ever reached, so the scenario
+  would not be a blackout at all. And the injection would be unprovable at the resolver: the
+  `/etc/hosts` form is checked with `getent hosts` before the installer starts (BC-3), whereas an
+  environment variable's arrival in `sc`'s effective list could only be inferred afterwards from
+  the failure text it produced.
+- **Origin:** T-07 `restricted-network-regression-test`, stage 2 (BC-3).

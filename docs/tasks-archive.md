@@ -272,3 +272,79 @@ delivery policy; T-21's own three rows (R-53 … R-55) stay on the live board.
 | ID | Slug | Outcome | Completed | Doc folder |
 |---|---|---|---|---|
 | T-20 | doctor-extended-checks | **DELIVERED** — `sc doctor` now reports **nine** facts instead of seven, and this was the batch's convergence task: every one of the six new facts already existed somewhere, so the design question was *which existing call does each row stand on*, not how to compute it. All six stand on their feature owner's call — rule-set age on T-19's single-reader `mtime` + `_age_text()` (K-17 honoured, consumed inside `_doctor_rulesets()`'s existing loop), drift on T-06's extracted `_drift_state()`, AAAA state on T-16's `ipv6_decision()`, node delays on T-15's `stored_delays()`, permissions on T-13's `CRED_MODE` + its own `mode & 0o077` predicate, DNS through the already-total `clash_api()`. **The goal sentence's "DNS timing" clause was refuted at stage 1** (the fifth consecutive pool task where that held, and again the largest saving): `CONFIG_BASE`'s whole `dns` block carries no timeout key, so a row reporting a configured DNS timeout would report a value that does not exist. Re-scoped to one **measured** fact behind **BC-16** — ship nothing unless a first-hand probe finds a boundable mechanism reaching the running install's resolver — with `socket.getaddrinfo` pre-ruled inadmissible (BC-17, it takes no timeout argument). The architect's probe **P-1** read the `sing-box` binary's symbol table (`clashapi.queryDNS` + `clashapi.dnsRouter` present, literal `/dns/query` matching 0 as a negative control, `/providers/rules` = 1 as calibration); the gate **re-ran it with two controls the design did not** (`configRouter`/`proxyRouter` present and live, a fabricated symbol 0) plus a **counter-control** — `scriptRouter` is present while `/script` answers "not supported" — which bounded the ruling to *mounted*, never *supported*, and is why **GC-6** forced a live P-2 before the row was written. **Rule 85 held literally**: 2 new `DOCTOR_SECTIONS` entries, 5 new rows, 3 seams, **+5 rows exactly** on a healthy host (16 → 21 vs a HEAD clone on the same fixture root), all `[OK]`, none naming a path or next step, exit 0; `_age_seconds()` deliberately **not** added; the undeclared-growth chain closed at **+288** then **+294 net with no slack** across the rework. **1 rollback** (stage 5 → 4, CR-1 MAJOR): the clean-host permission row asserted "no file grants access to group or other" while `settings.json` is excluded **by name whatever its mode** and `save_settings()` writes it `write_text()` — 0644 on **every default install**, so the row was false on the commonest host state there is. Fixed by narrowing the **sentence, never the check** (both predicates verified byte-unchanged at round 2) — the R-22 defect class caught in the text of the row that reports on it. **R-10 closed** (the full sweep catches a hand-made `config.json.bak-<date>` at 0644 with no filename pattern; safe because a reporter may enumerate where a *chmod*ing sweep may not), **R-11 half-closed** (directory row narrowed to `mode & 0o022`, the rename-window attack, never the world-readable mode every host has; `install.sh`'s half stays open), **R-32 closed**, **R-43 closed by ruling**. QA rebuilt the suite from `01` and from `bin/sc` itself — **317 assertions, 14 files, 3 consecutive clean runs**, no line number inherited (RES-10) — and reproduced three residuals independently. **AC-B14 BLOCKED and filed**, never substituted (R-31/R-41/R-47, honoured a fourth time) → `.harness/operator-obligations.md` id 1. `verify_all PASS 17 / WARN 0 / FAIL 0 / SKIP 1` at four PM checkpoints. Product diff 5 files, **+366/−66**. | 2026-08-14 | `docs/features/_archived/doctor-extended-checks/` (mode: full) |
+
+## Rotated 2026-08-15 (during `restricted-network-regression-test` / T-07 delivery)
+
+One Completed row moved (**T-21**, an `explore` row genuinely closed — it shipped no code by
+design and all four of its questions were answered), and, because that alone did not free the
+space T-07's own row plus six new open rows needed, one **open** block was moved after it.
+Completed rows were rotated **in preference to open rows**, per the delivery policy.
+
+| ID | Slug | Outcome | Completed | Doc folder |
+|---|---|---|---|---|
+| T-21 | ruleset-source-strategy-from-v2rayn | **EXPLORED — recommend no code on all four questions, and two of the three headline premises were refuted first-hand.** The one non-`full` row in the batch. **Q1 (GitHub Releases assets): DECLINE, premise refuted twice.** No publisher of sing-box rule-sets ships `.srs` as a release asset — MetaCubeX/meta-rules-dat (1 release, 28 assets), 2dust/sing-box-rules (30), SagerNet/sing-geosite (11), sing-geoip (4) publish only aggregate `.dat`/`.db`/`.mmdb`/`.7z` and keep every `.srs` on a git branch — and the `.db` they do ship is refused by the installed binary (`geosite database is deprecated in sing-box 1.8.0 and removed in sing-box 1.12.0`, with a bogus-key control proving the field is decoded and *then* rejected, plus a positive control). The "different CDN" clause is false as well: a release download 302s to a signed `release-assets.githubusercontent.com` URL answering on **185.199.108.133**, one of the same Fastly anycast addresses `raw.githubusercontent.com` resolves to. **Q2 (a mirror we control): DEFER**, and the trigger is a *content* complaint, never an availability one — v2rayN's own "repo they control" is a **fork** of `lyc8503/sing-box-rules` served from a **single** raw URL with no fallback, i.e. weaker than our four bases, which measured **24/24 HTTP 200** with `geosite/cn.srs` byte-count identical (447 412 B) from all four; a mirror is a daily job forever and would make T-19/T-20's age reporting measure our own lag. **Q3 (selectable source sets): DECLINE as a `sc` feature** — sing-box 1.13.15 accepts `rule_set` `type: remote` with `url`/`download_detour`/`update_interval` (bogus-key control), so T-14's `override.json` already expresses any source set at **zero lines** in `bin/sc`; and the candidate sets are not mirrors of one another (`geosite-cn.srs`: ours 447 412 B, 2dust 527 715, russia **25 413**, Iran 40 472), so a one-word selector would silently re-route most Chinese traffic. **Q4 (proxy vs direct), the point the pool said to settle by measurement: DECLINE any switch** — the Clash API recorded every base as `rule=final` -> `proxy` on the running host, while `install.sh:567` fetches before `systemctl start` at `:593`, so we already implement v2rayN's actual policy (`GetWebProxy` returns `null` when the local socks port is not listening) with **no code**. The direct arm's timing was **BLOCKED and not substituted** (R-31/R-41/R-47, a fifth time): all locally-originated traffic is policy-routed into `sb-tun`, so measuring it means mutating the live tunnel; the measurement is named in the doc. Corrections to the record: v2rayN's `DownloaderHelper` *does* retry (`MaxTryAgainOnFailure = 2`) — transport-level, same URL, still no fallback and still `File.Copy(tmp, target, true)` with no validation; and "selectable sets compose with T-14's override" is half false, since the base list is a download-time constant, not part of the composed document. **0 rollbacks; no code, no product diff, `bin/sc` never imported and the live service provably untouched** (`MainPID` + `ActiveEnterTimestamp` identical). 3 rows filed (R-53…R-55), **R-16 formally declined** — an explore task cannot claim it. `verify_all PASS 17 / WARN 0 / FAIL 0 / SKIP 1`. | 2026-08-14 | `docs/features/_archived/ruleset-source-strategy-from-v2rayn/` (mode: explore) |
+
+### Still-open rows rotated for space (NOT closed) — T-13's R-9 … R-14
+
+The block below is **open**. It was moved only to keep `docs/tasks.md` under its 300-line F.5
+cap. **R-9 is the live one** — the committed `bin/sc` test harness, which T-07 deliberately did
+**not** claim (T-07's out-of-scope 1 and 2 leave it the `verify_all` wiring, the `.ps1` mirror,
+`baseline.json`/R-4, and permanently defusing the import-time auto-elevate). T-07 makes R-9
+**cheaper without claiming it**: `.harness/scripts/restricted-network-regression.sh` is now a
+committed, runnable, git-tracked test artifact that never imports `bin/sc`, so R-9 inherits a
+working precedent for a project check that lives beside `check-i18n-parity.sh`. R-10 is closed
+and R-11 half-closed (see the T-20 block on the live board). A task touching the test harness,
+`baseline.json` or the auto-elevate must read this block here.
+
+### Open rows surfaced by T-13 (R-9 … R-14) — owner to number
+
+Filed by the PM at delivery to discharge gate conditions **C-1** and **C-11**. Each was found by a
+T-13 stage agent, judged out of scope, and **re-homed rather than dropped**.
+
+1. **R-9 — the committed `bin/sc` test harness. This is the price the gate charged for deferring it
+   a fourth time (C-1), and it is now filed with scope rather than re-argued.** It covers: a real
+   `verify_all.sh` step, the `verify_all.ps1` mirror (R-6), populating `baseline.json` (R-4, still
+   `test_count: 0` across seven delivered tasks), and — the part that has repeatedly made this row
+   look cheaper than it is — **fail-closed safety criteria of its own**: refuse under root, never
+   touch `/etc`, never touch the live service. A committed step means `bin/sc` is imported on the
+   owner's live machine on **every** future `verify_all` run, forever, which requires permanently
+   defusing the import-time auto-elevate that once re-execed the *installed older* binary under sudo
+   and restarted the owner's VPN. T-13 declined on exactly that risk-coupling ground rather than the
+   diff-boundary ground `rejected-decisions.md § ruleset-unit-tests-in-t02` has grown tired of.
+   **A runnable, non-vacuous harness now exists to build from**: `06_TEST_REPORT.md` §12 carries 106
+   assertions verbatim, including the `sys.modules` neutralisation shim (also in `docs/dev-map.md`).
+2. **R-10 — CLOSED by T-20** (2026-08-14). `sc doctor`'s permission row sweeps every regular file
+   directly inside the configuration directory (one exclusion, `settings.json`; no filename
+   pattern), so a hand-made backup at a wide mode is now named with its mode and a `chmod`.
+   The asymmetry that made it safe: NG-11 forbids the *installer* sweep from roaming because it
+   `chmod`s; a reporter only reports. Nothing left open here.
+3. **R-11 — HALF-CLOSED by T-20** (2026-08-14). The *checking* half shipped: the row is PROBLEM on
+   `mode & 0o022` — the rename-between-`fchmod`-and-`replace` window R-11 names — and deliberately
+   never on the world-readable, traversable mode every host has, which would fire on 100 % of
+   installs. **Still open: nothing sets the directory's mode deliberately.** `install.sh` still
+   creates it at the ambient umask, and T-20's out-of-scope 2 kept the installer untouched.
+   Owner: whichever task next opens `install.sh`.
+4. **R-12 — a helper that `sys.exit`s inside a function whose caller owes a run-level outcome.**
+   After T-13, `save_nodes()` exits on failure and is called from inside `generate_config()`, which
+   `cmd_update_rules()` calls — and that function's own contract is "exactly one truthful run-level
+   outcome, always, before the exit". Ruled ship-as-designed at stages 3 and 5 (HEAD exited via an
+   uncaught traceback on the identical path, so it is a strict improvement, and the trigger needs a
+   stale active tag **and** a failing filesystem). The **general** statement is the row: T-01/T-10's
+   outcome invariant is not enforced by anything structural. **T-14 adds a second unwind past the
+   same block**: `generate_config()` now raises `OverrideError` on a malformed
+   `/etc/sing-box/override.json`, and `main()` renders it with `sys.exit`, so a `sc update-rules` run
+   that regenerates (`gained`) while the user's override is broken also skips
+   `cmd_update_rules`' run-level outcome line. Ruled ship-as-designed at T-14's gate (the abort lands
+   strictly before `restart_service()`, so nothing happened to the service and the run names the file
+   to fix); the six-line exception stash was explicitly *not* required. Two raise sites now, one row.
+5. **R-13 — the new `bin/sc` key renders English-only on one of its five call sites.** `main()` calls
+   `_init_files()` before assigning `LANG`, so a failure writing `nodes.json` at start-up renders
+   `Could not write {path}: {err}` in English. Both languages ship and the other four call sites are
+   bilingual, so AC-22 holds; it is strictly better than HEAD's English traceback. **C-13 explicitly
+   forbade fixing it here** by reordering `_load_lang()` — that would be an unrequested change to the
+   start-up path T-05 deliberately shaped.
+6. **R-14 — the new write path needs permission on the *directory* where HEAD needed it only on the
+   file.** Found by QA, predicted by no upstream document: with the target writable but its directory
+   at `0500`, HEAD succeeds and the new build fails loudly. Unreachable in production (root bypasses
+   directory DAC; EROFS fails both), but it is a real behaviour change and belongs on the record
+   rather than in a future bug report.

@@ -153,6 +153,13 @@ and never the key, is identical everywhere, and carries nothing derived from wha
 length, no prefix, no digest — so which fields exist stays observable while their contents do not.
 _Avoid_: redaction placeholder, censor, stars, `<hidden>`
 
+**blackout**:
+The deliberate, *derived* unreachability of every shipped rule-set source plus `github.com`,
+`raw.githubusercontent.com` and `api.github.com`, injected through name resolution and lifted by
+restoring one file byte-for-byte. It is a property the regression harness creates on purpose inside a
+disposable VM, never an accident of the network and never a substitution of the source list.
+_Avoid_: offline mode, air-gap, network failure, mock
+
 ## Project intent
 
 **singbox-cli is a headless v2rayN.** Stated by the owner 2026-08-01: 「初衷是实现一个类似于非桌面版

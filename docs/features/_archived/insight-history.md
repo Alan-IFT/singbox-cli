@@ -237,3 +237,24 @@ Chosen by rule 70's "what no longer earns its line", not oldest-first: both are 
 
 - 2026-08-14 · A `[D]`/`[A]` control class is a property of an **observation**, never of a criterion: an acceptance criterion that bundles "the excepted name resolves" (which HEAD also does) with "every other name stays rejected" (which HEAD does not) can only ever produce an *agreeing* control, making it inconclusive by construction no matter how good the rig — split per observation, both halves pass · evidence: telemetry-reject-list
 - 2026-08-14 · A fixture that proves "the command under test created nothing" must also stop its **own loader** from creating the config directory or a stub binary, because those writes land in the same `find` listing and read exactly like the command having initialised — the negative is only meaningful with raisers over `_init_files` / `_resolve_clash_port` plus a positive control proving a raiser *does* fire for a command that initialises · evidence: sc-config-show
+
+## Rotated 2026-08-15 (during `restricted-network-regression-test` / T-07 archive)
+
+**R-18 confirmed a ninth time.** `.harness/insight-index.md` stood at exactly 30 `wc -l` lines
+against F.4's 30 cap, and `archive-task.sh:85-95` still counts **bullets** (`grep -E '^[[:space:]]*-'`)
+where F.4 counts **lines**, so its rotation branch cannot fire on any index carrying a header —
+30 bullets is 38 file lines. T-07's gate re-derived the exact mechanism (`03_RATIONALE.md` §6) and
+made pre-harvest rotation a binding delivery condition (GC-8). Three lines rotated by hand to make
+room for two harvested insights. Chosen by rule 70's "what no longer earns its line": each is either
+task-specific to work that has shipped, already carried by a `docs/tasks.md` row, or a narrower
+restatement of a line that stays.
+
+- 2026-08-13 · A sing-box `urltest` group demotes a member that is slow or refuses within about one `interval`, but **never** demotes a member that accepts the connection and then never answers — a probe that hangs never completes, so the cached selection is never revisited even after the stale history is dropped, and there is no per-probe timeout option to change it · evidence: proxy-urltest-group
+  - **Why rotated:** T-15 shipped and its selection state machine is now described in `docs/dev-map.md`;
+    the residual it left is filed as **R-21/R-49** on the board, which is where a future task meets it.
+- 2026-08-14 · A `bin/sc` fixture that repoints all eight path constants into a temp root is still **not** isolated from the live sing-box: `CLASH_PORT` is read from the module global when `main()` is not driven, and 29090 is the port the real instance listens on here, so `cmd_status()`'s `clash_api("GET","/configs")` was answered by the running service from inside a fully redirected root — a fixture must bind a port it has proved free · evidence: ruleset-staleness-visibility
+  - **Why rotated:** a narrower restatement of the `main()`-reassigns-`CLASH_PORT` line, which stays and
+    carries the same warning in its general form. Two lines for one trap stopped earning the space.
+- 2026-08-14 · The Clash API's `GET /dns/query` is answered from, **and populates**, the running install's own DNS cache (`experimental.cache_file`), so each probe warms the entry the next probe reads — measured live: a fresh name costs 175 ms, the same name 3 s later 4 ms with the authority TTL decremented 195 → 190 → 186, and a negative answer is held 1800 s — which means a "DNS timing" reading inside that window reports a cache hit rather than resolution through the tunnel · evidence: doctor-extended-checks
+  - **Why rotated:** carried in full by **R-48** on the board, owned by the next task touching
+    `_doctor_dns` or the egress pair — the one place it will actually be read.
