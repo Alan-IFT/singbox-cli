@@ -406,3 +406,76 @@ datum, with no staleness threshold and no stale/fresh conclusion anywhere.
 alternative rejected` half 1; tested at stage 3 (`03_RATIONALE.md` §1) and confirmed against the code at
 stage 5. Filed by the PM at delivery because `.harness/**` is outside the task's permitted diff
 (design residual RS-6).
+
+## `unredacted-config-output-or-an-opt-out-flag` — declined 2026-08-14 (T-06)
+- **Decision:** declined, and it overrides the task's own goal sentence. `sc config` is
+  **always redacted**; there is no `--raw`, no `--no-redact`, no setting and no environment
+  variable that reaches an unmasked rendering.
+- **Why:** `install.sh:546-552` writes `/etc/sudoers.d/sc` granting the install user
+  `NOPASSWD: /usr/local/bin/sc`, and `bin/sc:117-118` re-execs through `sudo` at **import**. An
+  unredacted `sc config` — or an opt-out flag, which carries the *identical* property because the
+  flag is reachable through the same NOPASSWD rule — therefore converts a **password-gated** read
+  of a `0600` credential document into a **password-free** one for any process running as that
+  user. That is a privilege-boundary change produced by the project's own sudoers rule, not merely
+  a terminal-scrollback risk, and it reverses T-13 (credential bytes never wider than 0600 at any
+  instant) and T-14 (the drift record is a **digest, never a copy**). The reverse risk was weighed
+  and is small: the unredacted document stays reachable by `sudo cat`, the password-gated route the
+  sudoers rule does not cover, so no legitimate need is left unmet by declining. Re-proposing this
+  requires answering the sudoers composition, not the convenience argument.
+- **Origin:** T-06 `sc-config-show`, whose `BATCH_PLAN.md` goal sentence specified "an optional
+  `--redact`" with unredacted output as the default. Overturned at stage 1 (Q-2), evidence verified
+  first-hand at stage 3, decided under the owner's standing authority and surfaced in
+  `07_DELIVERY.md` rather than blocked on.
+
+## `credential-deny-list-inside-outbounds` — declined 2026-08-14 (T-06)
+- **Decision:** declined. Inside `outbounds` the mask is driven by a **fail-closed allow-list**
+  (`VISIBLE_IN_OUTBOUND`, 34 names); a document-wide six-name deny-list (`SECRET_KEYS`) is kept as a
+  floor **in addition**, not as the guarantee.
+- **Why:** a deny-list of 8 names is smaller and just as readable, and it fails **open** on the one
+  case that actually matters — a key nobody enumerated. `private_key` and `pre_shared_key` appear
+  **nowhere** in `bin/sc` (verified by grep at stages 1, 3 and 5), so they can only enter the
+  document through a user's `override.json`; the same is true of any field a future sing-box version
+  adds. With an allow-list the failure direction of forgetting is a **masked** field — visible,
+  annoying, harmless. With a deny-list it is a **leaked credential**, and no leak test can detect
+  the omission because the test only knows the names someone already thought of.
+- **Origin:** T-06 `sc-config-show`, Q-5. Re-examined and upheld at stage 3 against rule 85's
+  smaller-is-better rule.
+
+## `five-name-minimal-visible-key-set` — declined 2026-08-14 (T-06)
+- **Decision:** declined. `VISIBLE_IN_OUTBOUND` carries all 34 non-credential key names `sc` emits
+  inside an outbound, not a minimal `type`/`tag`/`server`/`server_port`/`detour` core.
+- **Why:** this is the genuinely smaller and strictly safer option, so rule 85's burden of proof was
+  on the larger one and was tested rather than accepted. On a real reality/vless node the 5-name form
+  masks `tls`, `transport` and `flow` **wholesale** — SNI, ALPN, uTLS fingerprint, ws path, `Host`,
+  gRPC service name — which are precisely the fields `sc ls` does **not** show and the only fields
+  inside `outbounds` worth reading. It would satisfy every leak criterion while defeating the
+  command's stated purpose. The size properly lands in **data**, not machinery: the 34 names are
+  *derived* (every key name `sc` emits inside an outbound, minus the four credential names, plus
+  `detour`), and V-11 re-checks the derivation mechanically in seconds. Three independent
+  derivations — stages 2, 3 and 5 — agree name for name.
+- **Origin:** T-06 `sc-config-show`, stage 2's rejected alternative, re-derived and upheld at stage 3.
+
+## `textual-or-regex-masking-of-the-config-document` — declined 2026-08-14 (T-06)
+- **Decision:** declined. `sc config` parses the document with `json.loads`, walks the parsed
+  structure, and re-serialises; it never masks the file's text.
+- **Why:** a textual mask cannot guarantee the output still parses as JSON, which FR-5 requires so
+  the result can be piped and re-parsed; it cannot distinguish a key from a value, so it would
+  corrupt a node whose *tag* happens to equal its password; and it cannot express "inside
+  `outbounds`, at every depth", which is the whole fail-closed rule. The parse-walk-reserialise form
+  also makes the guarantee auditable — one pure function, one call site, one `sys.stdout.write`. Its
+  one accepted cost is that an unparseable document is refused rather than shown raw (BC-4), on the
+  ground that content which cannot be parsed cannot be masked.
+- **Origin:** T-06 `sc-config-show`, stage 2's rejected alternative 3.
+
+## `rendering-the-config-sc-would-generate-or-a-diff` — declined 2026-08-14 (T-06)
+- **Decision:** declined. `sc config` shows the document **on disk** and says so by naming its
+  absolute path; it reports the drift *state* as one line and produces no diff.
+- **Why:** the honest question "does *show the config* mean the file, the composition that would be
+  generated, or the drift between them?" was asked deliberately, and the file won. Producing the
+  would-be composition requires `generate_config()`, which **writes the file** and runs the checker —
+  so a read-only command cannot call it, and splitting out a compose-only form would create a
+  **second definition of what `sc` emits**, the exact "no second opinion" failure `docs/dev-map.md`
+  prohibits. The drift state already has exactly one definition (`_config_digest()` +
+  `.config.sha256`, T-14), so it is reused rather than recomputed. A diff feature was not requested
+  by anyone.
+- **Origin:** T-06 `sc-config-show`, Q-3.

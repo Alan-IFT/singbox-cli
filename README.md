@@ -277,6 +277,27 @@ Exit status:
 | `1` | at least one `[PROBLEM]` — any section: a missing binary, an unusable rule-set, a failed config check, a stopped or non-autostarting service, a missing TUN device, an unanswered Clash API port, a failed egress query |
 | `2` | no `[PROBLEM]`, but at least one `[UNKNOWN]` — a check could not run: no sing-box binary to check the config with, no init system detected, `ip` missing, or no Clash API port recorded in `settings.json` |
 
+### Show the configuration
+
+```bash
+sc config
+```
+
+Prints `/etc/sing-box/config.json` — the document sing-box is actually running — with every node credential masked. Redaction is unconditional: no flag, setting or environment variable prints an unmasked value, because `sc` runs under a password-less `sudo` rule scoped to itself, so an opt-out would turn a root-only read of a `0600` credential file into a password-free one. The unredacted document stays reachable exactly one way: reading the file as root.
+
+What is masked:
+
+- **Inside `outbounds`, at every depth**: every key that is not in the **visible key set** — `type`, `tag`, `server`, `server_port`, `detour`, the transport / TLS / Reality / obfs fields and the protocol-tuning and auto-select-group settings. So `uuid`, `password`, `public_key` and `short_id` are masked, and so is any key `sc` never emits, including one introduced by an outbound you added through `override.json` or by a future sing-box version.
+- **Everywhere in the document**: `password`, `uuid`, `secret`, `token`, `private_key`, `pre_shared_key`.
+
+A masked value is always the same literal, `******`. Only the **value** is replaced — the key stays — so which fields are configured stays visible while their contents do not.
+
+The document goes to **stdout** and everything `sc` says about it goes to **stderr**, so `sc config > current.json` yields a JSON document a parser accepts, and `sc config | grep -n server_name` works. The stderr notes give the file's absolute path, state that credentials are masked, and — when a drift record exists — say whether the document on disk is what `sc` last generated or has been changed since.
+
+**`sc config` writes nothing.** No file is created, modified or removed anywhere, not even `/etc/sing-box` itself on a host that does not have it; it downloads nothing, starts nothing, touches no service, and forms no opinion about whether the configuration is *valid* — that is `sc doctor`'s answer.
+
+**The limit.** The mask covers the credentials `sc` itself writes. A secret you place in your own `/etc/sing-box/override.json` **outside** the `outbounds` array, under a key that is not one of the six names above — an inbound user's `auth_token`, say — is printed verbatim. Check your own override before pasting the output anywhere.
+
 ### Ruleset update
 
 ```bash

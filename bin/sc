@@ -327,6 +327,14 @@ TRANSLATIONS = {
             "在 {at}：{name} 匹配到 {count} 个元素，但必须恰好匹配 1 个 —— match：{anchor}",
         "the top level": "顶层",
         "at {at}: this must stay an array": "在 {at}：这里必须仍然是数组",
+        # sc config — the two notes it always writes and the two provenance sentences.
+        # None of these may contain 失败 either (same grep literal as above).
+        "Showing the configuration on disk: {path}": "正在显示磁盘上的配置：{path}",
+        "Node credentials are masked; a masked value shows as {mask}.":
+            "节点凭据已隐去；被隐去的值显示为 {mask}。",
+        "This is what sc last generated.": "这就是 sc 最近一次生成的内容。",
+        "This has drifted from what sc last generated.":
+            "这与 sc 最近一次生成的内容已经不一致。",
     },
 }
 
@@ -1868,28 +1876,50 @@ def _record_generated():
         pass
 
 
+def _drift_state():
+    """Has config.json drifted from what sc last generated? True / False / None.
+
+    THE judgement, with ONE home: True drifted, False matches, None unknown. Both display
+    sites read it — `generate_config()`'s warning below and `sc config` — so a second
+    opinion about what "unchanged" means is not expressible.
+
+    None covers every case in which the question cannot be answered: no record, a record
+    that cannot be read (OSError) or is not UTF-8 (a UnicodeDecodeError is a ValueError,
+    not an OSError), a record that is empty after stripping, or a config.json that
+    _config_digest() could not read. NO record means UNKNOWN, never drifted: every host
+    upgrading from a build before the record existed has none, and a warning that fires on
+    100% of installs at first upgrade teaches people to ignore exactly the warning that has
+    to stay loud.
+
+    Reads two files; writes nothing, and never logs the document's content.
+    """
+    try:
+        recorded = STATE_PATH.read_text().strip()
+    except (OSError, ValueError):
+        return None
+    if not recorded:
+        return None
+    current = _config_digest()
+    if current is None:
+        return None
+    return current != recorded
+
+
 def _warn_drift():
     """One stderr line when config.json on disk is not what sc last generated.
+
+    The WARNING RENDERER over _drift_state() and nothing more — the judgement itself lives
+    there. `not _drift_state()` is false for both False (matches) and None (unknown), so
+    the silence on an unknown state is the same silence as before.
 
     Loud, and never blocking: a drifted host must still be able to switch nodes and re-run
     install.sh, so a diagnostic may not lock the user out. Nothing is backed up either —
     that would put a second copy of credential bytes on disk to solve a problem the
     override file solves properly.
 
-    NO record means UNKNOWN and says nothing. Every host upgrading from a build before
-    this one has no record, and a warning that fires on 100% of installs at first upgrade
-    teaches people to ignore exactly the warning that has to stay loud.
-
     Reads config.json into memory only; writes nothing, and never logs its content.
     """
-    try:
-        recorded = STATE_PATH.read_text().strip()
-    except (OSError, ValueError):
-        return
-    if not recorded:
-        return
-    current = _config_digest()
-    if current is None or current == recorded:
+    if not _drift_state():
         return
     sys.stderr.write("⚠️  " + t(
         "{path} was modified outside sc — those changes are about to be replaced; put "
@@ -2616,6 +2646,139 @@ def cmd_doctor(args):
     sys.exit(DOCTOR_EXIT[worst])
 
 
+# ============ config ============
+# `sc config` prints the document at CFG_PATH with every node credential replaced by the
+# mask. It writes nothing, opens no socket, starts no subprocess, and forms no opinion about
+# whether the document is valid — `sc doctor` owns that verdict and stays its only home.
+#
+# Redaction is UNCONDITIONAL and has no opt-out. install.sh grants the install user
+# NOPASSWD on /usr/local/bin/sc, so an unredacted rendering — flag, setting or environment
+# variable — would turn a password-gated read of a 0600 credential document into a
+# password-free one for any process running as that user. The unredacted document stays
+# reachable exactly one way: reading the file as root.
+
+MASK = "******"
+# Six U+002A, and deliberately fewer than eight: verify_all A.1 flags a credential-looking
+# key followed by a quoted literal of 8 or more characters, and this literal is written next
+# to such key names by construction. Never translated (it lives inside a JSON document, not
+# in UI text), identical for every masked value, and carrying nothing derived from the value
+# it replaced — no length, no prefix, no digest.
+
+# THE visible key set: the only key names whose values render verbatim inside `outbounds`.
+# Derived, not curated — every key name sc emits inside an outbound, minus uuid / password /
+# public_key / short_id, plus `detour`, sing-box's outbound-chaining key, which sc itself
+# never emits (an override-supplied chain should still read as a chain).
+# ANY later change that emits a new key inside an outbound — a new share-link parser, a new
+# overlay — must add that key's non-credential names HERE in the same change. The failure
+# direction of forgetting is a masked field, never a leaked one.
+VISIBLE_IN_OUTBOUND = frozenset((
+    "type", "tag", "server", "server_port", "detour",
+    "outbounds", "default", "url", "interval", "tolerance", "idle_timeout",
+    "interrupt_exist_connections",
+    "method", "security", "alter_id", "flow", "packet_encoding",
+    "congestion_control", "udp_relay_mode",
+    "transport", "tls", "obfs", "enabled", "server_name", "alpn", "insecure",
+    "utls", "fingerprint", "reality", "path", "host", "headers", "Host",
+    "service_name",
+))
+
+# Masked at EVERY depth of the whole document, `outbounds` included, and tested BEFORE the
+# region rule, so sitting inside a visible container can never expose one. A floor, not the
+# guarantee: a value the user places outside `outbounds` under a name that is not here is
+# printed verbatim — the limit both READMEs state.
+SECRET_KEYS = frozenset((
+    "password", "uuid", "secret", "token", "private_key", "pre_shared_key",
+))
+
+
+def _redact(value, strict):
+    """`value` with every credential replaced by MASK. Pure: no I/O, no mutation, total.
+
+    Two rules in one walk. SECRET_KEYS is tested first and applies everywhere, so a
+    name-based credential is masked wherever it sits. `strict` is the region rule: it turns
+    true on descent into any key named `outbounds` and never turns back, so inside that
+    array a key outside the visible key set has its WHOLE value masked at every depth —
+    which is what makes an override-supplied protocol, or a field a future sing-box version
+    adds, fail CLOSED instead of printing.
+
+    The KEY is never replaced, only its value, whatever that value's JSON type — so which
+    fields exist stays observable, and a credential that is a number is masked rather than
+    preserved. Anything that is neither list nor dict is returned unchanged.
+    """
+    if isinstance(value, list):
+        return [_redact(v, strict) for v in value]
+    if not isinstance(value, dict):
+        return value
+    out = {}
+    for k, v in value.items():
+        if k in SECRET_KEYS:
+            out[k] = MASK
+        elif strict and k not in VISIBLE_IN_OUTBOUND:
+            out[k] = MASK
+        else:
+            out[k] = _redact(v, strict or k == "outbounds")
+    return out
+
+
+def cmd_config(args):
+    """Print config.json with node credentials masked: document on stdout, notes on stderr.
+
+    The split is the point: `sc config > file` yields a JSON document a parser accepts, and
+    `sc config | <filter>` works, while everything sc says about the document stays visible
+    when the command is not redirected.
+
+    Writes no file and touches no service, socket or subprocess — main() keeps this command
+    off _init_files() / _resolve_clash_port(), the two writers on the shared start-up path.
+    Exactly ONE write reaches stdout and its argument always goes through _redact(), so
+    there is no branch through which an unmasked value can be printed.
+    """
+    try:
+        raw = CFG_PATH.read_text()
+    except FileNotFoundError:
+        sys.exit(_plain(t("no file at {path}", path=str(CFG_PATH))))
+    except (OSError, ValueError) as e:
+        # ValueError is not redundant: a document that is not valid UTF-8 raises
+        # UnicodeDecodeError, which is a ValueError and NOT an OSError, so the habitual
+        # `except OSError` would let it through as a traceback.
+        sys.exit(_plain(t("cannot read {path}: {e}",
+                          path=str(CFG_PATH), e=_plain(str(e)))))
+    try:
+        doc = json.loads(raw)
+    except ValueError as e:
+        # The raw text is deliberately NOT printed: content that cannot be parsed cannot be
+        # masked, and printing it would hand over the credentials whole.
+        sys.exit(_plain(t("Cannot use {path}: {problem}", path=CFG_PATH,
+                          problem=t("not valid JSON ({err})", err=str(e)))))
+    if not isinstance(doc, dict):
+        sys.exit(_plain(t("Cannot use {path}: {problem}", path=CFG_PATH,
+                          problem=t("the top level must be a JSON object"))))
+    sys.stderr.write(t("Showing the configuration on disk: {path}",
+                       path=str(CFG_PATH)) + "\n")
+    sys.stderr.write(t("Node credentials are masked; a masked value shows as {mask}.",
+                       mask=MASK) + "\n")
+    drifted = _drift_state()
+    if drifted is True:
+        sys.stderr.write(t("This has drifted from what sc last generated.") + "\n")
+    elif drifted is False:
+        sys.stderr.write(t("This is what sc last generated.") + "\n")
+    # Flushed at the stream boundary, BEFORE the first stdout byte: on this project's
+    # Python 3.6 floor a redirected sys.stderr is block-buffered (it became unconditionally
+    # line-buffered only in 3.9), so `sc config > f 2>&1` would otherwise interleave by
+    # buffer-drain order rather than by write order.
+    sys.stderr.flush()
+    try:
+        sys.stdout.write(json.dumps(_redact(doc, False),
+                                    indent=2, ensure_ascii=False) + "\n")
+        sys.stdout.flush()
+    except BrokenPipeError:
+        # `sc config | head -5`. stderr is already flushed above, this process holds no
+        # other buffered stream and registers no atexit handler, so os._exit(1) discards
+        # exactly the stdout bytes whose reader is gone — and, unlike sys.exit(1), it skips
+        # the interpreter's shutdown flush, which is what would otherwise print
+        # "Exception ignored in: <_io.TextIOWrapper ...>" after the last line.
+        os._exit(1)
+
+
 def cmd_mode(args):
     mode = args.mode.lower()
     if mode not in ("rule", "global", "direct"):
@@ -3027,6 +3190,10 @@ COMMANDS
                                 exit 0 = every section OK
                                 exit 1 = at least one PROBLEM
                                 exit 2 = no PROBLEM, but at least one UNKNOWN
+  config                      Print /etc/sing-box/config.json with node credentials masked
+                                reads only — writes no file, touches no service
+                                a masked value shows as ****** (the key stays visible)
+                                the document goes to stdout, these notes to stderr
   mode <rule|global|direct>   Switch route mode (live)
                                 rule   = rule-based routing (default)
                                 global = everything via proxy
@@ -3093,6 +3260,10 @@ HELP_ZH = """sc —— sing-box 命令行管理工具
                                 退出码 0 = 七项全部正常
                                 退出码 1 = 至少一项异常
                                 退出码 2 = 没有异常，但至少一项未知
+  config                      打印 /etc/sing-box/config.json，节点凭据已隐去
+                                全程只读 —— 不写文件、不碰服务
+                                被隐去的值显示为 ******（键名本身照常显示）
+                                配置文档写到标准输出，这几行说明写到标准错误
   mode <rule|global|direct>   切换路由模式（即时生效）
                                 rule   = 按规则分流（默认）
                                 global = 全部走代理
@@ -3151,6 +3322,7 @@ def main():
     p = sub.add_parser("rm"); p.add_argument("spec")
     sub.add_parser("on"); sub.add_parser("off"); sub.add_parser("status")
     sub.add_parser("doctor")
+    sub.add_parser("config")
     p = sub.add_parser("mode"); p.add_argument("mode")
     p = sub.add_parser("ipv6"); p.add_argument("value")
     p = sub.add_parser("telemetry"); p.add_argument("value")
@@ -3167,14 +3339,17 @@ def main():
     args = parser.parse_args()
     # The start-up path WRITES: _init_files() creates /etc/sing-box, /etc/sing-box/rules
     # and /var/lib/sing-box and seeds nodes.json / settings.json, and _resolve_clash_port()
-    # persists a freshly probed port on first run. `doctor` must reach neither: on a broken
-    # or fresh host the emptiness of those very paths IS the diagnosis, and a diagnostic
-    # that creates them destroys the evidence it was run to collect.
-    # This is a positive opt-out naming ONE command: every other command — including every
-    # command added later — takes the else arm with no action by anyone, so the failure
-    # mode of forgetting this mechanism is "a new read-only command wrote files", never
-    # "an existing command lost its initialisation".
-    if args.cmd == "doctor":
+    # persists a freshly probed port on first run. Two commands must reach neither.
+    # `doctor`: on a broken or fresh host the emptiness of those very paths IS the
+    # diagnosis, and a diagnostic that creates them destroys the evidence it was run to
+    # collect. `config`: it shows the document on disk and writes nothing anywhere, on any
+    # host state — including a host where /etc/sing-box does not exist, where creating the
+    # directory would answer "no file at ..." by fabricating its container.
+    # This is a positive opt-out naming those TWO commands: every other command — including
+    # every command added later — takes the else arm with no action by anyone, so the
+    # failure mode of forgetting this mechanism is "a new read-only command wrote files",
+    # never "an existing command lost its initialisation".
+    if args.cmd in ("doctor", "config"):
         LANG = _load_lang()     # reads settings.json, tolerates its absence, writes nothing
     else:
         _init_files()
@@ -3183,6 +3358,7 @@ def main():
     handlers = {
         "ls": cmd_ls, "now": cmd_now, "use": cmd_use, "add": cmd_add, "rm": cmd_rm,
         "on": cmd_on, "off": cmd_off, "status": cmd_status, "doctor": cmd_doctor,
+        "config": cmd_config,
         "mode": cmd_mode, "ipv6": cmd_ipv6, "telemetry": cmd_telemetry,
         "default-tun": cmd_default_tun, "sysproxy": cmd_sysproxy,
         "update-rules": cmd_update_rules, "update-interval": cmd_update_interval,

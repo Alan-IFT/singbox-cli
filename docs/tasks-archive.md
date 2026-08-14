@@ -157,3 +157,97 @@ Restricted-network end-to-end verification (never reproduced here — no such VM
 left honestly unverified (BC-25, the D-2 escalation, AC-26 on a real 3.6 interpreter, BC-32), and
 QA's 846-assertion harness, which T-07 should inherit in preference to the developer's.
 
+
+## Rotated 2026-08-14 (during `sc-config-show` / T-06 delivery)
+
+One Completed row moved (**T-19**, genuinely closed by shipped work — `71b6d45`), so the live board
+carries only T-06. Completed rows were rotated **in preference to open rows**, per the delivery
+policy; the open block below was moved only after the completed row alone did not free the space
+T-06's own six rows needed.
+
+| ID | Slug | Outcome | Completed | Doc folder |
+|---|---|---|---|---|
+| T-19 | ruleset-staleness-visibility | **DELIVERED** — **the goal's second clause was partly false at HEAD, and stage 1 caught it before any code was written** (the T-18 precedent, applied a second time). `cmd_update_rules()` has ended `if failed: sys.exit(<str>)` since T-02 (`ab4e4a4`), which exits 1, and the unit is `Type=oneshot` with one un-prefixed `ExecStart`, no `SuccessExitStatus=` and no `Restart=` — so a failed **download** already recorded a failed unit, and "the timer only prints" was untrue for the case it named. What was actually broken were two states nobody had enumerated, both confirmed against a pristine HEAD clone (`84c8d8b`): a run that gains rule-sets and then fails `generate_config()` or `sing-box check` exited **0** *and unconditionally printed* `config regenerated`; and `restart_service()` ran with `check=False`, so a failed restart was unobserved and the run still claimed `sing-box restarted to load them`. Both were exit-0 lies; both now exit 1 and claim neither. **Half 1 reused the seam rather than adding one**: the timestamp is `os.fstat(fh.fileno())` taken **inside** `ruleset_state()`'s existing `with path.open("rb")` block, so it describes the same bytes that produced the status and the digest, and the binding DIGEST CONTRACT extends to one chain (`mtime is None ⟺ size is None ⟺ digest is None`); `st_size` still appears in no code. `_status_view()`'s **return** stayed at 3 elements, so `_runtime_overlay()` / `usable_tags()` / `_warn_degraded()` needed no edit and FR-5 cost **zero lines** — the case that docstring was written for. One renderer `_age_text(mtime)`, one call site, no command-specific argument, so **T-20 consumes it inside `_doctor_rulesets()`'s existing loop** instead of deriving an age a second way. **Half 2 is one determination** — `ok = not failed and regen_ok and restarted is not False`, tri-state `restarted`, feeding both the outcome sentence and a single `sys.exit(1)`; the outcome set grew from three members to four (one truthful failed-restart variant) while T-10's "exactly one apply per run", its conditional restart and T-02's recovery regeneration ahead of the exit survive byte-for-byte. **Rule 85's burden of proof was tested per half, not accepted**: stage 3 found half 1's stated reason *partly mis-argued* (the replace-between-read-and-stat race is real in mechanism but low-materiality — what carries the widening is FR-1/AC-S1, dev-map's standing "never form a second opinion", and T-20 as a **nameable** future edit) and half 2's answer sound (the smaller design satisfies strictly less, and the restart clause is owner-stated in the goal sentence). C-6 then imposed a hard ceiling of `bin/sc` **+80/−30**; it landed at **+80/−29**. **One DESIGN DRIFT, accepted, and the most valuable thing stage 4 produced**: gate answer A-3 asserted the stream interleaving was unchanged; the developer measured the opposite — the interpreter flushes stdout *before* printing `SystemExit`'s string while an in-run `sys.stderr.write` overtakes still-buffered stdout, so the merged `2>&1` capture `install.sh:567` records put the aggregate ahead of the buffered output and **split the fourth per-file line in two**. Fix: one `sys.stdout.flush()` (`bin/sc:2869`). Stage 5 adjudicated it independently and explicitly *not* on grounds of size; **stage 6 proved the check live** with a mutant build that differs from HEAD at byte 836. **1 rollback** (stage 2 → stage 1: AC-S3's file list was unsatisfiable in two ways at once — it forced a known-false `docs/dev-map.md` row into T-20's reading path *and* was false at delivery no matter what the developer did; corrected into product-diff / ledger-carve-out / safety). Round 4′ was corrective, doc-only, not a rollback — and found **2 wrong line citations the reviewer had missed**, one of them the copy bound for `insight-index.md`. **R-22 honoured**: QA recorded **38 observations — 37 pass, 0 fail, 1 BLOCKED** over 106 child-process runs, 78 temp roots and 192 captured streams, from a fixture set written against the AC table rather than stage 4's code; a 30-day-old rule-set reads `usable, 30 days ago` where HEAD prints no section at all, and control class is recorded **per observation** (C-3) with AC-B4/AC-B7 labelled FREEZE. **C-2 measured rather than asserted** (the gate refused its own cost premise — T-09's lesson turned on the gate): with the host's real 477 922 rule-set bytes the added `cmd_status()` median is **+0.449 ms** warm / **+1.516 ms** cold against a 250 ms ceiling, and `ruleset_state()` makes `{stat: 0, fstat: 1, lstat: 0}` calls. **C-8**: HEAD and candidate merged captures byte-identical (1121 bytes, same sha256, 10/10). **C-5, the safety floor**, was the one place a `BLOCKED: NEEDS-HUMAN` was seriously weighed and correctly declined — `is_running()` shells `systemctl is-active` against the **live** host under `SYSTEMD = True`, and `bin/sc`'s `import subprocess` binds the *real* module, so a "match these argv, else delegate" stub would have reached `systemctl restart sing-box` on the owner's machine; the condition required shadowing the **name** plus a total, closed stub that raises on any unenumerated argv. Live service provably untouched (`MainPID=2566751` + `ActiveEnterTimestamp` identical before and after, never `is-active`); `/usr/local/bin/sc` never invoked; QA bound port **45733** proved free after stage 4's fixture was found talking to the live instance on 29090 (CR-3). **AC-B9 is BLOCKED and was NOT substituted** (R-31 discipline) — see R-41. `verify_all PASS 17 / WARN 0 / FAIL 0 / SKIP 1` at four PM-measured checkpoints. Product diff 5 files, **+87/−33**. | 2026-08-14 | `docs/features/_archived/ruleset-staleness-visibility/` (mode: full) |
+
+### Still-open rows rotated for space (NOT closed)
+
+The T-08 block below is **open**. Items 1-2 of the original block were closed by T-11 and by
+`verify_all` B.2 and were rotated at T-17 delivery; what remains is the T-07 test-infrastructure
+inheritance, the `CURL_OPTS_*` dev-map seam row, and the `baseline.json` `test_count: 0` row (also
+tracked as R-4/R-9, still true after ten tasks). A task touching `install.sh`'s download path, the
+`.srs` harness, or T-07 must read them here.
+
+### Open rows surfaced by T-08 — owner to number *(items 1-2 closed by T-11 and by `verify_all` B.2, rotated to `docs/tasks-archive.md` at T-17 delivery; the rest renumbered)*
+
+1. **Two test-infrastructure defects inherited by T-07** with the harness: `gate_checks.sh` writes
+   `faults.json` while `server.py` reads `control.json` (re-run as shipped it yields a false FAIL),
+   and AC-3's non-vacuity is carried by the server **throttle**, not the fixture size, with no guard.
+2. **`docs/dev-map.md` seam row** for `CURL_OPTS_QUIET`/`CURL_OPTS_PROGRESS` — belongs to T-07, which
+   owns the next edit to these flags. Deliberately not added by T-08: dev-map is not in AC-19's
+   carve-out, so editing it would have breached the criterion the gate made binding.
+3. **`.harness/scripts/baseline.json` still reads `test_count: 0`** across all five delivered tasks —
+   the project had no committed test suite. **Partly resolved by T-11**, which made B.2 a real check;
+   B.3 (lint) is still SKIP and `baseline.json` still reads zero — see R-4. Every task before T-11
+   built a throwaway harness and discarded it.
+
+
+### Still-open rows rotated for space (NOT closed) — T-11's R-1 … R-8
+
+Moved verbatim at T-06 delivery, after the T-19 completed row and the T-08 block together
+still left `docs/tasks.md` over its 300-line F.5 cap. **These are open.** They are the
+`install.sh` rows T-11 surfaced — unguarded `mktemp -d` assignments and the rest of the
+`set -e` assignment-abort family — and **T-07** (`restricted-network-regression-test`, still
+pending) is the task that must read them. HEAD anchors are pre-T-11 line numbers.
+
+### Open rows surfaced by T-11 (R-1 … R-8) — owner to number
+
+Each was found by a T-11 stage agent, judged out of scope by the requirement or the design, and
+deliberately **re-homed rather than dropped**. HEAD anchors are pre-T-11 line numbers.
+
+1. **R-1 — unguarded `mktemp -d` assignments.** `ARTIFACT_DIR="$(mktemp -d -t …)"` (`install.sh:332`)
+   and `SB_TMPDIR="$(mktemp -d)"` (`:371`) abort the run by exactly T-11's mechanism, leaving only
+   `mktemp`'s raw English line. Re-homed (D-3/O-8) because no handler below them is made unreachable
+   and the failure domain is the local temp filesystem, not the network.
+2. **R-2 — empty version display.** `t step2_already "$(sing-box version | head -1)"` (`:368`) and
+   `t step2_done "$(…)"` (`:392`) discard the substitution's status, so a `sing-box` that exits
+   non-zero prints `▶ [2/7] sing-box already installed: ` with an empty version and the run
+   continues. A display defect, not an abort.
+3. **R-3 — the wider silent-abort class.** Bare `python3` heredoc (`:403-417`), `tar -xz` (`:390`),
+   `install -m` (`:391`/`:398`/`:399`/`:428-430`), `chmod` (`:454`/`:462`), `visudo -c` (`:463`) all
+   abort `install.sh` with no stated outcome. **T-01's "the installer always states its outcome"
+   guarantee is not global, and T-11 does not make it so** (D-7). This row is the one that would.
+4. **R-4 — `.harness/scripts/baseline.json` still reads `test_count: 0`.** T-11 made `verify_all`
+   B.2 a real check (`check-i18n-parity.sh`, 41 keys × 2 languages), so the file can finally be
+   populated instead of recording zero across six delivered tasks.
+5. **R-5 — the `fail_download()` helper.** Three sites now share
+   `t download_failed … ; t check_network ; exit 1` (`:346-348`, `:385-387`, and T-11's new block).
+   The seam is real; T-11 declined it (`02_SOLUTION_DESIGN.md` §3.5, recorded in
+   `.harness/rejected-decisions.md` as `installer-early-exit-download-helper`) because it would pull
+   two untouched blocks into the diff and weaken the line-by-line audits AC-9 and B-5 rest on.
+   Natural owner is R-3, which rewrites this failure class anyway.
+6. **R-6 — the PowerShell mirror diverges.** T-11 wired B.2 in `.harness/scripts/verify_all.sh` only;
+   `.harness/scripts/verify_all.ps1:79` still reads `Step "B.2" "Tests pass"` with a SKIP body, so
+   the two mirrors now disagree about what B.2 is. Out of T-11's permitted diff by AC-12/A-4;
+   recorded here so the divergence is not silent.
+7. **R-7 — the B.2 gate's blind spots. NARROWED by T-13, not closed.** The first blind spot (the
+   `LANG_CHOICE` false green: mutating the dispatch made `check-i18n-parity.sh` render the **en**
+   table twice, agree on every comparison, print `OK: 41 keys, both languages` and exit 0) **is
+   fixed** — commit `49506f8` added the `--- 3b. self-check` step (`check-i18n-parity.sh:98-107`),
+   which `die2`s when the two renders come back byte-identical. T-13's gate reviewer verified this
+   and **rejected** the design's claim that the whole row was stale.
+   **The second blind spot is live.** The checker enumerates keys **from the two tables**, so a
+   `t <key>` *call site* naming a key absent from **both** is invisible to it — while killing the
+   installer outright under `set -u` (`t()` declares `local fmt` with no default, and `|| true`
+   cannot catch an expansion error), i.e. the R-3 "states no outcome" class. T-13 added seven such
+   call sites and discharged them by a bespoke `bash -u` matrix reaching all seven keys in both
+   languages; **nothing committed catches this for the next task.** Cheapest fix: have the checker
+   also extract `t <key>` call sites and assert each names a key that exists. Owner: solution-architect.
+8. **R-8 — three T-11 document defects, none reaching product code.** (a) `02_SOLUTION_DESIGN.md`
+   §10's E-10 fixture is defective: `yes … | head -200000` is itself an early-exiting reader *inside*
+   the measured pipeline, so under `pipefail` both legs return 141 regardless of the extraction tail
+   — the probe could never distinguish its own legs. (b) §4's "+11 line shift" is actually +14.
+   (c) `04_DEVELOPMENT.md`'s "load-bearing, not precautionary" overstates the evidence; the accurate
+   reading is *load-bearing for large or hostile bodies, precautionary for the real endpoint*.
+   (d) `.harness/rules/50-singbox-cli.md:45` still opens "until B.2/B.3 are real", now false for B.2
+   — C-11 correctly forbade touching it, so it belongs to the next rule-50 edit.
+

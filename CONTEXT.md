@@ -139,6 +139,20 @@ override rules against it with `$after {"server": "hosts_dns"}`, never against t
 `{"rcode": "NXDOMAIN"}`, which exists only while the list is on.
 _Avoid_: block rule, deny rule, blackhole rule
 
+**visible key set**:
+The fixed set of key names whose values `sc config` renders verbatim **inside the `outbounds` array**;
+every other key there has its whole value replaced by the mask, at every depth. It is derived, not
+curated — every key name `sc` emits inside an outbound, minus the credential-bearing ones, plus
+`detour`, sing-box's outbound-chaining key, which `sc` itself never emits — so a key nobody
+enumerated is masked rather than printed.
+_Avoid_: whitelist, allowed fields, safe keys, field filter
+
+**mask**:
+The one fixed literal `sc config` writes in place of a value it must not print. It replaces the value
+and never the key, is identical everywhere, and carries nothing derived from what it replaced — no
+length, no prefix, no digest — so which fields exist stays observable while their contents do not.
+_Avoid_: redaction placeholder, censor, stars, `<hidden>`
+
 ## Project intent
 
 **singbox-cli is a headless v2rayN.** Stated by the owner 2026-08-01: 「初衷是实现一个类似于非桌面版
