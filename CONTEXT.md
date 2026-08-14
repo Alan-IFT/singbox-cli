@@ -121,6 +121,24 @@ and rewritten only after a successful install. It is a digest, never a copy — 
 generated document would be a second credential document on disk. Absent means *unknown*, not drift.
 _Avoid_: config hash file, checksum, snapshot, backup
 
+**telemetry reject list**:
+The fixed, curated set of names `sc` answers locally with "no such domain" (`NXDOMAIN`, no records,
+no upstream query), emitted as one DNS rule and switched by the one `telemetry` setting. It is data
+plus a toggle, not a downloaded feed: no rule-set, no update path, no expiry. Membership is by a
+stated criterion — the name's sole function is carrying usage/diagnostic/crash/advertising-identifier
+data, **and** blocking it disables no user-visible function — so update, activation, authentication,
+push-delivery, CDN-content and security endpoints are excluded whatever data they also carry.
+_Avoid_: blocklist, adblock, filter list, blacklist
+
+**reject rule**:
+The single emitted `dns.rules` element carrying the telemetry reject list, positioned after the
+predefined-hosts rule and **before both `clash_mode` rules** — so rejection is independent of routing
+mode, which is load-bearing rather than incidental: after the `clash_mode` rules the name is
+measurably leaked to an upstream resolver in `global` and `direct` alike. Users anchor their own
+override rules against it with `$after {"server": "hosts_dns"}`, never against the rule's own
+`{"rcode": "NXDOMAIN"}`, which exists only while the list is on.
+_Avoid_: block rule, deny rule, blackhole rule
+
 ## Project intent
 
 **singbox-cli is a headless v2rayN.** Stated by the owner 2026-08-01: 「初衷是实现一个类似于非桌面版

@@ -181,6 +181,25 @@ TRANSLATIONS = {
             "{path}：ipv6 必须是 on / off / auto 之一 —— 已按 auto 处理",
         "Nothing changed — the sing-box service was not touched": "设置无变化 —— 未改动 sing-box 服务",
         "Configuration regenerated; sing-box restarted": "配置已重新生成，sing-box 已重启",
+        # Telemetry name rejection. The setting line, the two meaning sentences (one per
+        # setting), the argument error, the unrecognised-value line, and the no-op line —
+        # which names `sc reload` because the one state where "nothing changed" misleads is
+        # a config generated before this setting existed. Six strings, the whole budget:
+        # `Configuration regenerated; sing-box restarted` above and `Reload failed` are
+        # REUSED, and each line of `sc telemetry show`'s list is the bare name, which is why
+        # no per-name string is needed.
+        "Telemetry name rejection → {val}": "遥测域名拦截 → {val}",
+        "Listed names are answered \"no such domain\" locally; nothing is asked upstream":
+            "名单内的域名在本地直接返回「域名不存在」，不会向上游查询",
+        "Listed names resolve normally": "名单内的域名正常解析",
+        "Error: argument must be one of block / allow / show":
+            "错误：参数必须是 block / allow / show 之一",
+        "{path}: telemetry must be block or allow — using block":
+            "{path}：telemetry 必须是 block 或 allow —— 已按 block 处理",
+        "Nothing changed — the sing-box service was not touched; run `sc reload` to apply "
+        "this setting to a configuration generated before it":
+            "设置无变化 —— 未改动 sing-box 服务；若当前配置生成于该设置之前，"
+            "请运行 `sc reload` 使其生效",
         "OK ({size} bytes)": "成功（{size} 字节）",
         "failed: {e}": "失败：{e}",
         # rule-sets: degradation warning, per-file status, download progress
@@ -1583,6 +1602,133 @@ def _dns_overlay():
     ]}}}
 
 
+# THE definition of the telemetry name list — one tuple, two consumers (_telemetry_overlay()
+# and cmd_telemetry()), no third derivation and no per-consumer subset. A tuple for the same
+# reason RULESET_FILES is one: this order IS the emitted domain_suffix order and must not
+# depend on anything else.
+#
+# ADMISSION CRITERION, both clauses required. A name is here only if (1) its sole function is
+# carrying usage, diagnostic, crash or advertising-identifier data to a vendor, AND (2)
+# blocking it disables no user-visible function of the product it belongs to. No update,
+# activation, licensing, authentication, push-delivery, CDN-content, captcha or
+# security-feature endpoint qualifies, whatever its data-collection role — which is why
+# analytics.google.com (also serves the Analytics console UI), omtrdc.net (Adobe Target
+# delivers page content), googletagmanager.com, settings-win.data.microsoft.com,
+# connect.facebook.net, clients2.google.com and the push hosts (msg.umeng.com,
+# mtalk.google.com) are deliberately ABSENT. Do not add a name without applying both clauses.
+#
+# Each entry is a dotless domain_suffix: in sing-box 1.13.15 domain_suffix is label-boundary
+# aware, so "example.com" matches the apex and every subdomain at any depth, case
+# insensitively, and does NOT match "notexample.com". A LEADING DOT would silently leave the
+# apex resolvable — never write one.
+TELEMETRY_NAMES = (
+    # class 1 — desktop-OS diagnostics
+    "telemetry.microsoft.com",          # Microsoft: the Windows diagnostics/error-reporting subtree (watson. crash uploads, oca. crash analysis, sqm. usage counters). Blocking loses crash-report submission only.
+    "vortex.data.microsoft.com",        # Microsoft: the Connected User Experiences and Telemetry (DiagTrack) diagnostic-data upload endpoint. Nothing user-visible depends on it.
+    "vortex-win.data.microsoft.com",    # Microsoft: the Windows-specific sibling of the above. Listed by host, not as data.microsoft.com — that apex also carries settings-win., which is settings/update policy and fails clause 2.
+    "metrics.ubuntu.com",               # Canonical: the endpoint ubuntu-report POSTs the installer/hardware survey to. Sole function is measurement; nothing on the host waits on it.
+    "daisy.ubuntu.com",                 # Canonical: the whoopsie/Apport crash-report submission endpoint. The crash itself and every desktop function are unaffected.
+    # class 2 — browser telemetry
+    "incoming.telemetry.mozilla.org",   # Mozilla: the Firefox Telemetry ping submission endpoint (main, event and health pings). Firefox loads no content from it.
+    # class 3 — dominant global analytics / crash-reporting SDKs
+    "google-analytics.com",             # Google: Google Analytics hit collection (/collect, /g/collect); the suffix also covers www. and ssl.. Sites load it asynchronously and gate no content on it.
+    "app-measurement.com",              # Google: the Firebase / Google Analytics for Firebase mobile SDK measurement upload host. Carries app usage events and the advertising identifier; serves no app content.
+    "crashlytics.com",                  # Google: Firebase Crashlytics crash and session reporting (reports., e., settings., firebase-settings.). Blocking disables crash reporting only.
+    "demdex.net",                       # Adobe: Experience Cloud ID / Audience Manager — cross-site visitor identification and segment sync; delivers no page content. Clause 2 clears it ONLY because the denial is IMMEDIATE (~4 ms NXDOMAIN, measured): a page whose personalisation flow calls this identity service falls back at once instead of waiting out a pre-hiding timeout. A dropped or black-holed query here WOULD break page rendering, which is why this list never drops a query.
+    "scorecardresearch.com",            # Comscore: audience-measurement beacons (sb.scorecardresearch.com/b). Its entire published purpose is panel measurement; it returns no content a page uses.
+    # class 4 — dominant domestic analytics SDKs
+    "hm.baidu.com",                     # Baidu: Baidu Tongji (百度统计) web analytics — the hm.js collector and its hm.gif beacon. Loaded asynchronously; nothing is gated on it.
+    "cnzz.com",                         # Umeng+/CNZZ (Alibaba): the CNZZ web-analytics counter and log collection domain (z*., c., w.). Clause 2 clears the whole apex on ONE claim — that the site-owner console lives on umeng.com, not here — so a CNZZ apex that ever served a console page would fail clause 2 and belong off this list; that claim, not the payload, is what admits it.
+    "mmstat.com",                       # Alibaba: the group's usage/behaviour logging domain (log., gm., sre. and siblings). The whole domain is beacon collection; no Taobao/Tmall page content is served from it.
+    "ulogs.umeng.com",                  # Umeng (Alibaba): the U-App analytics SDK's log upload host. Listed by host, NOT as umeng.com — that apex also carries U-Push message delivery and the vendor's console, both of which fail clause 2.
+    "tracking.miui.com",                # Xiaomi: MIUI's system usage/analytics upload host. Carries no update, activation or push traffic — those are separate MIUI hosts.
+    "data.mistat.xiaomi.com",           # Xiaomi: the MiStat statistics SDK's data upload host, used by Xiaomi's own applications for usage counters. Blocking removes reporting only.
+)
+
+
+def _telemetry_setting():
+    """THE single reader of settings["telemetry"]: exactly "block" or "allow".
+
+    Absence IS "block" (nothing ever seeds the key), so a host upgrading to this build and a
+    fresh install behave identically and _init_files() needs no change. Shaped like
+    _ipv6_setting(), guard tuple included: an absent, unreadable or non-JSON settings.json
+    degrades to the default silently, because a setting nobody set is not a failure and this
+    must not become a new way for `sc` to break on a host whose settings.json is already
+    broken.
+
+    THE SILENCE HAS TWO HOLES, both measured, both pre-existing, and neither widened here:
+      * a settings.json that is not valid UTF-8 raises through this guard, because
+        Path.read_text() raises UnicodeDecodeError and that is a ValueError, NOT an
+        OSError. `sc ipv6 show` behaves identically on the same file — it is the same guard
+        tuple and the same hole (R-25's family owns it), not something this list introduced.
+      * cmd_telemetry()'s SET form does not reach this function's guard at all: it calls
+        load_settings() directly, exactly as cmd_ipv6() does, and load_settings() is a bare
+        json.loads(read_text()), so `sc telemetry block` on a host whose settings.json is
+        not valid JSON raises a traceback.
+    So "no traceback" is scoped to THIS function against an absent / unreadable / non-JSON
+    file, and no user-facing text anywhere claims `sc telemetry` is traceback-free.
+
+    A value that is PRESENT but not one of the two is different — a hand-edit that did not
+    take effect, so it earns one stderr line naming the file, the key and the two accepted
+    values. `sc telemetry block` repairs it.
+
+    There is deliberately no telemetry_decision() sibling: unlike IPv6 there is no
+    host-derived input, so the setting IS the decision and a second function would be a
+    second name for one value.
+
+    Reads one file; writes nothing; performs no service-affecting action.
+    """
+    try:
+        settings = load_settings()
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return "block"
+    if "telemetry" not in settings:
+        return "block"
+    value = settings["telemetry"]
+    if value in ("block", "allow"):
+        return value
+    sys.stderr.write("⚠️  " + t("{path}: telemetry must be block or allow — using block",
+                                path=SETTINGS_PATH) + "\n")
+    return "block"
+
+
+def _telemetry_overlay():
+    """THE one place the telemetry name list reaches the emitted document.
+
+    $before on an object anchor — the capability the composition layer already has — puts a
+    single `predefined` rule immediately ahead of the first clash_mode rule. That position
+    is the contract, not a detail: dns.rules has two layers, rules that ANSWER here and
+    rules that CHOOSE a resolver, and clash_mode belongs to the second. Placed after those
+    two rules the reject rule is absent in exactly `global` and `direct` — measured: a
+    listed name then returns NOERROR with a record AND the query is recorded upstream, which
+    is the leak this feature exists to prevent. Placed here it is after the hosts_dns rule
+    (so `sc`'s own DoH bootstrap keeps answering, and extending the list can never break it)
+    and before every rule whose server is reached through a node outbound.
+
+    THREE KEYS, EXACTLY, AND `answer` IS NOT ONE OF THEM. All three were measured against
+    1.13.15: `predefined` + rcode NXDOMAIN with a NON-EMPTY `answer` passes `sing-box check`
+    and emits a self-contradictory NXDOMAIN carrying one record; an OMITTED rcode silently
+    means NOERROR; a lowercase "nxdomain" is a hard `check` failure. So rcode is written
+    explicitly and uppercase, and `answer` is omitted entirely.
+
+    No rule_set key, so _filter_rules() keeps it on exactly the degraded host that has no
+    other protection. No `reject` action anywhere: `reject` answers REFUSED or nothing at
+    all, and a silently dropped query is indistinguishable from the broken network this
+    project must not imitate.
+
+    Under `allow` this returns the EMPTY document, which _merge() treats as a no-op by
+    iteration — so dns.rules is byte-identical to the pre-T-17 build and generate_config()
+    needs no branch.
+    """
+    if _telemetry_setting() != "block":
+        return {}
+    return {"dns": {"rules": {"$before": {
+        "match": {"clash_mode": "Global"},
+        "values": [{"action": "predefined", "rcode": "NXDOMAIN",
+                    "domain_suffix": list(TELEMETRY_NAMES)}],
+    }}}}
+
+
 def _runtime_overlay(nodes, active, report):
     """The one carrier of run-time content, expressed as an overlay so that the shipped
     path exercises _merge() on every single run rather than only when a user has written
@@ -1762,7 +1908,8 @@ def generate_config():
     # LAST and still through the ONE _merge(), so the emitted bytes do not depend on it
     # being a third element of this list rather than a separate call. What the separate
     # call buys is provenance: two failure sources now have two code sites.
-    config = _compose([_runtime_overlay(nodes, active, report), _dns_overlay()])
+    config = _compose([_runtime_overlay(nodes, active, report), _dns_overlay(),
+                       _telemetry_overlay()])
     if override is not None:
         try:
             _merge(config, override)
@@ -2476,6 +2623,69 @@ def cmd_ipv6(args):
     print(t("Configuration regenerated; sing-box restarted"))
 
 
+def _telemetry_meaning(setting):
+    """THE mapping from the effective setting to the already-translated sentence saying what
+    it means for a listed name. Both forms of cmd_telemetry() print it, so spelling the
+    conditional at each of the two sites would be two definitions of one judgment; it takes
+    the setting as an argument rather than reading it, so it adds no second reader either.
+    """
+    if setting == "block":
+        return t("Listed names are answered \"no such domain\" locally; nothing is asked "
+                 "upstream")
+    return t("Listed names resolve normally")
+
+
+def cmd_telemetry(args):
+    """`sc telemetry block|allow|show` — the one surface of the telemetry reject list.
+
+    The setting and its meaning both come from _telemetry_setting(), including the
+    before/after comparison, so this command cannot form a second opinion about what the
+    document will do. The list printed by `show` is TELEMETRY_NAMES itself, so it cannot
+    drift from the emitted rule either.
+
+    A set that leaves the EFFECTIVE setting unchanged touches nothing — it would otherwise
+    drop every live connection to rewrite the same bytes. The setting is still persisted in
+    that case, which is what makes `sc telemetry block` repair a hand-edited unrecognised
+    value: the file changes, the effective setting does not, and nothing service-affecting
+    happens. The no-op line names `sc reload` because the one state where "nothing changed"
+    misleads is a config generated before this setting existed.
+
+    Each line of the list is the bare name: a name is language-neutral, so there is nothing
+    in it to translate, and a per-name description would either ship untranslated English
+    mid-list or blow the string budget. The per-name justification lives beside
+    TELEMETRY_NAMES and in both READMEs.
+
+    NOTE ON SCOPE: "show writes nothing" is a property of THIS function. main()'s start-up
+    path (_init_files() + _resolve_clash_port()) runs for `sc telemetry` exactly as for every
+    other non-doctor command and can create /etc/sing-box and persist a port on a fresh host.
+    `doctor` stays the one positively named read-only command.
+    """
+    val = args.value.lower()
+    if val not in ("block", "allow", "show"):
+        sys.exit(t("Error: argument must be one of block / allow / show"))
+    if val == "show":
+        setting = _telemetry_setting()
+        print(t("Telemetry name rejection → {val}", val=setting))
+        print(_telemetry_meaning(setting))
+        for name in TELEMETRY_NAMES:
+            print(name)
+        return
+    before = _telemetry_setting()
+    settings = load_settings()
+    settings["telemetry"] = val
+    save_settings(settings)
+    setting = _telemetry_setting()
+    print(t("Telemetry name rejection → {val}", val=setting))
+    print(_telemetry_meaning(setting))
+    if setting == before:
+        print(t("Nothing changed — the sing-box service was not touched; run `sc reload` "
+                "to apply this setting to a configuration generated before it"))
+        return
+    if not reload_or_restart():
+        sys.exit(t("Reload failed"))
+    print(t("Configuration regenerated; sing-box restarted"))
+
+
 def cmd_default_tun(args):
     val = args.value.lower()
     if val not in ("on", "off"):
@@ -2768,6 +2978,9 @@ COMMANDS
                                 auto = answer empty unless this host has a global IPv6
                                        address (the default; on / off decide it by hand)
                                 show = print the setting and the decision it produces
+  telemetry <block|allow|show>  Answer a fixed list of telemetry names "no such domain"
+                                block = reject them locally, asking no resolver (default)
+                                show  = print the setting and every name on the list
   default-tun <on|off>        Toggle boot autostart of sing-box independently
   sysproxy <on|off>           Toggle GNOME system proxy (HTTP/SOCKS 7890; usually unneeded with TUN)
   update-rules [--mirror URL] Update .srs rulesets now (several mirrors are tried in
@@ -2831,6 +3044,9 @@ HELP_ZH = """sc —— sing-box 命令行管理工具
                                 auto = 本机没有全局 IPv6 地址时返回空结果（默认；
                                        on / off 为手动指定）
                                 show = 显示当前设置以及它得出的结论
+  telemetry <block|allow|show>  对固定的遥测域名清单直接返回「域名不存在」
+                                block = 本地拦截，不向任何解析器查询（默认）
+                                show  = 显示当前设置以及清单中的每个域名
   default-tun <on|off>        单独控制开机是否自启 sing-box
   sysproxy <on|off>           开关 GNOME 系统代理（HTTP/SOCKS 7890，TUN 模式下一般不用）
   update-rules [--mirror URL] 立即更新 .srs 规则集文件（按顺序尝试多个镜像，
@@ -2880,6 +3096,7 @@ def main():
     sub.add_parser("doctor")
     p = sub.add_parser("mode"); p.add_argument("mode")
     p = sub.add_parser("ipv6"); p.add_argument("value")
+    p = sub.add_parser("telemetry"); p.add_argument("value")
     p = sub.add_parser("default-tun"); p.add_argument("value")
     p = sub.add_parser("sysproxy"); p.add_argument("value")
     p = sub.add_parser("update-rules")
@@ -2909,7 +3126,7 @@ def main():
     handlers = {
         "ls": cmd_ls, "now": cmd_now, "use": cmd_use, "add": cmd_add, "rm": cmd_rm,
         "on": cmd_on, "off": cmd_off, "status": cmd_status, "doctor": cmd_doctor,
-        "mode": cmd_mode, "ipv6": cmd_ipv6,
+        "mode": cmd_mode, "ipv6": cmd_ipv6, "telemetry": cmd_telemetry,
         "default-tun": cmd_default_tun, "sysproxy": cmd_sysproxy,
         "update-rules": cmd_update_rules, "update-interval": cmd_update_interval,
         "log": cmd_log, "reload": cmd_reload, "uninstall": cmd_uninstall,

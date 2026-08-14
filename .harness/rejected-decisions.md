@@ -285,3 +285,50 @@
   test (delete it and no complexity reappears — each caller keeps its own loop either way).
 - **Origin:** T-13 `config-write-permission-hardening`,
   `docs/features/config-write-permission-hardening/02_SOLUTION_DESIGN.md` §8 D-3, against rule 85.
+
+## telemetry-list-as-geosite-ruleset
+- **Decision:** declined.
+- **Why:** a DNS rule carrying a `rule_set` tag is deleted by `_filter_rules()` on a host whose
+  rule-sets are unusable — so the telemetry list would vanish precisely on the degraded host least
+  able to notice, which is the trap T-16 designed its own rule around. A fifth `.srs` also adds a
+  download, a digest, a degradation state, an update path and a size class: a public ads/tracking
+  category is orders of magnitude larger than 24 names and admits members the "blocking disables no
+  user-visible function" clause excludes. That is the "new machinery" the task's goal forbids. A
+  curated literal of ≤24 names inside `bin/sc`, with a per-name justification, keeps the list
+  auditable by the user whose traffic it changes.
+- **Origin:** T-17 `telemetry-reject-list`, `01_REQUIREMENT_ANALYSIS.md` Q-3.
+
+## telemetry-toggle-as-on-off
+- **Decision:** declined (values are `block` / `allow` / `show`).
+- **Why:** a noun naming the *subject* being blocked reads backwards under `on`/`off` — `sc telemetry
+  off` could mean "block telemetry" or "disable this feature", and a wrong guess silently does the
+  opposite of the user's intent on a privacy setting. `on` and `off` are therefore **unrecognised
+  values** that exit non-zero naming the three accepted ones, which is loud rather than ambiguous.
+- **Origin:** T-17 `telemetry-reject-list`, `01_REQUIREMENT_ANALYSIS.md` Q-7.
+
+## telemetry-reject-by-dropping-the-query
+- **Decision:** declined (`predefined` + `NXDOMAIN`; never `reject` with `method: "drop"`).
+- **Why:** measured against sing-box 1.13.15 — `reject` with `method: "drop"` answers nothing at all
+  and the client burns its own full timeout, which is **indistinguishable from the network failure
+  this project must not imitate** (T-16 measured sing-box already dropping proxied queries silently
+  at a fixed 10 s deadline). The loudness through-line forbids shipping a second thing that looks
+  like a broken network. `predefined` + `NXDOMAIN` answers authoritatively in ~2–7 ms with zero
+  records and no upstream query. Sinkholing to `0.0.0.0`/`127.0.0.1` was declined in the same breath:
+  it converts a name failure into a connection failure at a later, less legible layer. Bare `reject`
+  and `method: "default"` answer `REFUSED`, which some stub resolvers retry against a second server
+  this document does not have.
+- **Origin:** T-17 `telemetry-reject-list`, `01_REQUIREMENT_ANALYSIS.md` Q-4, measured by the
+  PM-commissioned probe (Q-A/Q-B).
+
+## telemetry-list-with-a-second-domain-key
+- **Decision:** declined (one dotless `domain_suffix` entry per name, no `domain` companion).
+- **Why:** the v2ray-era assumption that `domain_suffix` is a raw character suffix — which would make
+  `example.com` also match `notexample.com` — is **false in sing-box 1.13.15**. Measured: it is
+  label-boundary aware and case-insensitive, so one dotless entry matches the apex and every
+  subdomain at any depth and does **not** match `notexample.com`, `xexample.com` or
+  `example.com.evil.net`. Pairing `domain` with `domain_suffix: [".x"]` yields the identical result
+  set at twice the size — defending against a false positive that does not exist in this binary. The
+  genuinely wrong form is a bare leading-dot `domain_suffix: [".x"]`, which silently leaves the apex
+  resolvable.
+- **Origin:** T-17 `telemetry-reject-list`, `02_SOLUTION_DESIGN.md` K-5 / RS-4, measured by the
+  PM-commissioned probe (Q-C).

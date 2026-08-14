@@ -39,3 +39,42 @@ and download progress — because all three need the same judgment ("is this rul
 Split, degradation would have shipped a bare `path.exists()` and an HTML error page would have read
 as "present". Recorded in `02_SOLUTION_DESIGN.md` §12 and verified structurally at stages 3 and 5
 (deletion test: removing `srs_reject_reason` forces magic/floor logic back into two live call sites).
+
+## Rotated 2026-08-14 (during `telemetry-reject-list` / T-17 delivery)
+
+T-16's Completed row, moved here to hold `docs/tasks.md` under its 300-line F.5 cap while T-17's
+own row and open rows landed. Rotating a **completed** row is preferred over displacing an older
+**open** row (T-15/T-16 precedent). Its stage documents are at
+`docs/features/_archived/dns-resilience/`.
+
+| T-16 | dns-resilience | **DELIVERED** — AAAA suppression ships as ONE `predefined` rule `$prepend`ed to `dns.rules[0]` (empty `NOERROR` for types 28/64/65), with the base's own `query_type` element deleted in the same edit so exactly one exists; plus `sc ipv6 on|off|auto|show`, `ipv6_decision()` as the single definition of the effective decision (two callers, nothing re-derives it), and the `OverrideError` provenance fix the code's own comment at `:2672-2674` had been waiting for. Index 0 is load-bearing: at HEAD the `query_type` rule sat *after* both `clash_mode` rules, so 64/65 were **measurably not suppressed** in `global` and `direct` — the modes people switch to when something is already broken — and QA's ADV-2 proved it by observation. The rule carries no `rule_set` key, so `_filter_rules()` cannot delete it on the degraded host that needs it. Composed entirely through T-14's layer: no new merge directive, no configuration literal in `generate_config()`, R-16 again ruled not-ours on T-16's own reasons (Q-1) rather than inherited from T-14 or T-15. **Two thirds of the batch goal turned out to be impossible, and that is the story of the task.** A PM-commissioned probe measured against the real `sing-box 1.13.15` that `"timeout"` is rejected on a DNS server, on the `dns` block and on a DNS rule — with a **bogus-key control proving the decoder rejects unknown fields**, which is what makes the rejection mean "no such field" rather than "ignored" — that the rule chain **never falls through on failure**, that the 10 s is sing-box's own fixed per-query deadline at which the query is **dropped silently**, and that `dns.final` is the no-rule-matched default, not a failure fallback. So "converge the 10s timeout" and "add a non-proxied fallback resolver" are both unexpressible; the only lever for the latter (re-pointing `final` to the domestic resolver) was **rejected on the merits** — it would change answers permanently and disclose every foreign name to the domestic resolver on **every healthy host**, to buy resolution of names whose destinations are unreachable anyway. Filed as R-23, not silently dropped, and no user-facing surface claims either capability (mechanically checked, K-16 + V-21). **2 rollbacks, each earned.** Stage 2 returned `BLOCKED ON UPSTREAM` rather than inventing a mechanism; since neither stage 1 nor 2 holds a shell, the PM commissioned a read-only measurement probe **before** routing the rollback, so the analyst restated FR-9/FR-10 and resolved FR-8↔FR-11 (Q-17) on measured fact instead of a guess. Stage 5 then caught **two MAJOR defects, both in shipped text** — one violating gate condition C-4 outright, one shipping "every AAAA lookup still travels to the proxied resolver" **as a measured claim** when it was false for four of six probe classes and contradicted its own table three paragraphs later. That is T-15's R-22 class caught a stage earlier. **The gate earned its stage twice**: it corrected my dispatch's verdict vocabulary, refused to soften a dimension-7 FAIL while still approving, and caught a second instance of RS-10's defect class (F-1) — four behavioural HEAD controls classified as *agreement* controls that would have stalled ≈10 s and returned inconclusive. **R-22 is discharged by observation, not assertion**: QA rebuilt its harness from scratch against a `9f85f9e` clone (verified pre-T-16 by reading `1101: … [64, 65]`), re-derived every probe classification by measurement before writing any assertion, and measured AAAA answered empty in **19.7 ms** where the HEAD control produced no answer at all and logged `[10.0s] … context deadline exceeded`; 3 defect-reproducing controls exhibited their defect, 8 agreement controls matched, **no run inconclusive**, AC-B1 rebuilt 10× with identical outcomes. QA also invented the test the plan lacked — **ADV-1**, same candidate build stalling at 15030.8 ms with `sc ipv6 on`, proving the rig can see a stall so every green is non-vacuous **on the candidate side too**. Two MINORs were closed before delivery rather than shipped, and in closing them the analyst **corrected a claim three stages had carried** (`sc ipv6 off` repairs the stale document only in one direction). 5 MINOR/NIT ship known and filed (R-24…R-27). `verify_all PASS: 17 / WARN: 0 / FAIL: 0 / SKIP: 1` — batch baseline preserved, no FAIL at any point; the one F.6 WARN was the PM's own `PM_LOG.md` at 517 lines and was cleared by rule-70 compaction, not by archiving around it. Live service provably untouched at every checkpoint (`MainPID=2566751` + `ActiveEnterTimestamp`, never `is-active`); `/usr/local/bin/sc` never invoked; the 2026-08-01 hand-patch backup never read. Product diff 5 files, **+342/−21**. | 2026-08-14 | `docs/features/_archived/dns-resilience/` (mode: full) |
+
+## Resolved-and-rotated 2026-08-14 (during T-17 delivery)
+
+Two of T-08's unnumbered open rows, rotated out of `docs/tasks.md` because shipped work closed
+them — not because they aged out. Verified before rotating, not assumed:
+
+- **Item 1 (version-query silent abort)** is the whole subject of **T-11**
+  `install-version-query-abort`, delivered and marked done in `docs/batches/default/BATCH_PLAN.md`.
+- **Item 2 (committed bilingual key-parity gate)** is now `verify_all.sh`'s **B.2**
+  `install.sh bilingual key parity`, which reports PASS — the committed gate the row asked for.
+  T-08's own item 5 already recorded B.2 becoming a real check under T-11.
+
+Rotated verbatim:
+
+1. **Version-query silent abort** (`install.sh:373-381`). Under `set -euo pipefail`,
+   `SB_VER=$(curl … | grep … | sed …)` aborts *at the assignment* on HTTP 403/404 or transport
+   failure, so the bilingual `download_failed`/`check_network` handler below it never runs **and
+   `install_report()` never runs** — the installer can exit having stated no outcome, the exact
+   property T-01 exists to guarantee. GitHub's unauthenticated rate limit makes this routine, not
+   theoretical. Found at stage 2, verified against the source at stage 1', filed in
+   `.harness/rejected-decisions.md`; deliberately not absorbed because it changes failure behaviour
+   that T-08's AC-6/AC-14 pin as unchanged.
+2. **Committed bilingual key-parity gate — now deferred four tasks running.** `install.sh`'s `t()`
+   declares `local fmt` with no default, so a key present in only one language branch aborts the
+   whole installer under `set -u`, and the zh branch is reachable only by answering `2`. Parity was
+   proven three times independently during T-08 (41 keys, both tables) but the proof is **not
+   committed**, so the hazard is exactly as shippable for the next task. The code reviewer calls this
+   the highest-leverage open debt touching this file. `rejected-decisions.md:57-73` already says the
+   next task "should probably widen its own diff instead"; T-08 could not, because AC-19 pinned the
+   shipping diff.

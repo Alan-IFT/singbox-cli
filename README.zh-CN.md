@@ -137,6 +137,106 @@ sc ipv6 show           # 显示当前设置以及它得出的结论
 
 **它做不到的事。** 这里没有第二个解析器，也没有任何可配置的等待时间。代理侧的解析器连得上却不回答时，sing-box 会在它自己固定的每次查询上限（1.13.15 上是 10.0 秒 —— 本项目生成的配置里没有任何键能改动它）放弃这次查询，什么都不返回，也不会去问别人；你最终看到的报错来自你自己客户端的超时。代理侧解析器返回的 `NXDOMAIN` 或 `SERVFAIL` 会被原样转达，不会拿去别处重问一遍，因此不会因为一次失败就把某个域名暴露给国内解析器。地址只能通过 IPv6 解析出来的节点需要 `sc ipv6 on`。
 
+### 遥测域名拦截
+
+```bash
+sc telemetry block     # 名单内的域名一律在本地返回「域名不存在」（默认）
+sc telemetry allow     # 名单内的域名正常解析
+sc telemetry show      # 显示当前设置以及名单中的每个域名
+```
+
+`sc` 内置了一份固定的遥测域名清单，共 17 条。设置为 `block` 时 —— 这也是从未设置过的机器的取值 —— 查询名单内的域名、或它的任意子域名，都由 sing-box 自己以 `NXDOMAIN`、零条记录、几毫秒的速度回答，**不会向任何 DNS 服务器发出查询**。一个域名进入名单必须**同时**满足两条：它的唯一用途是把使用情况、诊断、崩溃或广告标识数据送给厂商，**并且**拦截它不会让所属产品的任何用户可见功能失效。任何更新、激活、授权、认证、推送下发、CDN 内容、验证码或安全特性的端点都不符合 —— 这也是 `analytics.google.com`（它同时提供 Analytics 控制台）、`omtrdc.net`（Adobe Target 会下发页面内容）、`googletagmanager.com`、`settings-win.data.microsoft.com` 以及各厂商的推送域名被刻意排除在外的原因。
+
+匹配以标签边界为准：`crashlytics.com` 覆盖它本身以及任意层级的子域名，不区分大小写，但**不会**覆盖 `notcrashlytics.com`。
+
+设置持久化在 `/etc/sing-box/settings.json`；没有这个键就等于 `block`，因此全新安装与升级上来的机器行为完全一致；值不是 `block` 也不是 `allow` 时，会在 stderr 点名说明并按 `block` 处理。`sc telemetry <值>` **只有在实际生效的设置真的发生变化时**才重新生成配置并重启 sing-box —— 否则只说明设置无变化，并提示 `sc reload`，那才是把这项设置应用到「生成于该设置之前」的 `config.json` 的办法。`sc telemetry show` 不改动任何设置、不重新生成配置、也完全不碰服务 —— 但和除 `sc doctor` 以外的所有子命令一样，它仍然会先走一遍常规启动流程：全新机器上这一步会创建 `/etc/sing-box` 与 `/var/lib/sing-box`，并写入初始的 `nodes.json` / `settings.json`。
+
+承载这份清单的规则排在两条路由模式规则之前，因此**切换路由模式并不会解除拦截**：`sc mode global` 和 `sc mode direct` 改变的是*其他*域名由哪个解析器回答，而不是名单内的域名是否被拦截。它不引用任何规则集，所以 `.srs` 文件缺失的机器照样有这个能力；它也不需要任何可用节点 —— 一台一个节点都没有的机器同样会拦截名单内的域名。
+
+**清单** —— 每一条都标注厂商与类别；`sc telemetry show` 在机器上打印的就是同一份名单：
+
+| 域名 | 厂商 | 承载什么 | 类别 |
+|---|---|---|---|
+| `telemetry.microsoft.com` | 微软 | Windows 诊断、崩溃与错误报告 | 桌面系统诊断 |
+| `vortex.data.microsoft.com` | 微软 | Windows 诊断数据上传（DiagTrack） | 桌面系统诊断 |
+| `vortex-win.data.microsoft.com` | 微软 | 上一条的 Windows 专用同类端点 | 桌面系统诊断 |
+| `metrics.ubuntu.com` | Canonical | `ubuntu-report` 的安装 / 硬件调查 | 桌面系统诊断 |
+| `daisy.ubuntu.com` | Canonical | whoopsie / Apport 崩溃报告上报 | 桌面系统诊断 |
+| `incoming.telemetry.mozilla.org` | Mozilla | Firefox 遥测 ping 上报 | 浏览器遥测 |
+| `google-analytics.com` | 谷歌 | Google Analytics 打点采集 | 分析 SDK |
+| `app-measurement.com` | 谷歌 | Firebase Analytics 度量数据上传 | 分析 SDK |
+| `crashlytics.com` | 谷歌 | Firebase Crashlytics 崩溃与会话上报 | 分析 SDK |
+| `demdex.net` | Adobe | Experience Cloud ID / Audience Manager | 分析 SDK |
+| `scorecardresearch.com` | Comscore | 受众度量打点 | 分析 SDK |
+| `hm.baidu.com` | 百度 | 百度统计（Baidu Tongji）网站分析 | 国内分析 SDK |
+| `cnzz.com` | 阿里巴巴（友盟+/CNZZ） | CNZZ 网站分析计数与日志采集 | 国内分析 SDK |
+| `mmstat.com` | 阿里巴巴 | 集团使用 / 行为打点日志 | 国内分析 SDK |
+| `ulogs.umeng.com` | 阿里巴巴（友盟） | U-App 分析 SDK 日志上传 | 国内分析 SDK |
+| `tracking.miui.com` | 小米 | MIUI 系统使用 / 分析数据上传 | 国内分析 SDK |
+| `data.mistat.xiaomi.com` | 小米 | MiStat 统计 SDK 数据上传 | 国内分析 SDK |
+
+**被拦截和网络故障看起来完全不同。** 拦截在几毫秒内返回，并且带着一个 rcode —— `status: NXDOMAIN`、`ANSWER: 0`、置上 `aa` 标志 —— 而网络故障是在你自己客户端超时之前什么都拿不到。用 `dig +nocookie crashlytics.com` 就足以分辨这两者，而 `sc telemetry show` 能告诉你正在排查的那个域名到底在不在名单里。
+
+**如果名单内的域名弄坏了某个应用**，有两条退路，都不需要改 `bin/sc`：`sc telemetry allow` 关闭整份名单，或者用下面的写法只放行其中一个域名。两者都能在 `sc reload` 之后继续生效。
+
+**添加你自己的域名，以及放行我们名单里的某一个。** 两者都是对 `/etc/sing-box/override.json` 的修改（这个文件怎么用见下方的**自定义配置**一节）。两者都锚定在 `{"server": "hosts_dns"}` 这条规则上 —— 也就是用内置 hosts 表回答的那一条：无论设置是 `block` 还是 `allow`、无论规则集是否可用，这个元素都一定会被生成，所以今天写下的 override 在 `sc telemetry allow` 之后依然有效；而 `$after` 会把你的规则放在我们的规则之前。
+
+添加你自己的域名：
+
+```json
+{
+  "dns": {
+    "rules": {
+      "$after": {
+        "match": { "server": "hosts_dns" },
+        "values": [
+          { "action": "predefined", "rcode": "NXDOMAIN",
+            "domain_suffix": ["tracker.example.com", "beacon.example.net"] }
+        ]
+      }
+    }
+  }
+}
+```
+
+放行我们名单里的某一个 —— 下面这份让 `hm.baidu.com` 正常解析，其余 16 条依然被拦截。应当走国内解析的域名用 `direct_dns`，应当走境外解析的用 `remote_dns`：
+
+```json
+{
+  "dns": {
+    "rules": {
+      "$after": {
+        "match": { "server": "hosts_dns" },
+        "values": [
+          { "server": "direct_dns", "domain_suffix": ["hm.baidu.com"] }
+        ]
+      }
+    }
+  }
+}
+```
+
+**`override.json` 只有一个，而一个数组只接受一条指令。** 上面两份写法不能拆成两个文件，也不能在同一个 `dns.rules` 对象里写成两条指令（`$after` 加 `$before`）—— 那会被拒绝，并提示 `$after cannot be combined with other keys in the same object`。两样都要的话，把两条规则放进**同一条**指令里，放行的那条写在前面，这样它会先被匹配到：
+
+```json
+{
+  "dns": {
+    "rules": {
+      "$after": {
+        "match": { "server": "hosts_dns" },
+        "values": [
+          { "server": "direct_dns", "domain_suffix": ["hm.baidu.com"] },
+          { "action": "predefined", "rcode": "NXDOMAIN",
+            "domain_suffix": ["tracker.example.com"] }
+        ]
+      }
+    }
+  }
+}
+```
+
+**它做不到的事。** 它匹配的是**域名**，而且只匹配那些会走到这份配置 DNS 规则里的域名。自带 DoH/DoT 解析器的应用，或者直接连硬编码 IP 地址的应用，完全不受影响 —— 这里不在 IP 层或路由层拦截任何东西，也不检查流量内容。清单固定写在 `bin/sc` 里，不会自行更新；`sc telemetry allow` 和上面的写法就是你在自己机器上改变它行为的方式。
+
 ### 控制服务
 
 ```bash

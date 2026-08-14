@@ -137,6 +137,106 @@ The rule that carries this is evaluated **first**, ahead of both routing-mode ru
 
 **What this does not do.** There is no second resolver and no wait to configure. When the proxied resolver is reached but does not answer, sing-box abandons that query at its own fixed per-query deadline (10.0 s in 1.13.15 — no key this project emits can change it), returns nothing, and consults no one else; the error you finally see comes from your own client's timeout. A `NXDOMAIN` or `SERVFAIL` from the proxied resolver is relayed verbatim, never re-asked elsewhere, so no name is exposed to the domestic resolver as a consequence of a failure. A node whose address resolves only over IPv6 needs `sc ipv6 on`.
 
+### Telemetry name rejection
+
+```bash
+sc telemetry block     # answer every listed name "no such domain" locally (the default)
+sc telemetry allow     # resolve the listed names normally
+sc telemetry show      # print the setting and every name on the list
+```
+
+`sc` ships a fixed list of 17 telemetry names. With the setting at `block` — the value of a host that has never set it — a query for a listed name, or for any subdomain of one, is answered by sing-box itself with `NXDOMAIN` and no records, in a few milliseconds, and **no query is sent to any DNS server**. A name is on the list only when **both** clauses hold: its sole function is carrying usage, diagnostic, crash or advertising-identifier data to a vendor, **and** blocking it disables no user-visible function of the product it belongs to. No update, activation, licensing, authentication, push-delivery, CDN-content, captcha or security-feature endpoint qualifies — which is why `analytics.google.com` (it also serves the Analytics console), `omtrdc.net` (Adobe Target delivers page content), `googletagmanager.com`, `settings-win.data.microsoft.com` and the vendors' push hosts are deliberately absent.
+
+Matching is by label boundary: `crashlytics.com` covers that name and every subdomain of it at any depth, in any letter case, and does **not** cover `notcrashlytics.com`.
+
+The setting is persisted in `/etc/sing-box/settings.json`; an absent key means `block`, so a fresh install and a host upgrading to this build behave identically, and a value that is neither `block` nor `allow` is named on stderr and treated as `block`. `sc telemetry <value>` regenerates the config and restarts sing-box **only when the effective setting actually changes** — otherwise it says nothing changed and names `sc reload`, which is what applies the setting to a `config.json` generated before it existed. `sc telemetry show` changes no setting, regenerates nothing and touches the service in no way — but, like every command except `sc doctor`, it still runs the ordinary start-up path first, which on a fresh host creates `/etc/sing-box` and `/var/lib/sing-box` and seeds `nodes.json` / `settings.json`.
+
+The rule that carries the list is evaluated ahead of both routing-mode rules, so **changing the route mode does not lift the rejection**: `sc mode global` and `sc mode direct` change which resolver answers *other* names, never whether a listed name is rejected. It references no ruleset, so a host whose `.srs` files are missing still gets it, and it needs no usable node — a listed name is rejected on a host with no nodes at all.
+
+**The list** — vendor and class for every shipped name; `sc telemetry show` prints the same names on the host itself:
+
+| Name | Vendor | What it carries | Class |
+|---|---|---|---|
+| `telemetry.microsoft.com` | Microsoft | Windows diagnostics, crash and error reporting | OS diagnostics |
+| `vortex.data.microsoft.com` | Microsoft | Windows diagnostic-data upload (DiagTrack) | OS diagnostics |
+| `vortex-win.data.microsoft.com` | Microsoft | the Windows-specific sibling of the above | OS diagnostics |
+| `metrics.ubuntu.com` | Canonical | the `ubuntu-report` installer / hardware survey | OS diagnostics |
+| `daisy.ubuntu.com` | Canonical | whoopsie / Apport crash-report submission | OS diagnostics |
+| `incoming.telemetry.mozilla.org` | Mozilla | Firefox telemetry ping submission | Browser telemetry |
+| `google-analytics.com` | Google | Google Analytics hit collection | Analytics SDK |
+| `app-measurement.com` | Google | Firebase Analytics measurement upload | Analytics SDK |
+| `crashlytics.com` | Google | Firebase Crashlytics crash and session reports | Analytics SDK |
+| `demdex.net` | Adobe | Experience Cloud ID / Audience Manager | Analytics SDK |
+| `scorecardresearch.com` | Comscore | audience-measurement beacons | Analytics SDK |
+| `hm.baidu.com` | Baidu | Baidu Tongji (百度统计) web analytics | Domestic analytics SDK |
+| `cnzz.com` | Alibaba (Umeng+/CNZZ) | CNZZ web-analytics counters and log collection | Domestic analytics SDK |
+| `mmstat.com` | Alibaba | group usage / behaviour beacon logging | Domestic analytics SDK |
+| `ulogs.umeng.com` | Alibaba (Umeng) | U-App analytics SDK log upload | Domestic analytics SDK |
+| `tracking.miui.com` | Xiaomi | MIUI system usage / analytics upload | Domestic analytics SDK |
+| `data.mistat.xiaomi.com` | Xiaomi | MiStat statistics SDK data upload | Domestic analytics SDK |
+
+**A rejection does not look like a broken network.** It arrives in milliseconds and carries an rcode — `status: NXDOMAIN`, `ANSWER: 0`, the `aa` flag set — where a network failure gives you nothing at all until your own client's timeout expires. `dig +nocookie crashlytics.com` is enough to tell the two apart, and `sc telemetry show` tells you whether the name you are chasing is on the list at all.
+
+**If a listed name breaks an application**, there are two ways out and neither needs `bin/sc` edited: `sc telemetry allow` turns the whole list off, or the recipe below restores exactly one name. Both survive `sc reload`.
+
+**Adding your own names, and excepting one of ours.** Both are edits to `/etc/sing-box/override.json` (the **Custom configuration** section below explains how that file works). Both anchor on `{"server": "hosts_dns"}`, the rule that answers from the built-in hosts table: that element is emitted in **both** settings states and in every ruleset state, so an override written today keeps working after `sc telemetry allow`, and `$after` places your rules ahead of ours.
+
+Add names of your own:
+
+```json
+{
+  "dns": {
+    "rules": {
+      "$after": {
+        "match": { "server": "hosts_dns" },
+        "values": [
+          { "action": "predefined", "rcode": "NXDOMAIN",
+            "domain_suffix": ["tracker.example.com", "beacon.example.net"] }
+        ]
+      }
+    }
+  }
+}
+```
+
+Except one of ours — this one resolves `hm.baidu.com` normally while the other 16 stay rejected. Use `direct_dns` for a name that should be resolved domestically and `remote_dns` for one that should be resolved abroad:
+
+```json
+{
+  "dns": {
+    "rules": {
+      "$after": {
+        "match": { "server": "hosts_dns" },
+        "values": [
+          { "server": "direct_dns", "domain_suffix": ["hm.baidu.com"] }
+        ]
+      }
+    }
+  }
+}
+```
+
+**There is only one `override.json`, and one array takes only one directive.** The two recipes above cannot be two separate files, and they cannot be two directives (`$after` and `$before`) in the same `dns.rules` object — that is refused with `$after cannot be combined with other keys in the same object`. If you want both, put both rules inside the **one** directive, the exception first so it is matched first:
+
+```json
+{
+  "dns": {
+    "rules": {
+      "$after": {
+        "match": { "server": "hosts_dns" },
+        "values": [
+          { "server": "direct_dns", "domain_suffix": ["hm.baidu.com"] },
+          { "action": "predefined", "rcode": "NXDOMAIN",
+            "domain_suffix": ["tracker.example.com"] }
+        ]
+      }
+    }
+  }
+}
+```
+
+**What this does not do.** It matches **names**, and only names that reach this config's DNS rules. An application that ships its own DoH/DoT resolver, or that connects to a hard-coded IP address, is unaffected by any of this — nothing here blocks anything at the IP or the route layer, and nothing here inspects traffic. The list is fixed in `bin/sc` and never updates itself; `sc telemetry allow` and the recipes above are how you change what it does on your host.
+
 ### Service control
 
 ```bash

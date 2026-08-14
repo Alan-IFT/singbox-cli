@@ -154,3 +154,26 @@ The index stood at 37 lines against a 30-line cap after the harvest.
 - 2026-08-01 · sing-box's Clash API cannot apply a local `.srs`: the installed binary contains the `/providers/rules` route string but neither `ruleCount` nor `vehicleType`, so the route is a compatibility stub and no rule-set hot-apply path exists through it · evidence: ruleset-update-no-needless-restart
 - 2026-08-01 · A `git worktree` is not a valid pristine baseline for `verify_all.sh` in this repo — `.git` is a *file* in a worktree, so A.1/A.2 turn SKIP and the summary falsely reads `14/4` instead of `16/2`; use a clone · evidence: install-binary-download-progress
 - 2026-08-01 · A progress-redraw fixture's non-vacuity is carried by the server's **throttle**, not the body size — an 8 MiB body with `sleep=0` yields `states=1` exactly like a 1 KiB body, which refines the earlier chunk-size reading of this same trap · evidence: install-binary-download-progress
+
+## Rotated 2026-08-14 (during `telemetry-reject-list` / T-17 archive)
+
+`archive-task.sh` harvested 8 new insights and, as on every prior harvest, did **not** auto-rotate the
+overflow — the index stood at **38** lines against its 30 cap. This is **R-18 confirmed a fifth
+time**: the script's rotation threshold counts *bullets* while `verify_all` F.4 counts *lines*, so it
+never fires. The PM rotated these eight by hand.
+
+Chosen because a committed artefact or a shipped fix now carries the knowledge, **not** because they
+are old — every entry retained is one a future task would still be surprised by. Rotated here:
+the four whose defect was fixed in code and whose fix is now the guard (`set -euo pipefail`
+assignment abort → T-11; `mkstemp` umask and the symlink write-through → T-13; the CSI residue →
+`sc doctor`), the two `posixpath` traps that `bin/sc`'s own call sites now encode, and the two
+`urltest`/Clash-API specifics that belong to T-15's shipped design rather than to the next task.
+
+- 2026-08-01 · Under `set -euo pipefail` a bare `VAR=$(cmd | grep …)` assignment aborts the script *at the assignment* when the pipeline fails, so `install.sh:373`'s version query bypasses its own `download_failed`/`check_network` handler **and** `install_report()` — the installer can exit having stated no outcome at all · evidence: install-binary-download-progress
+- 2026-08-01 · sing-box colours its `check` output unconditionally, even with `stdout=PIPE`, so stripping the lone `0x1B` byte leaves the literal residue `[31mFATAL[0m` on screen — only removing the COMPLETE CSI sequence yields a pasteable line, and a fake-checker fixture cannot reveal this · evidence: sc-doctor
+- 2026-08-01 · `tempfile.mkstemp`'s `0o600` is `open(2)`'s **mode argument**, not a chmod, so umask still masks it — at umask `0o277` it yields `0400`, and only an `os.fchmod` on the descriptor **before the first byte** makes the mode exactly 0600 regardless of umask · evidence: config-write-permission-hardening
+- 2026-08-01 · At HEAD a planted symlink at `config.json` made `Path.write_text` write 12214 credential bytes **through** the link and the trailing `os.chmod` then narrowed the *destination*, so write-then-chmod was a redirection bug as well as a window — measured, not reasoned · evidence: config-write-permission-hardening
+- 2026-08-01 · `os.stat` follows symlinks, so a **dangling** symlink raises `FileNotFoundError` and is indistinguishable from an absent file — any "absent" arm written with `os.stat` silently swallows a user-owned file that is present; `os.path.islink` is the discriminator and, being `lstat`-based, also returns False for a broken *parent* component · evidence: config-composition-layer
+- 2026-08-01 · `os.path.realpath` is not raise-free on any Python this project targets: `posixpath._joinrealpath` calls `os.readlink` **unguarded** at 3.8.2 and **still** at 3.12.3 — the 3.10 rewrite guarded the `lstat`, not the `readlink` · evidence: config-composition-layer
+- 2026-08-13 · sing-box's `interrupt_exist_connections` governs **external (inbound-originated)** connections only — the binary carries `interrupt.ContextWithIsExternalConnection`/`IsExternalConnectionFromContext` beside `(*Group).Interrupt`, so setting it false *spares* external connections while sing-box's own internal ones (the DoH transport carrying `remote_dns`) are torn down on every re-selection regardless · evidence: proxy-urltest-group
+- 2026-08-13 · sing-box's `GET /proxies` returns entries that are not `sc` outbounds at all — its implicit `GLOBAL` selector among them — so a delay map keyed by the API's own tags is not node-keyed, and a node named after one of them silently inherits that entry's history · evidence: proxy-urltest-group
