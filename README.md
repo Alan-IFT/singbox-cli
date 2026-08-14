@@ -253,29 +253,31 @@ sc log -f              # follow logs in real time
 sc doctor
 ```
 
-One pass, one screen, seven facts — printed in **causal order**, so every cause appears above the effects it can produce:
+One pass, one screen, nine facts — printed in **causal order**, so every cause appears above the effects it can produce:
 
 | # | Section | What it reports |
 |---|---|---|
 | 1 | sing-box binary | the resolved path of the binary and its version |
-| 2 | Rule-sets | one row per `.srs`: usable / missing / not a rule-set file / too small / unreadable, plus the byte count from that same read |
-| 3 | Configuration | whether `config.json` exists, and what `sing-box check` says about it |
-| 4 | Service | running now, and registered to start at boot — two separate facts |
-| 5 | TUN interface | whether `sb-tun` exists, and its addresses |
-| 6 | Clash API | the port recorded in `settings.json`, and whether it answers |
-| 7 | Egress IP | the observed public address (queried even when the service is down) |
+| 2 | Rule-sets | one row per `.srs`: usable / missing / not a rule-set file / too small / unreadable, the byte count from that same read, and how long ago the file was written — a usable rule-set older than 60 days is reported as a problem naming `sc update-rules` |
+| 3 | Configuration | whether `config.json` exists, whether it is still what `sc` last generated, and what `sing-box check` says about it |
+| 4 | IPv6 (AAAA) | this host's effective AAAA decision, and whether the `config.json` on disk carries that decision |
+| 5 | Service | running now, and registered to start at boot — two separate facts |
+| 6 | TUN interface | whether `sb-tun` exists, and its addresses |
+| 7 | Clash API | the port recorded in `settings.json`, whether it answers, how many of your nodes carry a stored delay and which outbound auto-select is on right now, and one name lookup performed by the running sing-box with the time it took |
+| 8 | Egress IP | the observed public address (queried even when the service is down) |
+| 9 | File permissions | any **credential** file directly inside `/etc/sing-box` that grants access to group or other (`settings.json` is excluded — it carries no credential), and whether the directory itself is group- or other-writable — each offending path named with its mode and the command that narrows it |
 
-Every row is marked `[OK]`, `[PROBLEM]` or `[UNKNOWN]` (`[正常]` / `[异常]` / `[未知]` under `sc lang zh`), so `sc doctor | grep '^\[PROBLEM\]'` lists exactly what is wrong. `[UNKNOWN]` means the check could not run at all — a missing tool, a permission denial — never "the thing being checked is broken". One failing check never ends the run: all seven sections are always printed.
+Every row is marked `[OK]`, `[PROBLEM]` or `[UNKNOWN]` (`[正常]` / `[异常]` / `[未知]` under `sc lang zh`), so `sc doctor | grep '^\[PROBLEM\]'` lists exactly what is wrong. `[UNKNOWN]` means the check could not run at all — a missing tool, a permission denial — never "the thing being checked is broken". One failing check never ends the run: all nine sections are always printed.
 
-**`sc doctor` changes nothing.** It writes no config, downloads nothing, and never starts, stops, restarts, enables or repairs anything. Unlike every other subcommand it does not even create `/etc/sing-box` or persist a Clash API port on first run — on a broken or fresh machine the emptiness of those paths is often the diagnosis, and a diagnostic must not destroy the evidence it was run to collect. It is safe to run repeatedly, concurrently, and as the very first thing after a failure.
+**`sc doctor` changes nothing.** It writes no config, downloads nothing, and never starts, stops, restarts, enables or repairs anything. Unlike every other subcommand it does not even create `/etc/sing-box` or persist a Clash API port on first run — on a broken or fresh machine the emptiness of those paths is often the diagnosis, and a diagnostic must not destroy the evidence it was run to collect. The one thing it asks of the outside world is section 7's name lookup: the command itself still touches no path, but the resolution is performed *by the running sing-box*, which may record it in its own DNS cache (`/var/lib/sing-box/cache.db`) exactly as it would any other query. It is safe to run repeatedly, concurrently, and as the very first thing after a failure.
 
 Exit status:
 
 | Exit | Meaning |
 |---|---|
 | `0` | every section OK |
-| `1` | at least one `[PROBLEM]` — any section: a missing binary, an unusable rule-set, a failed config check, a stopped or non-autostarting service, a missing TUN device, an unanswered Clash API port, a failed egress query |
-| `2` | no `[PROBLEM]`, but at least one `[UNKNOWN]` — a check could not run: no sing-box binary to check the config with, no init system detected, `ip` missing, or no Clash API port recorded in `settings.json` |
+| `1` | at least one `[PROBLEM]` — any section: a missing binary, an unusable or stale rule-set, a `config.json` changed outside `sc`, a failed config check, an AAAA decision the document does not carry, a stopped or non-autostarting service, a missing TUN device, an unanswered Clash API port, no node carrying a stored delay, a name lookup that produced no answer, a failed egress query, a credential file or a configuration directory open to group or other |
+| `2` | no `[PROBLEM]`, but at least one `[UNKNOWN]` — a check could not run: no sing-box binary to check the config with, no record of what `sc` last generated, no init system detected, `ip` missing, no Clash API port recorded in `settings.json` (which also leaves the node-delay and DNS rows unprobed), a `nodes.json` that cannot be read, or a configuration directory that is absent or cannot be listed |
 
 ### Show the configuration
 

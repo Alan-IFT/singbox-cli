@@ -209,3 +209,24 @@ superseded in its family by T-06's stderr-buffering entry.
 - 2026-08-14 · sing-box 1.13.15 refuses to start when a DNS server's `detour` names a bare `{"type":"direct"}` outbound (`FATAL start dns/udp[remote_dns]: detour to an empty direct outbound makes no sense`) while accepting a `selector` whose only member is `direct` — so a fixture can pass `sing-box check` and still die at run · evidence: dns-resilience
 - 2026-08-14 · An `override.json` anchor that a README publishes must match exactly one element in **every** state the document can reach, not just the state it was written for: `{"rcode":"NXDOMAIN"}` existed only while the reject list was on, so the shipped recipe made `sc telemetry allow` exit 1 with `$before matched 0 elements` — and because the setting is persisted *before* regeneration, the host was left recorded `allow` with a `config.json` never regenerated · evidence: telemetry-reject-list
 - 2026-08-14 · `sys.exit(<str>)` is interpreter-handled and flushes Python's `sys.stdout` **before** writing the string to `sys.stderr`, so swapping it for an in-run `sys.stderr.write` reorders the merged `2>&1` capture `install.sh` records — the aggregate lands ahead of the still-buffered stdout and splits the last per-file line in two — unless an explicit `sys.stdout.flush()` precedes it; proved live by a mutant build differing from HEAD at byte 836 · evidence: ruleset-staleness-visibility
+
+
+## Hand-rotated 2026-08-14 (during `doctor-extended-checks` / T-20 delivery)
+
+`archive-task.sh` harvested 4 insights and rotated **none** — it counts *bullets* against 30 while
+F.4 counts *lines*, so the index landed at 34/30. This is **R-18, confirmed a ninth time**; the
+rotation below is by hand, and the fix remains to make the script count what F.4 counts.
+
+Chosen by rule 70's "what no longer earns its line" rather than oldest-first (the T-05 precedent).
+Each one's owning task is delivered and its lesson is now carried by shipped code, a corrected
+document, or settled habit. Deliberately **kept** in the index despite being older: the `LANG` and
+`CLASH_PORT` reassignment traps and the new `is_running()` twin (three live fixture-vacuity
+hazards), `_init_files()`'s hard-coded `/var/lib/sing-box` (a safety floor), the `[D]`/`[A]`
+control-class rule (methodology, reused this task), the E.6 heading regex, and the
+`clash_mode`-rule-precedence entry, which stays because **R-50 is open against exactly that
+mode-independence property**.
+
+- 2026-08-14 · `git diff --stat`'s bar column counts insertions **plus** deletions, so quoting it as an added-line count inflates the number and silently rescopes any "the added lines were scanned" claim built on it — the added count is `--numstat`'s first field, or the `N insertions(+)` trailer · evidence: dns-resilience
+- 2026-08-14 · `domain_suffix` in sing-box 1.13.15 is **label-boundary aware**, not the raw character suffix the v2ray era assumed — one dotless entry matches the apex and every subdomain at any depth, case-insensitively, and does **not** match `notexample.com` or `example.com.evil.net`, so the habitual `domain` + `.suffix` pairing is dead weight defending against a false positive this binary cannot produce, while a bare leading-dot `.example.com` is the genuinely wrong form because it silently leaves the apex resolvable · evidence: telemetry-reject-list
+- 2026-08-14 · `sing-box check` fully parses every `.srs` the document references, so a fixture with synthetic rule-set bytes that satisfy this project's own `srs_reject_reason()` still dies at `initialize router: parse rule-set[0]: zlib: invalid header` — a `check`-based fixture must copy the host's real `.srs` bytes, or only the all-rule-sets-unusable state is actually testable · evidence: telemetry-reject-list
+- 2026-08-14 · `json.loads` parses with the **C scanner**, whose depth budget is not the Python recursion limit, so a ~1000-level-deep document parses cleanly and it is the *pure-Python* walk over the result that raises `RecursionError` — refuting the natural assumption (ruled at gate D-2) that a recursive JSON transform inherits the parser's own depth protection · evidence: sc-config-show

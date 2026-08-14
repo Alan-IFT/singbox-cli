@@ -93,6 +93,13 @@ SRS_MAGIC = b"SRS"
 # suffixes) — a floor that rejects a correctly downloaded file would re-create the
 # very bug this exists to remove. Never raise it without measuring the real files.
 SRS_MIN_BYTES = 16
+# THE staleness threshold, and its only reader is `sc doctor`'s rule-set section. 60 days
+# is strictly greater than the longest cadence `sc update-interval` offers as a preset
+# (monthly), so no host whose auto-update is working can ever trip it; it is deliberately
+# NOT derived from settings["update_interval"], because a custom OnCalendar expression is
+# not convertible to a duration. Age itself stays a fact (_age_text) — this is the one
+# place a verdict is put on top of it.
+RULESET_STALE_DAYS = 60
 
 # (installed filename, path relative to a base). A tuple of pairs, not a dict: this
 # order is the emission order of route.rule_set and must not depend on dict ordering.
@@ -260,7 +267,9 @@ TRANSLATIONS = {
         "sing-box version": "sing-box 版本",
         "rule-sets": "规则集",
         "configuration": "配置文件",
+        "config drift": "配置改动",
         "sing-box check": "sing-box 配置检查",
+        "IPv6 (AAAA)": "IPv6（AAAA）",
         "service": "服务",
         "boot autostart": "开机自启",
         "TUN interface": "TUN 接口",
@@ -269,17 +278,30 @@ TRANSLATIONS = {
         # bilingual enumeration covers every key doctor emits.
         "Clash API": "Clash API",
         "Clash API responding": "Clash API 是否响应",
+        "node delays": "节点延迟",
+        "DNS lookup": "DNS 解析",
         "egress IP": "出口 IP",
+        "file permissions": "文件权限",
         "usable": "可用",
         "not found on PATH": "未在 PATH 中找到",
         "no sing-box binary on PATH": "PATH 中没有 sing-box 可执行文件",
         "the binary produced no version line (exit {code})": "该可执行文件未输出版本信息（退出码 {code}）",
         "{n}/{total} usable": "{n}/{total} 个可用",
-        "{reason}, {size} bytes": "{reason}，{size} 字节",
-        "{reason}, size unavailable": "{reason}，大小未知",
+        "{reason}, {size} bytes, {age}": "{reason}，{size} 字节，{age}",
+        "{reason}, size unavailable, {age}": "{reason}，大小未知，{age}",
+        "{reason}, {size} bytes, {age} — run `sc update-rules` to refresh":
+            "{reason}，{size} 字节，{age} —— 运行 `sc update-rules` 更新",
         "no file at {path}": "文件不存在：{path}",
         "cannot read {path}: {e}": "无法读取 {path}：{e}",
         "no error reported": "未报告错误",
+        "matches what sc last generated": "与 sc 最近一次生成的内容一致",
+        "changed since sc generated it — keep the change in {override}, then run `sc reload`":
+            "自 sc 生成以来已被修改 —— 请把改动写入 {override}，再运行 `sc reload`",
+        "no record of what sc last generated": "没有 sc 最近一次生成内容的记录",
+        "{decision}; config.json carries this decision": "{decision}；config.json 与该决策一致",
+        "{decision}; config.json does not carry this decision — run `sc reload` to regenerate it":
+            "{decision}；config.json 与该决策不一致 —— 运行 `sc reload` 重新生成",
+        "cannot determine this host's IPv6 addresses": "无法确定本机的 IPv6 地址",
         "the checker reported an error:": "检查器报告了错误：",
         "the checker reported an error, no message (exit {code})":
             "检查器报告了错误，未输出信息（退出码 {code}）",
@@ -296,8 +318,29 @@ TRANSLATIONS = {
         "cannot query: {e}": "无法查询：{e}",
         "no port recorded in settings.json": "settings.json 中没有记录端口",
         "yes": "是",
-        "no answer within the 3s timeout": "3 秒超时内无响应",
+        "no usable answer from {addr}": "{addr} 未返回可用响应",
         "not probed — no port recorded": "未探测 —— 没有记录端口",
+        "not probed — the Clash API did not answer": "未探测 —— Clash API 未响应",
+        "no nodes configured": "未配置任何节点",
+        "{n}/{total} nodes carry a stored delay (history, not a fresh measurement); auto-select is on {current}":
+            "{n}/{total} 个节点有已记录的延迟（历史值，非实时测量）；自动选择当前走 {current}",
+        "0/{total} nodes carry a stored delay — either no probe has completed yet or every node is failing; see `sc ls`":
+            "0/{total} 个节点有已记录的延迟 —— 可能探测尚未完成，也可能所有节点都不通；请查看 `sc ls`",
+        "{name} resolved in {ms} ms, through the running sing-box":
+            "{name} 用时 {ms} 毫秒解析成功（经由正在运行的 sing-box）",
+        "{name} returned no records after {ms} ms — try another node with `sc use <n>`":
+            "{name} 在 {ms} 毫秒后返回了空结果 —— 可用 `sc use <编号>` 换一个节点试试",
+        "no answer for {name} after {ms} ms — try another node with `sc use <n>`":
+            "{ms} 毫秒内没有收到 {name} 的解析结果 —— 可用 `sc use <编号>` 换一个节点试试",
+        "no credential file grants access to group or other, and the directory is not group- or other-writable":
+            "没有凭据文件对同组或其他用户开放，目录本身也不可被同组或其他用户写入",
+        "{n} path(s) grant access to group or other — run the command shown for each":
+            "{n} 个路径对同组或其他用户开放 —— 请逐条执行下面给出的命令",
+        "{n} path(s) could not be judged — see below": "{n} 个路径无法判断 —— 详见下方",
+        "{path} is mode {mode} — run: {cmd}": "{path} 的权限是 {mode} —— 请运行：{cmd}",
+        "{path} is a symbolic link; sc never creates one here — check it with: ls -l {path}":
+            "{path} 是符号链接，sc 不会在此创建符号链接 —— 请用 ls -l {path} 检查",
+        "no directory at {path}": "目录不存在：{path}",
         "this check could not run: {e}": "该项检查无法执行：{e}",
         # config composition — the user override and the drift statement. None of these
         # may contain 失败, which is the load-bearing grep literal of "failed: {e}" above.
@@ -404,15 +447,23 @@ def _resolve_clash_port():
     return port
 
 
+# THE one home of the name this project resolves. Two consumers: the URL below, and the
+# DNS row of `sc doctor`, which asks the running sing-box to resolve this very name — that
+# shared literal is what makes the DNS row and the egress row a causal pair rather than two
+# coincidental probes.
+EGRESS_HOST = "api.ipify.org"
+
+
 def _egress_ip():
     """The public egress address as text, from THE one endpoint sc queries.
 
-    Raises on failure — the caller decides how to render it. The endpoint literal and the
-    8 s socket timeout live here and nowhere else, so `sc status` and `sc doctor` can never
+    Raises on failure — the caller decides how to render it. The endpoint name lives in
+    EGRESS_HOST above (its other consumer is `sc doctor`'s DNS row) and the 8 s socket
+    timeout lives here and nowhere else, so `sc status` and `sc doctor` can never
     report different egress addresses on the same machine. Deliberately byte-faithful: the
     value is printed verbatim by `sc status`, so no scrubbing happens in here.
     """
-    with urllib.request.urlopen("https://api.ipify.org", timeout=8) as resp:
+    with urllib.request.urlopen("https://" + EGRESS_HOST, timeout=8) as resp:
         return resp.read().decode()
 
 
@@ -1582,9 +1633,10 @@ def ipv6_decision():
 
     `setting` is what is persisted, `suppress` is what the emitted document does about
     AAAA, and `sentence` is the already-translated evidence for it (None only when
-    detection failed, which has already spoken on stderr). Exactly two callers —
-    _dns_overlay() and cmd_ipv6() — and no other code re-derives any part of it, so the
-    document and what `sc ipv6` says about it can never be two opinions.
+    detection failed, which has already spoken on stderr). Three callers — _dns_overlay(),
+    cmd_ipv6() and `sc doctor`'s AAAA row — and no other code re-derives any part of it, so
+    the document, what `sc ipv6` says about it and what `sc doctor` reports can never be
+    three opinions.
 
     Detection failure means DO NOT suppress: the two errors are not symmetric. Suppressing
     on a host that can use IPv6 makes IPv6-only destinations unreachable, while not
@@ -1615,6 +1667,20 @@ def ipv6_decision():
                              "has no global IPv6 address)"))
 
 
+def _aaaa_rule(suppress):
+    """THE one place the predefined AAAA rule dict is spelled, for one decision.
+
+    Pure: no I/O, no print, never raises, and it does NOT call ipv6_decision() — the caller
+    passes the decision in. That is what lets `sc doctor` ask "does the document carry this
+    decision?" as a membership test against the one authored rule, without a second
+    ipv6_decision() call and without re-spelling the literal a second time (a positional
+    index into the overlay would silently check the wrong rule the day a second one is
+    prepended).
+    """
+    return {"action": "predefined", "rcode": "NOERROR",
+            "query_type": ([28, 64, 65] if suppress else [64, 65])}
+
+
 def _dns_overlay():
     """THE one place the IPv6 decision reaches the emitted document.
 
@@ -1632,11 +1698,7 @@ def _dns_overlay():
     An empty NOERROR is the answer, never NXDOMAIN — NXDOMAIN would poison the negative
     cache for the whole name, its A record included.
     """
-    suppress = ipv6_decision()[1]
-    return {"dns": {"rules": {"$prepend": [
-        {"action": "predefined", "rcode": "NOERROR",
-         "query_type": ([28, 64, 65] if suppress else [64, 65])},
-    ]}}}
+    return {"dns": {"rules": {"$prepend": [_aaaa_rule(ipv6_decision()[1])]}}}
 
 
 # THE definition of the telemetry name list — one tuple, two consumers (_telemetry_overlay()
@@ -2317,11 +2379,13 @@ def cmd_status(args):
 
 
 # ============ doctor ============
-# One pass, one screen, seven facts, in CAUSAL order: no section is printed before a
+# One pass, one screen, nine facts, in CAUSAL order: no section is printed before a
 # section whose failure would explain it (binary and rule-sets above the config check,
-# the config check above the service, the service above TUN / Clash API, those above
-# egress). Nothing here forms a second opinion — every fact comes from the function that
-# already owns that judgment.
+# the config check above the AAAA decision it is judged against, both above the service,
+# the service above TUN / Clash API, the Clash rows above the node delays and the lookup,
+# and all of them above egress; file permissions last, because a wrong mode explains no
+# other row). Nothing here forms a second opinion — every fact comes from the function
+# that already owns that judgment.
 #
 # READ-ONLY, absolutely. `doctor` runs when the machine is already broken, so it must not
 # destroy the evidence: it writes no file, touches no service, and main() keeps it off
@@ -2332,7 +2396,7 @@ DOCTOR_OK, DOCTOR_UNKNOWN, DOCTOR_PROBLEM = 0, 1, 2     # ordered: OK < UNKNOWN 
 # import, so a pre-rendered table would freeze English (same reason as _status_text()).
 DOCTOR_MARK = {DOCTOR_OK: "OK", DOCTOR_UNKNOWN: "UNKNOWN", DOCTOR_PROBLEM: "PROBLEM"}
 DOCTOR_EXIT = {DOCTOR_OK: 0, DOCTOR_UNKNOWN: 2, DOCTOR_PROBLEM: 1}
-DOCTOR_MSG_LINES = 5        # at most this many verbatim lines of a checker message
+DOCTOR_MSG_LINES = 5        # at most this many verbatim lines of a quoted list
 
 
 def _plain(text):
@@ -2423,27 +2487,43 @@ def _doctor_binary():
 
 
 def _doctor_rulesets():
-    """S2 — one row per rule-set: status and size from the SAME single read.
+    """S2 — one row per rule-set: status, size AND age from the SAME single read.
 
     The head of the owner's failure chain, which is why it prints above the config check.
+
+    The age is rendered by the one age renderer over the one reader's mtime, and the
+    staleness verdict is a function of that SAME number — no os.stat, no getmtime, no
+    second timestamp source, so the phrase and the verdict can never disagree. A file with
+    no complete read has no timestamp, reads as the word form and is never called stale;
+    its row is already PROBLEM for its status. Usable-but-stale is PROBLEM and makes the
+    summary PROBLEM through the assignment an unusable file already uses, while the
+    "{n}/{total} usable" count is unchanged — a stale rule-set IS usable, it is just old.
     """
     states = ruleset_states()
     summary_cls = DOCTOR_OK
     usable = 0
     rows = []
-    for _tag, fname, status, _digest, size, *_rest in states:
+    for _tag, fname, status, _digest, size, mtime, *_rest in states:
+        stale = False
         if status == "usable":
             usable += 1
+            stale = (mtime is not None
+                     and time.time() - mtime >= RULESET_STALE_DAYS * 86400)
+        if status == "usable" and not stale:
             cls = DOCTOR_OK
         else:
             cls = DOCTOR_PROBLEM
             summary_cls = DOCTOR_PROBLEM
         reason = _status_text(status)
+        age = _age_text(mtime)
         if size is None:
             # No complete read happened, so there is no honest byte count to print.
-            value = t("{reason}, size unavailable", reason=reason)
+            value = t("{reason}, size unavailable, {age}", reason=reason, age=age)
+        elif stale:
+            value = t("{reason}, {size} bytes, {age} — run `sc update-rules` to refresh",
+                      reason=reason, size=size, age=age)
         else:
-            value = t("{reason}, {size} bytes", reason=reason, size=size)
+            value = t("{reason}, {size} bytes, {age}", reason=reason, size=size, age=age)
         rows.append((cls, fname, value))
     summary = (summary_cls, "rule-sets",
                t("{n}/{total} usable", n=usable, total=len(states)))
@@ -2455,17 +2535,36 @@ def _doctor_config():
 
     Opens the file only to learn whether it is readable: an EACCES is "cannot read", never
     "absent". A missing binary makes the check UNKNOWN — never "config invalid".
+
+    The drift row is _drift_state()'s three-valued answer rendered and nothing else — no
+    second digest is taken here and the judgement is not widened. It is computed FIRST and
+    returned on every path, including both early returns, because it sits between the
+    "configuration" row and the "sing-box check" row in the causal order: a document the
+    user edited is what explains a checker verdict that surprises them. `no record` is
+    UNKNOWN, never "drifted" — every host upgrading from a build before the record existed
+    has none.
     """
+    drift = _drift_state()
+    if drift is None:
+        drift_row = (DOCTOR_UNKNOWN, "config drift",
+                     t("no record of what sc last generated"))
+    elif drift:
+        drift_row = (DOCTOR_PROBLEM, "config drift",
+                     t("changed since sc generated it — keep the change in {override}, "
+                       "then run `sc reload`", override=str(OVERRIDE_PATH)))
+    else:
+        drift_row = (DOCTOR_OK, "config drift", t("matches what sc last generated"))
     try:
         with CFG_PATH.open("rb"):
             pass
     except FileNotFoundError:
         return [(DOCTOR_PROBLEM, "configuration",
-                 t("no file at {path}", path=str(CFG_PATH)))]
+                 t("no file at {path}", path=str(CFG_PATH))), drift_row]
     except OSError as e:
         return [(DOCTOR_UNKNOWN, "configuration",
-                 t("cannot read {path}: {e}", path=str(CFG_PATH), e=_plain(str(e))))]
-    rows = [(DOCTOR_OK, "configuration", str(CFG_PATH))]
+                 t("cannot read {path}: {e}", path=str(CFG_PATH), e=_plain(str(e)))),
+                drift_row]
+    rows = [(DOCTOR_OK, "configuration", str(CFG_PATH)), drift_row]
     if not shutil.which(SB_BIN):
         rows.append((DOCTOR_UNKNOWN, "sing-box check", t("no sing-box binary on PATH")))
         return rows
@@ -2498,8 +2597,53 @@ def _doctor_config():
     return rows
 
 
+def _doctor_ipv6():
+    """S4 — this host's effective AAAA decision, and whether config.json carries it.
+
+    ONE row, and exactly ONE ipv6_decision() call per doctor run: the decision's own
+    sentence is what the row states, and the same decision is handed to _aaaa_rule() to
+    ask the document a membership question. _dns_overlay() is deliberately NOT called from
+    anywhere in this block — it would call ipv6_decision() a second time, printing BC-9's
+    stderr warning twice and reading the address source twice in one run.
+
+    The row asks "does the document carry the rule this build authors for this decision?",
+    which is a membership test and never a second derivation — it re-spells no rule and
+    indexes no position. Detection failure (sentence None, already spoken on stderr) is
+    UNKNOWN. The document is read exactly once, guarded by (OSError, ValueError) —
+    UnicodeDecodeError is a ValueError, not an OSError — and every level below the top is
+    guarded by isinstance in stored_delays()' house style, so a `dns` that is a string is
+    the honest PROBLEM "the document does not carry it" rather than a TypeError. A document
+    that is not a JSON object at all is UNKNOWN: the row above already owns "there is no
+    usable document there", and this probe cannot judge what it cannot traverse.
+    """
+    _setting, suppress, sentence = ipv6_decision()
+    if sentence is None:
+        return [(DOCTOR_UNKNOWN, "IPv6 (AAAA)",
+                 t("cannot determine this host's IPv6 addresses"))]
+    try:
+        doc = json.loads(CFG_PATH.read_text())
+    except (OSError, ValueError) as e:
+        return [(DOCTOR_UNKNOWN, "IPv6 (AAAA)",
+                 t("cannot read {path}: {e}", path=str(CFG_PATH), e=_plain(str(e))))]
+    if not isinstance(doc, dict):
+        # No exception was raised, so the cause slot is filled from the existing sentence
+        # for exactly this shape. It still goes through _plain(): every {e} in this block
+        # does, so no later edit can put foreign text in one that does not.
+        return [(DOCTOR_UNKNOWN, "IPv6 (AAAA)",
+                 t("cannot read {path}: {e}", path=str(CFG_PATH),
+                   e=_plain(t("the top level must be a JSON object"))))]
+    dns = doc.get("dns")
+    rules = dns.get("rules") if isinstance(dns, dict) else None
+    if isinstance(rules, list) and _aaaa_rule(suppress) in rules:
+        return [(DOCTOR_OK, "IPv6 (AAAA)",
+                 t("{decision}; config.json carries this decision", decision=sentence))]
+    return [(DOCTOR_PROBLEM, "IPv6 (AAAA)",
+             t("{decision}; config.json does not carry this decision — run `sc reload` "
+               "to regenerate it", decision=sentence))]
+
+
 def _doctor_service():
-    """S4 — running now, and registered to start at boot: two separate facts.
+    """S5 — running now, and registered to start at boot: two separate facts.
 
     The init-system check runs FIRST, so is_running()'s hard False on a host with neither
     systemd nor OpenRC is never rendered as "not running".
@@ -2540,7 +2684,7 @@ def _doctor_service():
 
 
 def _doctor_tun():
-    """S5 — does this project's TUN device exist, and what addresses does it carry?
+    """S6 — does this project's TUN device exist, and what addresses does it carry?
 
     `ip`'s operstate is deliberately not printed: for a TUN device it reads literally
     UNKNOWN and would collide with the outcome-class vocabulary.
@@ -2566,29 +2710,94 @@ def _doctor_tun():
 
 
 def _doctor_clash():
-    """S6 — the persisted Clash API port, and whether it answers.
+    """S7 — the persisted Clash API port, whether it answers, how many nodes carry a
+    stored delay, and one measured name lookup through the running install.
 
     The port comes from settings only. doctor never probes for a free port (that would
     report "unreachable" as a tautology) and never reads the module-level CLASH_PORT,
     which a doctor run deliberately leaves unresolved.
+
+    The last two rows live HERE, not in sections of their own, because both depend on the
+    fact this section already holds — did the API answer? — and asking again would be a
+    second request and a second opinion. Both are computed ONLY on the branch where
+    /configs answered: with no port recorded, or with nothing answering, they are UNKNOWN
+    and NO request and no lookup is issued at all. Neither adds a try/except around
+    clash_api(): it is total, and a second envelope is the defect, not the fix.
+
+    Nothing here claims a fresh measurement of a node: the Clash API serves a url-test
+    HISTORY. The DNS row's milliseconds ARE measured, around the one call — and no row
+    states a timeout value or a wall-clock bound, because urlopen(timeout=N) bounds each
+    socket operation and not the call.
     """
     port = _saved_clash_port()
     if port is None:
+        pending = t("not probed — no port recorded")
         return [(DOCTOR_UNKNOWN, "Clash API", t("no port recorded in settings.json")),
-                (DOCTOR_UNKNOWN, "Clash API responding", t("not probed — no port recorded"))]
-    rows = [(DOCTOR_OK, "Clash API", "127.0.0.1:%d" % port)]
+                (DOCTOR_UNKNOWN, "Clash API responding", pending),
+                (DOCTOR_UNKNOWN, "node delays", pending),
+                (DOCTOR_UNKNOWN, "DNS lookup", pending)]
+    addr = "127.0.0.1:%d" % port
+    rows = [(DOCTOR_OK, "Clash API", addr)]
     answer = clash_api("GET", "/configs", port=port)
-    # `is not None`: an empty body legitimately answers with {}, which is falsy.
-    if answer is not None:
-        rows.append((DOCTOR_OK, "Clash API responding", t("yes")))
+    # `is None`: an empty body legitimately answers with {}, which is falsy.
+    if answer is None:
+        # States what was observed and nothing about why: a refusal, a reset, a bad status
+        # and a slow peer all arrive here identically, and the row above names the port.
+        pending = t("not probed — the Clash API did not answer")
+        return rows + [(DOCTOR_PROBLEM, "Clash API responding",
+                        t("no usable answer from {addr}", addr=addr)),
+                       (DOCTOR_UNKNOWN, "node delays", pending),
+                       (DOCTOR_UNKNOWN, "DNS lookup", pending)]
+    rows.append((DOCTOR_OK, "Clash API responding", t("yes")))
+    try:
+        nodes = load_nodes()["nodes"]
+        total = len(nodes)
+        tags = set(node["tag"] for node in nodes)
+    except (OSError, ValueError, TypeError, KeyError) as e:
+        # Absent, unreadable, not UTF-8, not JSON, or JSON of the wrong shape — one
+        # UNKNOWN row naming the file, never a traceback and never a fabricated count.
+        rows.append((DOCTOR_UNKNOWN, "node delays",
+                     t("cannot read {path}: {e}", path=str(NODES_PATH), e=_plain(str(e)))))
     else:
-        rows.append((DOCTOR_PROBLEM, "Clash API responding",
-                     t("no answer within the 3s timeout")))
+        if not total:
+            rows.append((DOCTOR_OK, "node delays", t("no nodes configured")))
+        else:
+            delays, current = stored_delays(port=port)
+            n = len(tags & set(delays))
+            if n:
+                rows.append((DOCTOR_OK, "node delays",
+                             t("{n}/{total} nodes carry a stored delay (history, not a "
+                               "fresh measurement); auto-select is on {current}",
+                               n=n, total=total,
+                               current=_plain(current or t("(none)")))))
+            else:
+                rows.append((DOCTOR_PROBLEM, "node delays",
+                             t("0/{total} nodes carry a stored delay — either no probe "
+                               "has completed yet or every node is failing; see `sc ls`",
+                               total=total)))
+    # One lookup, of the SAME name the egress row resolves, asked of the running install's
+    # own DNS router rather than of this host's resolver: on a machine whose TUN device is
+    # down a host-side lookup would silently measure the wrong thing. Read-only GET.
+    started = time.monotonic()
+    lookup = clash_api("GET", "/dns/query?name=" + EGRESS_HOST + "&type=A", port=port)
+    ms = int((time.monotonic() - started) * 1000)
+    if lookup is None:
+        rows.append((DOCTOR_PROBLEM, "DNS lookup",
+                     t("no answer for {name} after {ms} ms — try another node with "
+                       "`sc use <n>`", name=EGRESS_HOST, ms=ms)))
+    elif isinstance(lookup.get("Answer"), list) and lookup["Answer"]:
+        rows.append((DOCTOR_OK, "DNS lookup",
+                     t("{name} resolved in {ms} ms, through the running sing-box",
+                       name=EGRESS_HOST, ms=ms)))
+    else:
+        rows.append((DOCTOR_PROBLEM, "DNS lookup",
+                     t("{name} returned no records after {ms} ms — try another node with "
+                       "`sc use <n>`", name=EGRESS_HOST, ms=ms)))
     return rows
 
 
 def _doctor_egress():
-    """S7 — the observed public egress address.
+    """S8 — the observed public egress address.
 
     Unconditional, unlike `sc status`: "the service is down and my egress IP is my ISP
     address" is a confirmation, not noise. Makes no claim about whether it is proxied.
@@ -2599,16 +2808,101 @@ def _doctor_egress():
         return [(DOCTOR_PROBLEM, "egress IP", t("(error: {e})", e=_plain(str(e))))]
 
 
+def _doctor_permissions():
+    """S9 — does anything in the configuration directory grant access to group or other?
+
+    LAST, because a wrong mode explains no other row on the screen; the ordering rule puts
+    a row above another only when its failure would explain it.
+
+    Two predicates, both this project's own. A regular file is offending when
+    `mode & 0o077` — T-13's own test, the one the installer's sweep uses — and the
+    directory is offending only when `mode & 0o022`, i.e. group- or other-WRITABLE: that
+    is the rename-between-fchmod-and-replace window, whereas the world-readable traversable
+    mode every host has would fire on 100% of installs and teach people to ignore the row.
+    settings.json is the one exclusion (it carries no credential), and there is no filename
+    pattern anywhere — which is exactly how a hand-made `config.json.bak-<date>` at 0644,
+    invisible to any enumerated sweep, is caught.
+
+    REPORTS ONLY. It never chmods, never creates the directory, never follows a symlink
+    (lstat, so a planted link's target mode can never be printed as the link's) and never
+    descends into a sub-directory. It reads modes, never one byte of any file's CONTENT.
+    """
+    try:
+        dir_mode = CFG_DIR.stat().st_mode
+    except FileNotFoundError:
+        return [(DOCTOR_UNKNOWN, "file permissions",
+                 t("no directory at {path}", path=str(CFG_DIR)))]
+    except OSError as e:
+        return [(DOCTOR_UNKNOWN, "file permissions",
+                 t("cannot read {path}: {e}", path=str(CFG_DIR), e=_plain(str(e))))]
+    details = []
+    wide = 0
+    links = 0
+    if dir_mode & 0o022:
+        wide += 1
+        details.append(t("{path} is mode {mode} — run: {cmd}", path=_plain(str(CFG_DIR)),
+                         mode="%03o" % (dir_mode & 0o777),
+                         cmd="chmod go-w " + _plain(str(CFG_DIR))))
+    try:
+        entries = sorted(CFG_DIR.iterdir())
+    except OSError as e:
+        return [(DOCTOR_UNKNOWN, "file permissions",
+                 t("cannot read {path}: {e}", path=str(CFG_DIR), e=_plain(str(e))))]
+    for entry in entries:
+        try:
+            mode = entry.lstat().st_mode
+        except OSError:
+            # The entry went away between the listing and the read — a _write_private()
+            # temporary being renamed onto its target is exactly that, and doctor may not
+            # lock, retry or block. Skipping the vanished path costs one finding a re-run
+            # would make anyway, where degrading the section would cost every other path.
+            continue
+        if stat.S_ISLNK(mode):
+            links += 1
+            details.append(t("{path} is a symbolic link; sc never creates one here — "
+                             "check it with: ls -l {path}", path=_plain(str(entry))))
+        elif stat.S_ISREG(mode) and entry.name != "settings.json" and mode & 0o077:
+            wide += 1
+            details.append(t("{path} is mode {mode} — run: {cmd}", path=_plain(str(entry)),
+                             mode="%03o" % (mode & 0o777),
+                             cmd="chmod %03o %s" % (CRED_MODE, _plain(str(entry)))))
+    if wide:
+        # A wide mode outranks an unjudgeable link: one of them is actionable now.
+        rows = [(DOCTOR_PROBLEM, "file permissions",
+                 t("{n} path(s) grant access to group or other — run the command shown "
+                   "for each", n=wide))]
+    elif links:
+        rows = [(DOCTOR_UNKNOWN, "file permissions",
+                 t("{n} path(s) could not be judged — see below", n=links))]
+    else:
+        # Exactly one row on a clean host, naming no path: the report may not grow with
+        # the directory's contents when there is nothing to act on. It says CREDENTIAL
+        # file, not file: settings.json is excluded above whatever its mode, and
+        # save_settings() writes it 0644, so the wider sentence would be false on a
+        # default install — the promise stays exactly as wide as the check.
+        return [(DOCTOR_OK, "file permissions",
+                 t("no credential file grants access to group or other, and the "
+                   "directory is not group- or other-writable"))]
+    for line in details[:DOCTOR_MSG_LINES]:
+        rows.append((None, None, "    " + line))
+    if len(details) > DOCTOR_MSG_LINES:
+        rows.append((None, None, "    " + t("... {n} more line(s) not shown",
+                                            n=len(details) - DOCTOR_MSG_LINES)))
+    return rows
+
+
 # THE print order, and the only place it is decided: reading this tuple top to bottom is
 # the review of the causal ordering. No probe prints another section's rows.
 DOCTOR_SECTIONS = (
     ("sing-box binary", _doctor_binary),
     ("rule-sets", _doctor_rulesets),
     ("configuration", _doctor_config),
+    ("IPv6 (AAAA)", _doctor_ipv6),
     ("service", _doctor_service),
     ("TUN interface", _doctor_tun),
     ("Clash API", _doctor_clash),
     ("egress IP", _doctor_egress),
+    ("file permissions", _doctor_permissions),
 )
 
 
