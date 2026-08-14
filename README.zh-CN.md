@@ -242,7 +242,7 @@ sc telemetry show      # 显示当前设置以及名单中的每个域名
 ```bash
 sc on                  # 启动 + 开机自启
 sc off                 # 停止 + 取消开机自启
-sc status              # 查看服务状态、TUN 接口、当前节点、出口 IP
+sc status              # 查看服务状态、TUN 接口、规则集状态与更新时间、当前节点、出口 IP
 sc doctor              # 一次跑完的只读体检报告（见下）
 sc log -f              # 实时日志
 ```

@@ -13,6 +13,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -152,6 +153,7 @@ TRANSLATIONS = {
         "sing-box stopped + boot autostart disabled": "sing-box 已停止 + 已取消开机自启",
         "=== Service status ===": "=== 服务状态 ===",
         "=== TUN interface ===": "=== TUN 接口 ===",
+        "=== Rule-sets ===": "=== 规则集 ===",
         "=== Current node ===": "=== 当前节点 ===",
         "=== Route mode ===": "=== 路由模式 ===",
         "=== Clash API ===": "=== Clash API 端口 ===",
@@ -211,6 +213,11 @@ TRANSLATIONS = {
         "not a rule-set file": "不是规则集文件",
         "file too small": "文件过小",
         "unreadable": "无法读取",
+        "{n} seconds ago": "{n} 秒前",
+        "{n} minutes ago": "{n} 分钟前",
+        "{n} hours ago": "{n} 小时前",
+        "{n} days ago": "{n} 天前",
+        "last update unknown": "更新时间未知",
         "{done}/{total} bytes ({pct}%)": "{done}/{total} 字节（{pct}%）",
         "{done} bytes": "{done} 字节",
         "truncated: got {got} of {declared} bytes": "传输不完整：收到 {got}/{declared} 字节",
@@ -220,6 +227,7 @@ TRANSLATIONS = {
         "No rule-set changed — the sing-box service was not touched": "规则集内容无变化 —— 未改动 sing-box 服务",
         "Rule-sets updated: {names} — sing-box restarted to load them": "规则集已更新：{names} —— 已重启 sing-box 以加载新数据",
         "Rule-sets updated: {names} — the sing-box service was not touched": "规则集已更新：{names} —— 未改动 sing-box 服务",
+        "Rule-sets updated: {names} — the sing-box service could not be restarted": "规则集已更新：{names} —— sing-box 服务重启未成功",
         "→ Restarting sing-box ...": "→ 重启 sing-box ...",
         "Done": "完成",
         "Reloaded": "已重新加载",
@@ -759,22 +767,23 @@ def srs_reject_reason(head, size):
 
 
 def ruleset_state(path):
-    """Three facts about one rule-set file, from ONE read: (status, digest, size).
+    """Four facts about one rule-set file, from ONE read: (status, digest, size, mtime).
 
     status -- exactly one of "usable" | "absent" | "bad-magic" | "too-small" | "unreadable",
               decided by srs_reject_reason() and by nothing else.
     digest -- sha256 hex of the file's FULL content, or None.
     size   -- the byte count of that same read, or None.
+    mtime  -- st_mtime of the SAME open file object those bytes came from, or None.
 
     DIGEST CONTRACT (binding — changed_usable_tags() is only correct because of it):
 
-        size is None <=> digest is None  <=>  no complete read happened
-                                         <=>  status in {"absent", "unreadable"}
+        size is None <=> digest is None <=> mtime is None  <=>  no complete read happened
+                                                           <=>  status in {"absent", "unreadable"}
 
-    So a file read to EOF without error ALWAYS carries a real digest AND a real size,
-    including a readable EMPTY file: ("too-small", sha256(b"").hexdigest(), 0), because
-    zero bytes *were* read successfully. An OSError at any point — before or after N bytes
-    — yields ("unreadable", None, None) and NEVER a partial digest or a partial size, which
+    So a file read to EOF without error ALWAYS carries a real digest, size AND mtime,
+    including a readable EMPTY file: ("too-small", sha256(b"").hexdigest(), 0, <a time>), because
+    zero bytes *were* read successfully. An OSError at any point — the fstat() included
+    — yields ("unreadable", None, None, None) and NEVER a partial digest, size or mtime, which
     would be a content claim about bytes that were never fully read. None is therefore not
     a content value: two Nones are NOT "the same content", and changed_usable_tags() relies
     on that.
@@ -790,9 +799,10 @@ def ruleset_state(path):
     try:
         if not path.exists():
             # A dangling symlink does not exist, but it is broken rather than absent.
-            return ("unreadable", None, None) if path.is_symlink() else ("absent", None, None)
+            return (("unreadable", None, None, None) if path.is_symlink()
+                    else ("absent", None, None, None))
         if not path.is_file():
-            return ("unreadable", None, None)   # a directory, a fifo, ...
+            return ("unreadable", None, None, None)     # a directory, a fifo, ...
         with path.open("rb") as fh:
             while True:
                 chunk = fh.read(65536)      # same chunk size as _fetch_to_temp
@@ -803,10 +813,11 @@ def ruleset_state(path):
                 if len(head) < len(SRS_MAGIC):
                     # Accumulate: a first read shorter than the magic is legal.
                     head = (head + chunk)[:len(SRS_MAGIC)]
+            mtime = os.fstat(fh.fileno()).st_mtime      # same handle, inside the same try
     except OSError:
-        # a partial digest and a partial size are never returned
-        return ("unreadable", None, None)
-    return (srs_reject_reason(head, size) or "usable", digest.hexdigest(), size)
+        # a partial digest, a partial size and a stray timestamp are never returned
+        return ("unreadable", None, None, None)
+    return (srs_reject_reason(head, size) or "usable", digest.hexdigest(), size, mtime)
 
 
 def ruleset_status(path):
@@ -824,7 +835,7 @@ def ruleset_status(path):
 
 
 def ruleset_states():
-    """[(tag, filename, status, digest, size), ...] per rule-set, in RULESET_FILES order.
+    """[(tag, filename, status, digest, size, mtime), ...] per rule-set, in RULESET_FILES order.
 
     THE snapshot: cmd_update_rules takes exactly one before the downloads and one after
     them, and answers both "which rule-sets became usable" and "whose bytes really changed"
@@ -835,8 +846,8 @@ def ruleset_states():
     states = []
     for fname, _relpath in RULESET_FILES:
         tag = fname[:-4] if fname.endswith(".srs") else fname
-        status, digest, size = ruleset_state(RULES_DIR / fname)
-        states.append((tag, fname, status, digest, size))
+        status, digest, size, mtime = ruleset_state(RULES_DIR / fname)
+        states.append((tag, fname, status, digest, size, mtime))
     return states
 
 
@@ -846,7 +857,7 @@ def _status_view(states):
     generate_config() and usable_tags() destructure 3-tuples; this keeps both untouched,
     and it is where a widening of the snapshot tuple stops.
     """
-    return [(tag, fname, status) for tag, fname, status, _digest, _size in states]
+    return [(tag, fname, status) for tag, fname, status, *_rest in states]
 
 
 def ruleset_report():
@@ -873,9 +884,9 @@ def changed_usable_tags(before, after):
     re-read a file it cannot parse — the start-up failure the degradation work removed.
     Whatever we restart for, we restart only for a file sing-box will actually load.
     """
-    old = dict((tag, digest) for tag, _fname, _status, digest, _size in before)
+    old = dict((tag, digest) for tag, _fname, _status, digest, *_rest in before)
     changed = []
-    for tag, _fname, status, digest, _size in after:
+    for tag, _fname, status, digest, *_rest in after:
         if status != "usable":
             continue                    # a loss is not a change
         old_digest = old.get(tag)       # a tag absent from `before` reads as None
@@ -909,6 +920,24 @@ def _status_text(status):
         "too-small": t("file too small"),
         "unreadable": t("unreadable"),
     }.get(status, status)
+
+
+def _age_text(mtime):
+    """How long ago this rule-set file's bytes were written, as one short phrase.
+
+    THE one age renderer; it takes no command-specific argument, so any later screen calls
+    it unchanged. Must stay a function for _status_text()'s reason. mtime None (no complete
+    read, by ruleset_state's DIGEST CONTRACT) is the word form and NEVER a number — not 0,
+    not an epoch date; a timestamp ahead of the clock (host skew, a restored backup) is a
+    zero-length duration, never negative; one coarse unit, so 36 hours reads "1 days ago".
+    """
+    if mtime is None:
+        return t("last update unknown")
+    delta = max(0, int(time.time() - mtime))
+    for unit, key in ((86400, "{n} days ago"), (3600, "{n} hours ago"), (60, "{n} minutes ago")):
+        if delta >= unit:
+            return t(key, n=delta // unit)
+    return t("{n} seconds ago", n=delta)
 
 
 def _filter_rules(rules, usable):
@@ -1960,10 +1989,18 @@ def generate_config():
     return True
 
 def restart_service():
+    """Restart sing-box. True iff the init system's restart command reported success.
+
+    Neither init system ⇒ nothing was asked, so nothing failed: True (an arm nobody reads).
+    Stays check=False: raising into reload_or_restart's six callers is not this one's job.
+    """
     if SYSTEMD:
-        subprocess.run(["systemctl", "restart", SERVICE], check=False)
+        r = subprocess.run(["systemctl", "restart", SERVICE], check=False)
     elif OPENRC:
-        subprocess.run(["rc-service", SERVICE, "restart"], check=False)
+        r = subprocess.run(["rc-service", SERVICE, "restart"], check=False)
+    else:
+        return True
+    return r.returncode == 0
 
 
 def reload_or_restart():
@@ -2229,6 +2266,10 @@ def cmd_status(args):
         subprocess.run(["rc-service", SERVICE, "status"])
     print("\n" + t("=== TUN interface ==="))
     subprocess.run(["ip", "-br", "addr", "show", TUN_IFACE])
+    # Above is_running(): a stopped service is exactly where a stale rule-set matters.
+    print("\n" + t("=== Rule-sets ==="))
+    for _tag, fname, status, _digest, _size, mtime in ruleset_states():
+        print("%-20s %s, %s" % (fname, _status_text(status), _age_text(mtime)))
     if is_running():
         nodes_data = load_nodes()
         print("\n" + t("=== Current node ==="))
@@ -2360,7 +2401,7 @@ def _doctor_rulesets():
     summary_cls = DOCTOR_OK
     usable = 0
     rows = []
-    for _tag, fname, status, _digest, size in states:
+    for _tag, fname, status, _digest, size, *_rest in states:
         if status == "usable":
             usable += 1
             cls = DOCTOR_OK
@@ -2788,26 +2829,29 @@ def cmd_update_rules(args):
     after = ruleset_states()
     gained = sorted(usable_tags(_status_view(after)) - usable_tags(_status_view(before)))
     changed = changed_usable_tags(before, after)    # gained is a subset of changed
-    restarted = False
+    regen_ok = True     # hoisted: `ok` below is the run's ONE success record
+    restarted = None    # tri-state: None = not attempted, True/False = what it returned
     # THE apply decision — one per run, for the whole run. `changed` is empty unless some
     # rule-set's installed BYTES really differ from what was on disk before the downloads,
     # so a run that re-fetched four byte-identical files touches nothing at all.
     # No config yet (fresh install) ⇒ do nothing: the installer generates the first one.
     if changed and CFG_PATH.exists():
-        regen_ok = True
         if gained:
             # Recovery: regenerate (never patch) so the restored rule-sets are actually
             # used. Runs before the non-zero exit, so a partial recovery still repairs the
             # config, and a failed check still blocks the restart below.
             regen_ok = generate_config()
-            print(t("Rule-sets restored: {names} — config regenerated", names=", ".join(gained)))
+            if regen_ok:    # never claim a regeneration that did not happen
+                print(t("Rule-sets restored: {names} — config regenerated",
+                        names=", ".join(gained)))
         if regen_ok and is_running():
             print("\n" + t("→ Restarting sing-box ..."))
             # The restart is conditional on changed_usable_tags(); an unconditional restart
             # here is the T-10 defect — it dropped every live connection (a remote admin's
             # own SSH included) on every weekly timer run, for four unchanged files.
-            restart_service()
-            restarted = True
+            restarted = restart_service()
+    # THE determination: one expression, read by both the outcome sentence and the exit.
+    ok = not failed and regen_ok and restarted is not False
     # Exactly one truthful run-level outcome, always, before the exit: a run that ends
     # non-zero must still state what it did to the service.
     if not changed:
@@ -2815,11 +2859,17 @@ def cmd_update_rules(args):
     elif restarted:
         print(t("Rule-sets updated: {names} — sing-box restarted to load them",
                 names=", ".join(changed)))
+    elif restarted is False:
+        print(t("Rule-sets updated: {names} — the sing-box service could not be restarted",
+                names=", ".join(changed)))
     else:
         print(t("Rule-sets updated: {names} — the sing-box service was not touched",
                 names=", ".join(changed)))
     if failed:
-        sys.exit("\n" + t("{n} ruleset(s) failed to update", n=len(failed)))
+        sys.stdout.flush()      # sys.exit(<str>) flushed first; install.sh merges the streams
+        sys.stderr.write("\n" + t("{n} ruleset(s) failed to update", n=len(failed)) + "\n")
+    if not ok:
+        sys.exit(1)     # the ONE exit site: same record the outcome line was drawn from
     print(t("Done"))
 
 def cmd_update_interval(args):
@@ -2970,7 +3020,8 @@ COMMANDS
   rm <name|index>             Remove a node
   on                          Start sing-box and enable on boot
   off                         Stop sing-box and disable on boot
-  status                      Show service status, TUN interface, active node, egress IP
+  status                      Show service status, TUN interface, rule-set status + age,
+                              active node, egress IP
   doctor                      Diagnose the install: seven read-only checks, causal order
                                 changes nothing — no config, no download, no restart
                                 exit 0 = every section OK
@@ -3036,7 +3087,7 @@ HELP_ZH = """sc —— sing-box 命令行管理工具
   rm <名称|序号>              删除节点
   on                          启动 sing-box 并设置开机自启
   off                         停止 sing-box 并取消开机自启
-  status                      查看服务状态、TUN 接口、当前节点、出口 IP
+  status                      查看服务状态、TUN 接口、规则集状态与更新时间、当前节点、出口 IP
   doctor                      一键体检：按因果顺序执行七项只读检查
                                 全程只读 —— 不生成配置、不下载、不重启、不修复
                                 退出码 0 = 七项全部正常

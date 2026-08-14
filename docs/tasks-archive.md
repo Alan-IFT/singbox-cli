@@ -112,3 +112,48 @@ not four. The fifth is `ConnectionResetError` / `RemoteDisconnected` (`urllib`'s
 the sixth is `BadStatusLine`, which is neither an `OSError` nor a `ValueError`. Two of the six were
 unknown to the pipeline until its last stage ran — which is why the family tuple was taken over the
 leaf enumeration. Evidence in `docs/features/_archived/status-egress-via-clash-api/06_TEST_REPORT.md`.
+
+## Rotated 2026-08-14 (during `ruleset-staleness-visibility` / T-19 delivery)
+
+`docs/tasks.md` was at 298 of its 300-line F.5 cap with T-19's row and five new open rows to
+file. Rotated: **T-18's Completed row** (genuinely closed by shipped work, commit `1e454b6`'s
+successor — the only Completed row available), and the **T-02 follow-up block**, which is the
+oldest never-numbered set on the board and whose items have been superseded or absorbed
+(item 2 became R-19; items 4-6 describe `cmd_update_rules` output that T-10, T-14 and T-19 have
+since rewritten). **The T-02 items are still open** — they are preserved verbatim below, not
+closed, and a task touching those regions should read them here.
+
+| ID | Slug | Outcome | Completed | Doc folder |
+|---|---|---|---|---|
+| T-18 | status-egress-via-clash-api | **DELIVERED** — **the batch goal's stated cause was a phantom, and refuting it was the largest saving.** Stage 1 established that `_egress_ip()` has no proxy argument in **any** commit of `bin/sc` back to `41ffd08` — it is one bare `urlopen("https://api.ipify.org", timeout=8)`, so in pure TUN the request is captured by the TUN device like any other and the probe reports the *proxied* address. There was no local-inbound assumption to fix; implementing the goal as written would have added a proxy path or a second address query for a defect that does not exist (the T-16 precedent, applied successfully). AC-S1 then **froze `_egress_ip()` byte-identical** so no downstream stage could "fix" the phantom, and stages 4/5/6 each verified the freeze independently by AST-extract + sha256 against a HEAD clone. The slug's own "via clash api" was declined too (Q-4): sing-box's Clash API reports no egress address, and consuming one would create the **second opinion** `docs/dev-map.md` pins `_egress_ip()` to prevent. What shipped is the goal's *second* clause at the seam it actually lives on: **`clash_api()` made total** — `except (OSError, ValueError, http.client.HTTPException)` plus one `isinstance(body, dict)` gate after the empty-body `{}`. **`bin/sc` +12/−6, no net import** (`urllib.error` deleted, `http.client` added), **no call site edited** — all five were already correct against the new contract, so one edit closes `sc status`, `sc ls`, `sc use`, `sc mode` and `sc doctor` together. **R-20 claimed and closed, and it was wider than filed: six escaping classes, not four.** Stage 4 found the fifth (`ConnectionResetError` — `do_open` wraps only `h.request()`'s `OSError` into `URLError` and bare-re-raises `h.getresponse()`'s) and stage 6 the sixth (`BadStatusLine`, neither an `OSError` nor a `ValueError`) — two of six leaves unknown to the pipeline until the last stage ran, which is the strongest possible argument for the family tuple over the leaf enumeration rule 85 made stage 2 justify. **Rule 85's burden of proof was met and then tested**: stage 2 named `except Exception` as the *smaller* rejected alternative and said what the extra line buys (a defect inside `clash_api()` would otherwise be reported as `[PROBLEM] Clash API responding` — `sc doctor` lying about the host to cover a bug in `sc`); stage 3 tested that against the **installed** stdlib and `README.md:268` and found the design **correct in code but wrong in published surface**, the same shape as T-17's finding (→ C-8). The gate also found three things neither upstream document caught: a **third vacuity trap** (`main()` reassigns `CLASH_PORT` as it does `LANG`, so a fixture without `clash_api_port` gets a port free *by construction* and the whole matrix silently degrades to "nothing listening" on candidate **and** control), two unenumerated call-site changes (`sc use` now regenerates+restarts, `sc mode` prints success), and a control that HEAD does not exhibit (`json.loads("null")` is `None`, making `null` an *agreement* state while `5`/`"x"`/`[1,2]` traceback). **1 rollback** (stage 5 → 4, documentation only: the changelog stated the `sc doctor` exit move as 2 → 1 for all five classes, but the non-object class previously printed a *lying* `[正常]` row and moves 0 → 1; the reviewer offered a waiver and the PM declined it, because rule 85's 「少就是多」 is explicitly about published surface). **T-05's DEF-2 closed on evidence, not argument** (C-3): at BC-1 the candidate yields exit 1 with the port row present, the HEAD control exit 2 with it lost. QA rebuilt its rig from scratch: **262 observations, 260 pass, 0 fail, 2 BLOCKED reported as blocked and never substituted** — AC-B1/AC-B2's live root run needs an interactive sudo credential the agent does not have (→ R-31). Non-vacuity proven across 204 fixture runs: runs talking to a port other than their own stand-in = 0, runs opening no Clash URL = 0, runs touching the live port = 0. The behavioural goal itself **was** observed — the candidate printed egress `38.47.117.142`, matching three independent echo endpoints, with route mode read back as `Rule`. `verify_all PASS 17 / WARN 0 / FAIL 0 / SKIP 1` — batch baseline preserved, never lowered, re-run by the PM at three checkpoints. Live service provably untouched (`MainPID=2566751` + `ActiveEnterTimestamp`, never `is-active`); `/usr/local/bin/sc` never invoked; only live traffic in the whole pipeline was two read-only `GET /configs`. Product diff 3 files, **+15/−7**. | 2026-08-14 | `docs/features/_archived/status-egress-via-clash-api/` (mode: full) |
+
+### Still-open rows rotated for space (NOT closed)
+
+### Follow-up rows surfaced by T-02 (not yet filed — owner to number them)
+
+Each was found by a stage agent, judged out of scope by the gate or the PM, and deliberately
+**re-homed rather than dropped**:
+
+1. **Python-floor violations — five sites, not two.** `capture_output=` (3.7+) at `bin/sc:822`,
+   `:864`, `:1159`, plus `text=True` (3.7+) at `:822`, `:1159`. The documented 3.6+ floor is already
+   false today. Either lower the code or raise the floor in both READMEs and `CHANGELOG.md`.
+   *(Requirement Q9 counted two; the gate reviewer found the third, the code reviewer the rest.)*
+2. **`TRANSLATIONS` has no `en` table**, so `t()` returns the key verbatim in English — `bin/sc:642`
+   already prints a literal `ls.idx`. Constrains every future key to readable English prose.
+3. **`--mirror` sudo/scheme hardening.** `--mirror` survives the auto-elevate re-exec (argv is
+   preserved even though the environment is not) and `urlopen` accepts `file://`. Privilege impact
+   negligible; the requirement's security NFR is nonetheless stale. A `http`/`https` allow-list is
+   a one-line fix.
+4. **D-4** — a local disk fault (ENOSPC, `replace()` EPERM) is reported as a *mirror* failure and
+   leaks the internal temp path. A-1 widened this to a second surface: it can now appear on a
+   success line as well as a failure line, so a fix must test both.
+5. **D-5** — stray blank line before the restart notice in `cmd_update_rules`.
+6. **`_temp_path` prefix coupling** — `_clear_stale_temps` builds `fname + ".tmp"` independently, so
+   the `".tmp"` literal is written twice and coupled only by convention.
+
+### Carried to T-07
+
+Restricted-network end-to-end verification (never reproduced here — no such VM), the four items QA
+left honestly unverified (BC-25, the D-2 escalation, AC-26 on a real 3.6 interpreter, BC-32), and
+QA's 846-assertion harness, which T-07 should inherit in preference to the developer's.
+

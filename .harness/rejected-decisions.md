@@ -363,3 +363,46 @@
   tested rather than accepted at stage 3 (`03_RATIONALE.md` §1, hierarchy read from the installed
   stdlib) and confirmed at stage 5 (CR-4). Filed by the PM at delivery because `.harness/**` was
   outside the task's permitted diff (design residual R2).
+
+## `ruleset-timestamp-outside-the-single-reader` — declined 2026-08-14 (T-19)
+
+**The approach:** obtain a rule-set's age at the display site — `cmd_status()` (and later `sc doctor`)
+calling `os.stat(RULES_DIR / fname).st_mtime` next to `ruleset_report()` — instead of widening
+`ruleset_state()`'s tuple. It is the genuinely smaller design on line count: it saves the five widened
+return sites, the three destructuring edits and one extended contract, about seven edited lines, and
+rule 85's 「少就是多」 makes the burden of proof the *larger* design's.
+
+**Why declined.** A second query is a second opinion about the same file, which is the defect this
+subsystem was built to remove (T-02's one usability judgment; T-05's "size comes from the byte counter
+inside the one existing reader — `st_size` appears nowhere on the graph"). Concretely it can pair a
+digest from one inode with an mtime from another — installation is `tmp.replace(target)`, an inode
+swap, so a descriptor already open on the target keeps the old inode while a later `path.stat()`
+describes the new one — and it can pair an `absent` status with a live age. The display-site form also
+needs its own `try/except OSError` and a decision about the disagreement, which the seven-line saving
+does not count.
+
+**What actually carried the ruling, tested at stage 3 rather than accepted.** The gate reproduced the
+race and judged it real in mechanism but low-materiality (a weekly timer against a hand-typed
+`sc status`), and would not have approved on it alone. Three non-probabilistic reasons carried it:
+FR-1/AC-S1 make the single reader binding; `docs/dev-map.md`'s standing "never form a second opinion"
+is a project rule the display-site `stat()` violates directly; and **the future edit it prevents is
+nameable** — T-20's `sc doctor` rule-set-age row lands as one `_age_text(mtime)` call inside
+`_doctor_rulesets()`'s existing loop instead of a second stat site. Rule 85's counter-rule asks exactly
+that ("if you cannot name the future edit it prevents, it is not justified"), and here it is named.
+
+**What shipped instead:** `os.fstat(fh.fileno()).st_mtime` inside `ruleset_state()`'s existing
+`with path.open("rb")` block and inside its existing `try`, so the timestamp describes the same bytes
+that produced the status and the digest, and the binding DIGEST CONTRACT extends to one chain —
+`mtime is None ⟺ size is None ⟺ digest is None ⟺ status in {absent, unreadable}`. `st_size` still
+appears in no code. Verified at stage 6: `ruleset_state()` makes `{stat: 0, fstat: 1, lstat: 0}` calls,
+so the timestamp costs one `fstat` on an already-open handle and adds no read of its own.
+
+**Also declined, as *larger* rather than smaller:** reusing `sc doctor`'s rows by calling
+`_doctor_rulesets()` from `cmd_status()`. It drags `DOCTOR_OK`/`DOCTOR_PROBLEM` and `_doctor_print()`'s
+column contract into a facts screen and imports a verdict vocabulary Q-4 forbids — T-19 ships age as a
+datum, with no staleness threshold and no stale/fresh conclusion anywhere.
+
+**Origin:** T-19 `ruleset-staleness-visibility`, `02_SOLUTION_DESIGN.md` I-1 / K-1 / `## Smaller
+alternative rejected` half 1; tested at stage 3 (`03_RATIONALE.md` §1) and confirmed against the code at
+stage 5. Filed by the PM at delivery because `.harness/**` is outside the task's permitted diff
+(design residual RS-6).

@@ -242,7 +242,7 @@ Except one of ours — this one resolves `hm.baidu.com` normally while the other
 ```bash
 sc on                  # start + enable on boot
 sc off                 # stop + disable on boot
-sc status              # service status, TUN interface, current node, egress IP
+sc status              # service status, TUN interface, rule-set status + age, current node, egress IP
 sc doctor              # one-pass read-only health report (see below)
 sc log -f              # follow logs in real time
 ```
