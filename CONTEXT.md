@@ -169,6 +169,15 @@ or its remainder — so a scheme's grammar is a choice of projection, never a se
 recovered from base64 was never URI text and is deliberately outside it.
 _Avoid_: `urlparse().username`, credential parsing, userinfo helper, split the password
 
+**state document**:
+A JSON document `sc` both authors and reads back as its own persistent state — `settings.json` and
+`nodes.json`, and those two only. One reader decodes every state document as UTF-8 independently of
+the process locale, applies exactly one top-level shape check, and answers *usable* / *absent* /
+*unusable*; every writer emits UTF-8 with non-ASCII literal. The user's `override.json` is **not**
+one (it is untrusted input, with its own size cap and policies), and neither is `config.json` (a
+document `sc` emits *for sing-box*, whose readers deliberately keep their own decoding).
+_Avoid_: config file, settings file, data file, state file (the file is not the category)
+
 ## Project intent
 
 **singbox-cli is a headless v2rayN.** Stated by the owner 2026-08-01: 「初衷是实现一个类似于非桌面版

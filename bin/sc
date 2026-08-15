@@ -349,6 +349,7 @@ TRANSLATIONS = {
             "{path} 曾被 sc 以外的方式修改，这些改动即将被覆盖；如需保留，请写入 {override}。",
         "not valid JSON ({err})": "不是有效的 JSON（{err}）",
         "the top level must be a JSON object": "顶层必须是一个 JSON 对象",
+        "the \"{member}\" member must be a JSON array": "\"{member}\" 成员必须是 JSON 数组",
         "not a regular file": "不是普通文件",
         "a symbolic link whose target {target} does not exist":
             "是一个符号链接，但其目标 {target} 不存在",
@@ -386,10 +387,9 @@ CLASH_PORT = CLASH_PORT_BASE  # re-resolved in main() via _resolve_clash_port()
 
 
 def _load_lang():
-    try:
-        return json.loads(SETTINGS_PATH.read_text()).get("lang", "en")
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        return "en"
+    """The language — and, because main() calls this once BEFORE assigning LANG, THE
+    once-per-run announcement that settings.json could not be used, in English."""
+    return _settings_or_empty(warn=True).get("lang", "en")
 
 
 def _free_port(base, span):
@@ -412,11 +412,7 @@ def _saved_clash_port():
     *by construction* and then report it unreachable, which is a tautology, and
     persisting it would make a diagnostic invent the state it is diagnosing.
     """
-    try:
-        settings = load_settings()
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        return None
-    port = settings.get("clash_api_port")
+    port = _settings_or_empty().get("clash_api_port")
     return port if isinstance(port, int) and 1 <= port <= 65535 else None
 
 
@@ -437,8 +433,9 @@ def _resolve_clash_port():
     # every install that predates the port auto-probe — the exact hosts this branch runs on.
     try:
         settings = load_settings()
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        settings = {}
+    except OverrideError:
+        # Never replace a document sc could not read: use the probed port, write nothing.
+        return port
     settings["clash_api_port"] = port
     try:
         save_settings(settings)
@@ -506,7 +503,8 @@ def _write_private(path, text):
         prefix=path.name + ".tmp." + str(os.getpid()) + ".")
     try:
         os.fchmod(fd, CRED_MODE)
-        fh = os.fdopen(fd, "w")          # fh owns the fd from here
+        # encoding= picks only the codec; the fchmod above already made the mode exact.
+        fh = os.fdopen(fd, "w", encoding="utf-8")   # fh owns the fd from here
         fd = -1
         try:
             fh.write(text)
@@ -536,28 +534,74 @@ def _init_files():
         # ensure_ascii=False, and this path inherits save_nodes()' loud failure.
         save_nodes({"active": None, "nodes": []})
     if not SETTINGS_PATH.exists():
-        SETTINGS_PATH.write_text(json.dumps(
-            {"default_tun": True, "mode": "rule", "lang": "en"}, indent=2))
+        # Through save_settings(), like the nodes seed above: it was the SECOND writer.
+        save_settings({"default_tun": True, "mode": "rule", "lang": "en"})
+
+
+def _unusable(path, problem):
+    """A state document's failure, carrying WHOSE document it was; returned, not raised."""
+    failure = OverrideError(problem)
+    failure.path = path
+    return failure
+
+
+def _read_state(path, default=None, member=None):
+    """THE reader of a state document (settings.json / nodes.json), and the only one: the
+    document (a dict, and with `member` one whose `member` value is a list), the caller's
+    `default` for an absent file (`default is None` means absence is a failure), or an
+    OverrideError carrying a translated cause and the failing path — which is how 16
+    unguarded callers get a sentence and an exit status for free. read_bytes() + an
+    explicit "utf-8", never read_text(); claims nothing below the top level."""
+    try:
+        doc = json.loads(path.read_bytes().decode("utf-8"))
+    except OSError as e:
+        if default is not None and isinstance(e, FileNotFoundError):
+            return default
+        raise _unusable(path, t("cannot be read ({err})", err=e.strerror or str(e)))
+    except UnicodeDecodeError:
+        raise _unusable(path, t("not valid UTF-8 text"))
+    except ValueError as e:
+        raise _unusable(path, t("not valid JSON ({err})", err=str(e)))
+    if not isinstance(doc, dict):
+        raise _unusable(path, t("the top level must be a JSON object"))
+    if member is not None and not isinstance(doc.get(member), list):
+        raise _unusable(path, t("the \"{member}\" member must be a JSON array", member=member))
+    return doc
 
 
 def load_nodes():
-    return json.loads(NODES_PATH.read_text())
+    return _read_state(NODES_PATH, member="nodes")
 
 
 def save_nodes(d):
     try:
         _write_private(NODES_PATH, json.dumps(d, indent=2, ensure_ascii=False))
-    except OSError as e:
+    # ValueError = the UnicodeEncodeError a lone surrogate raises; it has no .strerror.
+    except (OSError, ValueError) as e:
         sys.exit(t("Could not write {path}: {err}",
-                   path=NODES_PATH, err=_plain(e.strerror or str(e))))
+                   path=NODES_PATH, err=_plain(getattr(e, "strerror", None) or str(e))))
 
 
 def load_settings():
-    return json.loads(SETTINGS_PATH.read_text())
+    return _read_state(SETTINGS_PATH, default={})
+
+
+def _settings_or_empty(warn=False):
+    """THE degrade: the only place deciding that an unusable settings.json means an EMPTY
+    settings document. Never raises, never exits, writes nothing; warn=True adds the run's
+    ONE stderr line. Not for a read-modify-write — {} would clobber a repairable file."""
+    try:
+        return load_settings()
+    except OverrideError as e:
+        if warn:
+            sys.stderr.write("⚠️  " + _plain(t("Cannot use {path}: {problem}",
+                                               path=SETTINGS_PATH, problem=str(e))) + "\n")
+        return {}
 
 
 def save_settings(d):
-    SETTINGS_PATH.write_text(json.dumps(d, indent=2))
+    # Locale-independent bytes, non-ASCII literal; mode and mechanism unchanged.
+    SETTINGS_PATH.write_text(json.dumps(d, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 # ============ Share-URL parsers ============
@@ -1177,8 +1221,8 @@ def _fetch_to_temp(url, tmp, prefix, tty):
 
 
 class OverrideError(Exception):
-    """A user override that cannot be applied. Carries an already-translated problem
-    sentence; the ONE place it is rendered is main()'s handler.
+    """A JSON document that cannot be used — the user's override, or a state document sc
+    authors itself. Carries an already-translated sentence; main()'s handler renders it.
 
     Deliberately a direct Exception subclass rather than a ValueError: an unrelated
     ValueError raised by a bug somewhere below must never reach the user dressed up as
@@ -1559,7 +1603,7 @@ def _ipv6_setting():
     Absence IS "auto" (nothing ever seeds the key), so a host upgrading to this build and
     a fresh install behave identically and _init_files() needs no change. Shaped like
     _saved_clash_port(): an unreadable or malformed settings.json degrades to the default
-    silently, because a setting nobody set is not a failure and this must not become a new
+    quietly (the run's one warning line is _load_lang()'s), because this is not a new
     way for `sc` to break on a host whose settings.json is already broken.
 
     A value that is PRESENT but not one of the three is different — that is a hand-edit
@@ -1568,10 +1612,7 @@ def _ipv6_setting():
 
     Reads one file; writes nothing.
     """
-    try:
-        settings = load_settings()
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        return "auto"
+    settings = _settings_or_empty()
     if "ipv6" not in settings:
         return "auto"
     value = settings["ipv6"]
@@ -1760,22 +1801,9 @@ def _telemetry_setting():
 
     Absence IS "block" (nothing ever seeds the key), so a host upgrading to this build and a
     fresh install behave identically and _init_files() needs no change. Shaped like
-    _ipv6_setting(), guard tuple included: an absent, unreadable or non-JSON settings.json
-    degrades to the default silently, because a setting nobody set is not a failure and this
-    must not become a new way for `sc` to break on a host whose settings.json is already
-    broken.
-
-    THE SILENCE HAS TWO HOLES, both measured, both pre-existing, and neither widened here:
-      * a settings.json that is not valid UTF-8 raises through this guard, because
-        Path.read_text() raises UnicodeDecodeError and that is a ValueError, NOT an
-        OSError. `sc ipv6 show` behaves identically on the same file — it is the same guard
-        tuple and the same hole (R-25's family owns it), not something this list introduced.
-      * cmd_telemetry()'s SET form does not reach this function's guard at all: it calls
-        load_settings() directly, exactly as cmd_ipv6() does, and load_settings() is a bare
-        json.loads(read_text()), so `sc telemetry block` on a host whose settings.json is
-        not valid JSON raises a traceback.
-    So "no traceback" is scoped to THIS function against an absent / unreadable / non-JSON
-    file, and no user-facing text anywhere claims `sc telemetry` is traceback-free.
+    _ipv6_setting(), reader included: an absent, unreadable, non-UTF-8, non-JSON or
+    wrong-shaped settings.json degrades to the default — and both holes this docstring
+    once listed are closed, cmd_telemetry()'s SET form now aborting with a sentence.
 
     A value that is PRESENT but not one of the two is different — a hand-edit that did not
     take effect, so it earns one stderr line naming the file, the key and the two accepted
@@ -1787,10 +1815,7 @@ def _telemetry_setting():
 
     Reads one file; writes nothing; performs no service-affecting action.
     """
-    try:
-        settings = load_settings()
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        return "block"
+    settings = _settings_or_empty()
     if "telemetry" not in settings:
         return "block"
     value = settings["telemetry"]
@@ -2077,9 +2102,9 @@ def generate_config():
     # Ordering versus `sing-box check` is unchanged: the config is written first.
     try:
         _write_private(CFG_PATH, json.dumps(config, indent=2, ensure_ascii=False))
-    except OSError as e:
-        sys.stderr.write("⚠️  " + t("Could not write {path}: {err}",
-                                    path=CFG_PATH, err=_plain(e.strerror or str(e))) + "\n")
+    except (OSError, ValueError) as e:
+        sys.stderr.write("⚠️  " + t("Could not write {path}: {err}", path=CFG_PATH,
+                                    err=_plain(getattr(e, "strerror", None) or str(e))) + "\n")
         return False
     _record_generated()     # only after the document really reached disk
 
@@ -2763,7 +2788,7 @@ def _doctor_clash():
         nodes = load_nodes()["nodes"]
         total = len(nodes)
         tags = set(node["tag"] for node in nodes)
-    except (OSError, ValueError, TypeError, KeyError) as e:
+    except (OverrideError, TypeError, KeyError) as e:
         # Absent, unreadable, not UTF-8, not JSON, or JSON of the wrong shape — one
         # UNKNOWN row naming the file, never a traceback and never a fabricated count.
         rows.append((DOCTOR_UNKNOWN, "node delays",
@@ -3673,7 +3698,7 @@ def main():
     try:
         handlers.get(args.cmd, cmd_help)(args)
     except OverrideError as e:
-        # THE one rendering site for a user override that cannot be applied. Assembling
+        # THE one rendering site for any unusable document, not just the user's. Assembling
         # the whole sentence here and passing it through _plain() ONCE is what makes the
         # non-TTY contract true for every foreign fragment inside it (a key name, an
         # anchor, an OS message) without a _plain() call at each raise site. The newline
