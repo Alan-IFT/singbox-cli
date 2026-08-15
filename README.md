@@ -91,11 +91,11 @@ With at least one node added, `sc` also emits an **auto-select group** tagged `a
 `sc ls` shows the group on a row of its own, with no index number, and its address column names the node the group is on right now:
 
 ```text
-ls.idx  ls.active  ls.type     ls.name       ls.address        Delay
-      ●   urltest     auto          → JP-2           141 ms
-   1      vless       US-1          1.1.1.1:443      210 ms
-   2      vless       JP-2          2.2.2.2:443      141 ms
-   3      vless       SG-3          3.3.3.3:443           -
+   #  On  Type        Name                            Address                        Delay
+      ●   urltest     auto                            → JP-2                        141 ms
+   1      vless       US-1                            1.1.1.1:443                   210 ms
+   2      vless       JP-2                            2.2.2.2:443                   141 ms
+   3      vless       SG-3                            3.3.3.3:443                        -
 ```
 
 The delay figure is **not a measurement `sc` takes**: it is a value the running sing-box already holds, produced by the group's own probing and read once over the Clash API. It therefore exists only while the group is in use — on a host pinned to a single node the group is idle, probing stops, and the column shows `-` everywhere (or keeps showing the last values it had). `-` means "no stored delay", never "0 ms" and never "unreachable"; with the service stopped `sc` issues no query at all and every cell is `-`.
@@ -294,7 +294,7 @@ What is masked:
 
 A masked value is always the same literal, `******`. Only the **value** is replaced — the key stays — so which fields are configured stays visible while their contents do not.
 
-The document goes to **stdout** and everything `sc` says about it goes to **stderr**, so `sc config > current.json` yields a JSON document a parser accepts, and `sc config | grep -n server_name` works. The stderr notes give the file's absolute path, state that credentials are masked, and — when a drift record exists — say whether the document on disk is what `sc` last generated or has been changed since.
+The document goes to **stdout** and everything `sc` says about it goes to **stderr**, so `sc config > current.json` yields a JSON document a parser accepts — whenever stdout's encoding can represent that document — and `sc config | grep -n server_name` works. On a stdout that cannot represent it (a non-UTF-8 locale, or `PYTHONIOENCODING` set to a narrower codec), a character `sc` cannot encode is written as a backslash escape instead of ending the run, and `\xNN` / `\UNNNNNNNN` are not JSON escapes — so the saved file is then **not** valid JSON. Run the command under a UTF-8 stdout to get one. The stderr notes give the file's absolute path, state that credentials are masked, and — when a drift record exists — say whether the document on disk is what `sc` last generated or has been changed since.
 
 **`sc config` writes nothing.** No file is created, modified or removed anywhere, not even `/etc/sing-box` itself on a host that does not have it; it downloads nothing, starts nothing, touches no service, and forms no opinion about whether the configuration is *valid* — that is `sc doctor`'s answer.
 

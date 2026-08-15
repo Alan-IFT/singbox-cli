@@ -5,6 +5,7 @@ import base64
 import copy
 import hashlib
 import http.client
+import io
 import json
 import os
 import shutil
@@ -209,7 +210,7 @@ TRANSLATIONS = {
         "this setting to a configuration generated before it":
             "设置无变化 —— 未改动 sing-box 服务；若当前配置生成于该设置之前，"
             "请运行 `sc reload` 使其生效",
-        "OK ({size} bytes)": "成功（{size} 字节）",
+        "OK ({size} byte(s))": "成功（{size} 字节）",
         "failed: {e}": "失败：{e}",
         # rule-sets: degradation warning, per-file status, download progress
         "{n}/{total} rule-sets unusable ({names}) — degraded to no-splitting mode: all traffic uses the default outbound. Run `sc update-rules` (or `sc reload` once the files are in place) to restore.":
@@ -220,14 +221,16 @@ TRANSLATIONS = {
         "not a rule-set file": "不是规则集文件",
         "file too small": "文件过小",
         "unreadable": "无法读取",
-        "{n} seconds ago": "{n} 秒前",
-        "{n} minutes ago": "{n} 分钟前",
-        "{n} hours ago": "{n} 小时前",
-        "{n} days ago": "{n} 天前",
+        # One rendered form per phrase, correct at every value of {n} — `(s)` is the whole
+        # mechanism, and there is no plural selection anywhere in this file.
+        "{n} second(s) ago": "{n} 秒前",
+        "{n} minute(s) ago": "{n} 分钟前",
+        "{n} hour(s) ago": "{n} 小时前",
+        "{n} day(s) ago": "{n} 天前",
         "last update unknown": "更新时间未知",
         "{done}/{total} bytes ({pct}%)": "{done}/{total} 字节（{pct}%）",
-        "{done} bytes": "{done} 字节",
-        "truncated: got {got} of {declared} bytes": "传输不完整：收到 {got}/{declared} 字节",
+        "{done} byte(s)": "{done} 字节",
+        "truncated: got {got} of {declared} byte(s)": "传输不完整：收到 {got}/{declared} 字节",
         "skipped (this source already failed in this run)": "已跳过（该源在本次运行中已失败）",
         "; fell back after: {causes}": "；已回退，前序镜像未成功：{causes}",
         "Rule-sets restored: {names} — config regenerated": "规则集已恢复：{names} —— 配置已重新生成",
@@ -238,15 +241,16 @@ TRANSLATIONS = {
         "→ Restarting sing-box ...": "→ 重启 sing-box ...",
         "Done": "完成",
         "Reloaded": "已重新加载",
-        # ls table headers
-        "ls.idx": "序号",
-        "ls.active": "激活",
-        "ls.type": "协议",
-        "ls.name": "名称",
-        "ls.address": "地址",
-        # An English sentence used as the key, NOT a sixth `ls.*` — those five print
-        # literally in English because TRANSLATIONS has no `en` table, and that defect is
-        # not a pattern to copy.
+        # ls table headers. Each key IS the English heading — there is no `en` table, so a
+        # key that is not readable English text is what the user reads. Each is also no
+        # wider than the column it labels (4 / 2 / 10 / 30 / 25 / 9), which is what keeps
+        # the heading row's column starts on the data rows' column starts in both
+        # languages. None of the six may be reused later as the key of a different line.
+        "#": "序号",
+        "On": "激活",
+        "Type": "协议",
+        "Name": "名称",
+        "Address": "地址",
         "Delay": "延迟",
         # cmd_uninstall fallback
         "Uninstall script not found: {script}\nUse the one-line command to uninstall:\n  sudo bash -c \"$(curl -fsSL https://raw.githubusercontent.com/Alan-IFT/singbox-cli/main/uninstall.sh)\"":
@@ -287,10 +291,14 @@ TRANSLATIONS = {
         "no sing-box binary on PATH": "PATH 中没有 sing-box 可执行文件",
         "the binary produced no version line (exit {code})": "该可执行文件未输出版本信息（退出码 {code}）",
         "{n}/{total} usable": "{n}/{total} 个可用",
-        "{reason}, {size} bytes, {age}": "{reason}，{size} 字节，{age}",
+        "{reason}, {size} byte(s), {age}": "{reason}，{size} 字节，{age}",
         "{reason}, size unavailable, {age}": "{reason}，大小未知，{age}",
-        "{reason}, {size} bytes, {age} — run `sc update-rules` to refresh":
+        "{reason}, {size} byte(s), {age} — run `sc update-rules` to refresh":
             "{reason}，{size} 字节，{age} —— 运行 `sc update-rules` 更新",
+        # The separator between a status word and the field after it lives INSIDE the
+        # string, exactly as the three rule-set phrases above do, so `sc status`'s
+        # rule-set line and `sc doctor`'s rule-set row cannot punctuate one fact two ways.
+        "{reason}, {age}": "{reason}，{age}",
         "no file at {path}": "文件不存在：{path}",
         "cannot read {path}: {e}": "无法读取 {path}：{e}",
         "no error reported": "未报告错误",
@@ -355,7 +363,7 @@ TRANSLATIONS = {
             "是一个符号链接，但其目标 {target} 不存在",
         "cannot be read ({err})": "无法读取（{err}）",
         "not valid UTF-8 text": "不是有效的 UTF-8 文本",
-        "larger than {n} bytes": "超过 {n} 字节",
+        "larger than {n} byte(s)": "超过 {n} 字节",
         "at {at}: an existing array must be changed with one of {directives}":
             "在 {at}：修改已有数组必须使用 {directives} 之一",
         "at {at}: unknown directive {name} — use one of {directives}":
@@ -460,7 +468,11 @@ def _egress_ip():
     EGRESS_HOST above (its other consumer is `sc doctor`'s DNS row) and the 8 s socket
     timeout lives here and nowhere else, so `sc status` and `sc doctor` can never
     report different egress addresses on the same machine. Deliberately byte-faithful: the
-    value is printed verbatim by `sc status`, so no scrubbing happens in here.
+    endpoint's bytes are returned unaltered, because BOTH consumers neutralise them
+    themselves through the same `_plain(_egress_ip())` expression — `sc status`'s egress
+    line and `sc doctor`'s egress row. Scrubbing belongs at those call sites, never in
+    here: a second neutralisation inside this function is how the two screens would start
+    disagreeing about one address.
     """
     with urllib.request.urlopen("https://" + EGRESS_HOST, timeout=8) as resp:
         return resp.read().decode()
@@ -1044,15 +1056,16 @@ def _age_text(mtime):
     it unchanged. Must stay a function for _status_text()'s reason. mtime None (no complete
     read, by ruleset_state's DIGEST CONTRACT) is the word form and NEVER a number — not 0,
     not an epoch date; a timestamp ahead of the clock (host skew, a restored backup) is a
-    zero-length duration, never negative; one coarse unit, so 36 hours reads "1 days ago".
+    zero-length duration, never negative; one coarse unit, so 36 hours reads "1 day(s) ago".
     """
     if mtime is None:
         return t("last update unknown")
     delta = max(0, int(time.time() - mtime))
-    for unit, key in ((86400, "{n} days ago"), (3600, "{n} hours ago"), (60, "{n} minutes ago")):
+    for unit, key in ((86400, "{n} day(s) ago"), (3600, "{n} hour(s) ago"),
+                      (60, "{n} minute(s) ago")):
         if delta >= unit:
             return t(key, n=delta // unit)
-    return t("{n} seconds ago", n=delta)
+    return t("{n} second(s) ago", n=delta)
 
 
 def _filter_rules(rules, usable):
@@ -1196,11 +1209,11 @@ def _fetch_to_temp(url, tmp, prefix, tty):
                             line = t("{done}/{total} bytes ({pct}%)", done=got,
                                      total=declared, pct=got * 100 // declared)
                         else:
-                            line = t("{done} bytes", done=got)
+                            line = t("{done} byte(s)", done=got)
                         sys.stdout.write("\r" + prefix + line + "\033[K")
                         sys.stdout.flush()
         if declared is not None and got != declared:
-            raise ValueError(t("truncated: got {got} of {declared} bytes",
+            raise ValueError(t("truncated: got {got} of {declared} byte(s)",
                                got=got, declared=declared))
         reason = srs_reject_reason(head, got)
         if reason:
@@ -1533,7 +1546,7 @@ def _load_override():
     except OSError as e:
         raise OverrideError(t("cannot be read ({err})", err=e.strerror or str(e)))
     if len(raw) > OVERRIDE_MAX_BYTES:
-        raise OverrideError(t("larger than {n} bytes", n=OVERRIDE_MAX_BYTES))
+        raise OverrideError(t("larger than {n} byte(s)", n=OVERRIDE_MAX_BYTES))
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
@@ -2299,7 +2312,7 @@ def cmd_ls(args):
 
     # The delay column is appended LAST, so no existing column's width or position moves
     # and `sc use <n>` sees the same index numbers it always did.
-    print(f"{t('ls.idx'):>4}  {t('ls.active'):2}  {t('ls.type'):10}  {t('ls.name'):30}  {t('ls.address'):25}"
+    print(f"{t('#'):>4}  {t('On'):2}  {t('Type'):10}  {t('Name'):30}  {t('Address'):25}"
           f"  {t('Delay'):>9}")
     if _auto_group_emitted([n["tag"] for n in nodes]):
         # The auto-select group, first and WITHOUT an index number — it is not a node and
@@ -2420,21 +2433,29 @@ def cmd_status(args):
     # Above is_running(): a stopped service is exactly where a stale rule-set matters.
     print("\n" + t("=== Rule-sets ==="))
     for _tag, fname, status, _digest, _size, mtime in ruleset_states():
-        print("%-20s %s, %s" % (fname, _status_text(status), _age_text(mtime)))
+        # The `%-20s ` pad is alignment and stays outside t(); the separator between the
+        # two fields is punctuation and lives inside it, so this line and `sc doctor`'s
+        # rule-set row render the same character in the same language.
+        print("%-20s %s" % (fname, t("{reason}, {age}", reason=_status_text(status),
+                                     age=_age_text(mtime))))
     if is_running():
         nodes_data = load_nodes()
         print("\n" + t("=== Current node ==="))
-        print(nodes_data.get("active") or t("(none)"))
+        # Every value below came from somewhere else — nodes.json, the Clash API, a public
+        # endpoint, an exception — so each goes through the ONE neutralisation `sc doctor`
+        # already applies to foreign text. str() first where the value is arbitrary JSON:
+        # _plain() takes text, and print() used to take anything.
+        print(_plain(str(nodes_data.get("active") or t("(none)"))))
         r = clash_api("GET", "/configs")
         print("\n" + t("=== Route mode ==="))
-        print((r or {}).get("mode", t("(unavailable)")))
+        print(_plain(str((r or {}).get("mode", t("(unavailable)")))))
         print("\n" + t("=== Clash API ==="))
         print(f"127.0.0.1:{CLASH_PORT}")
         print("\n" + t("=== Egress IP ==="))
         try:
-            print(_egress_ip())
+            print(_plain(_egress_ip()))
         except Exception as e:
-            print(t("(error: {e})", e=e))
+            print(t("(error: {e})", e=_plain(str(e))))
 
 
 # ============ doctor ============
@@ -2579,10 +2600,10 @@ def _doctor_rulesets():
             # No complete read happened, so there is no honest byte count to print.
             value = t("{reason}, size unavailable, {age}", reason=reason, age=age)
         elif stale:
-            value = t("{reason}, {size} bytes, {age} — run `sc update-rules` to refresh",
+            value = t("{reason}, {size} byte(s), {age} — run `sc update-rules` to refresh",
                       reason=reason, size=size, age=age)
         else:
-            value = t("{reason}, {size} bytes, {age}", reason=reason, size=size, age=age)
+            value = t("{reason}, {size} byte(s), {age}", reason=reason, size=size, age=age)
         rows.append((cls, fname, value))
     summary = (summary_cls, "rule-sets",
                t("{n}/{total} usable", n=usable, total=len(states)))
@@ -3078,7 +3099,10 @@ def cmd_config(args):
 
     The split is the point: `sc config > file` yields a JSON document a parser accepts, and
     `sc config | <filter>` works, while everything sc says about the document stays visible
-    when the command is not redirected.
+    when the command is not redirected. The JSON half of that promise holds for a stdout
+    whose encoding can represent the document: a character it cannot encode is written as
+    a backslash escape by main()'s stream configuration instead of ending the run, and
+    `\\xNN` / `\\UNNNNNNNN` are not JSON escapes. Both READMEs state the same condition.
 
     Writes no file and touches no service, socket or subprocess — main() keeps this command
     off _init_files() / _resolve_clash_port(), the two writers on the shared start-up path.
@@ -3124,11 +3148,14 @@ def cmd_config(args):
                                     indent=2, ensure_ascii=False) + "\n")
         sys.stdout.flush()
     except BrokenPipeError:
-        # `sc config | head -5`. stderr is already flushed above, this process holds no
-        # other buffered stream and registers no atexit handler, so os._exit(1) discards
-        # exactly the stdout bytes whose reader is gone — and, unlike sys.exit(1), it skips
-        # the interpreter's shutdown flush, which is what would otherwise print
-        # "Exception ignored in: <_io.TextIOWrapper ...>" after the last line.
+        # `sc config | head -5`. stderr is already flushed above and this process registers
+        # no atexit handler, so os._exit(1) discards exactly the stdout bytes whose reader
+        # is gone — and, unlike sys.exit(1), it skips the interpreter's shutdown flush,
+        # which is what would otherwise print "Exception ignored in: <_io.TextIOWrapper
+        # ...>" after the last line. Since main()'s re-wrap landed, that message would
+        # come TWICE: fd 1's BufferedWriter carries two wrappers, the re-wrap and the
+        # original that sys.__stdout__ keeps alive (docs/dev-map.md, "What makes a
+        # printed line ordered and encodable?", records why that is safe everywhere else).
         os._exit(1)
 
 
@@ -3326,7 +3353,7 @@ def cmd_update_rules(args):
                 note = (t("; fell back after: {causes}", causes="; ".join(tried))
                         if tried else "")
                 # ONE print, ONE completion line, no \r on the non-TTY path.
-                print(t("OK ({size} bytes)", size=got) + note)
+                print(t("OK ({size} byte(s))", size=got) + note)
                 break
             except Exception as e:
                 dead.add(base)
@@ -3667,6 +3694,18 @@ def cmd_help(args):
 
 def main():
     global LANG, CLASH_PORT
+    # THE stdout configuration — one statement, one place, before anything can print
+    # (argparse's own -h included): line buffering, backslashreplace, an explicit newline,
+    # the stream's own encoding preserved rather than forced, io.TextIOWrapper rather than
+    # 3.7's reconfigure(), and the guard for `sc config >&-`. What each argument buys, what
+    # backslashreplace costs, and why an io.StringIO harness certifies nothing about either
+    # guarantee are stated ONCE, and not here: docs/dev-map.md, "Reusable utilities",
+    # "What makes a printed line ordered and encodable?". That row is the home; this is
+    # only the site.
+    if getattr(sys.stdout, "buffer", None) is not None:
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding=sys.stdout.encoding,
+                                      errors="backslashreplace", newline="\n",
+                                      line_buffering=True)
     parser = argparse.ArgumentParser(prog="sc", add_help=False)
     sub = parser.add_subparsers(dest="cmd")
     sub.add_parser("ls"); sub.add_parser("now")

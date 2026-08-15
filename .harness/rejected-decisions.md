@@ -36,7 +36,8 @@
 
 ## mirror-fallback-cause-on-its-own-line-or-on-stderr
 - **Decision:** declined (the cause of a base that failed before a later base succeeded is appended to
-  the *same* completion line, as `OK (n bytes); fell back after: <base> -> <reason>`).
+  the *same* completion line, as `OK (n byte(s)); fell back after: <base> -> <reason>` — the noun
+  became invariant in T-25, `OK (` and the one-line invariant are unchanged).
 - **Why:** a second line per rule-set breaks the non-TTY contract that `sc update-rules` emits exactly
   one completion line per rule-set (T-02 B-19/AC-15), which the systemd timer and
   `/var/log/sing-box/install.log` consume; routing it to stderr breaks the insight-index rule that
@@ -550,3 +551,36 @@ stage 5. Filed by the PM at delivery because `.harness/**` is outside the task's
   `override.json` for free).
 - **Origin:** T-24 `override-error-envelope`, stage 2 (`## Smaller alternative rejected`), corrected
   at stage 3 (F-1, F-2, F-3 → C-9) and measured at stage 6 (C-11).
+
+## `per-print-flush-instead-of-one-stdout-configuration` — declined 2026-08-15 (T-25)
+- **Decision:** declined. Copying `_doctor_print`'s per-row `flush=True` (`bin/sc:2978`) to the three
+  `print()`s that precede a child process (`bin/sc:2413,2418,3431` — corrected at stage 3, F-6/C-11:
+  `:2421` precedes no child, only the pure-Python prints at `:2422-2423`) was rejected in favour of
+  **one** `io.TextIOWrapper` re-wrap of `sys.stdout` at the top of `main()` —
+  `errors="backslashreplace", line_buffering=True`, encoding preserved, guarded on the stream having
+  a binary buffer (1 import + 3 statements).
+- **Why — and note this is *not* the usual "the larger design buys something"**: the flush route only
+  looks smaller. It answers write-order (T-25 FR-6) and says nothing about the *other* property of
+  the same stream — a character the stdout encoding cannot represent ends the run (FR-7, T-23's
+  re-homed AC-11/AC-12 clause). Discharging that on the flush route needs a second mechanism at every
+  call site (a `print` wrapper / `_safe(text)` helper — a formatter by another name, explicitly out
+  of scope) plus a third fix for `sc config`'s own `sys.stdout.write`. Priced honestly it is
+  `3 + N` edits and one new convention against three statements and zero call-site edits. The one
+  construct also covers a second FR-6 site no filed row mentioned (`cmd_update_interval`,
+  `bin/sc:3431-3435`) and `argparse`'s own stdout output, because it sits before `parse_args()`.
+  `_doctor_print`'s flush stays exactly as it is — correct locally, and it must hold when that
+  function is driven directly by a fixture.
+- **Also declined as larger, same task:** an `en` table (duplicates ~250 keys as their own values and
+  makes "the source reads as English" unenforceable); a plural-selection helper, per-language plural
+  rules or a second key per phrase (Chinese has no inflection — machinery for one language's two
+  forms, and two forms per phrase is a grep regression); a character inventory as the encoding fix
+  (leaves user-supplied node tags aborting the run); forcing `encoding="utf-8"` on stdout (emits
+  bytes the consumer's locale cannot decode, and claims a readability guarantee the requirement
+  deliberately declines); a `LANG == "zh"` branch for the field separator outside `t()` (a second
+  i18n mechanism where one table row suffices).
+- **Origin:** T-25 `output-layer-contract`, stage 2 (`02_RATIONALE.md` §3), under rule 85's
+  burden-of-proof clause. **Upheld at stage 3** (`03_RATIONALE.md` §1), which re-priced the declined
+  route independently rather than accepting the design's answer: on the 3.6 floor `reconfigure()` is
+  3.7-only and `sys.stdout.errors` is read-only, so `io.TextIOWrapper` is the *only* construct that
+  meets FR-7 at all — and once it exists, FR-6 costs zero additional lines. The site-count correction
+  above *favours* the declined route and still does not change the ruling.

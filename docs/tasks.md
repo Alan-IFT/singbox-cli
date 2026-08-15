@@ -14,29 +14,20 @@
 
 | ID | Slug | Outcome | Completed | Doc folder |
 |---|---|---|---|---|
-| T-24 | override-error-envelope | **DELIVERED — one exception envelope, one type-mismatch vocabulary that cost zero new translation keys, and one gating condition; `bin/sc` +79/−55 and not one of the three rollbacks was for a code defect.** A single `try` inside `generate_config()` spans `if override is not None:` through a hoisted `json.dumps`, with `except OverrideError: raise` first (without it the generic arm swallows the specific sentence and destroys `e.path`) and one `except Exception` arm rendering `no configuration could be produced from it ({fault})` with `type(e).__name__` only; the load wrapper carries the same arm, and `_write_private` / `_record_generated` / `sing-box check` all stay **below** the region, so no path reaches the writer with an override that failed. `_merge`'s loop was re-derived around the **target's current type**, so an array-valued key admits a directive object and nothing else — object, scalar, `null` and bare array all reach the sentence that **already existed**, which is why FR-3 added **zero** keys and **deleted** a branch. **R-15, R-16 and R-26 CLOSED** — R-16 after **four declines** (T-15/T-16/T-17/T-21, R-54), its README obligation shipped with the fix; **R-44 deliberately not closed** (no cap on anyone's say-so) and **R-69 discharged as constraints**, `main()`'s arm still serving T-23's 16 call sites unnarrowed; **R-12 not closed and now wider**. **The brief was refuted in four places by re-verifying rather than inheriting**, three load-bearing: R-16's counter-weight is false (`sing-box check` runs *after* the write and after the drift record is baselined, so the loudness protects the running service and not the stored configuration — now R-73); R-44's override route is **already structurally closed** by the deep copy; and a **third R-15 instance no row recorded** (the JSON scanner's depth exhaustion is a `RecursionError`, not the `ValueError` the load caught, so a deep enough override tracebacked *before* `_merge`). **Rule 85 was tested and the architect corrected in the smaller design's *favour***: the gate found **M8 coverable by the rejected design at zero added lines** and **M9 a conjecture rather than a constructed hole** — QA then measured the band **EMPTY** (deepcopy 498, `json.dumps` 996, `json.loads` 9997; width 0), so the envelope's justification rests on FR-2's totality plus this repo's own measured leaf-enumeration evidence, never on "two constructible holes" (corrected into `.harness/rejected-decisions.md`, C-9). **R-61 honoured**: the gate re-derived K-16 arithmetically and amended it in writing rather than approving it; the developer landed **0 lines beyond the published split** and reported its re-indent as *smaller* than designed rather than absorbing the discrepancy. **The R-22 trap was attacked at four stages**: the gate found **five criteria that could not detect what they claimed** (AC-2's clause (iv) vacuous without a sentinel `config.json`; AC-2's own entry point unable to produce its own observables; AC-7 passed by a build with no gating at all), the developer found AC-2's **control wrong at the obvious key** and ran both positions, and QA built **six wrong builds** and reported which criterion kills each — W-C (right sentence, right exit, **writes first**) dies to clause (iv) alone and only in the amended sentinel form, while **W-D (`fault=str(e)`) is killed by nothing** and was reported **NOT-DISCRIMINATING** rather than passed (→ R-71, T-28). **All three rollbacks were prose**: an unconditional silent-write claim, a universal no-echo promise refuted by `_anchor_index`'s own `match: {anchor}` **inside the region**, and an exit code measured under a stubbed `subprocess.run` that QA falsified by lifting the stub (→ R-74, five instances of one pattern). T-13 and T-14 both survive: `_write_private()` still the only writer with `fchmod` on the still-empty descriptor, `_config_digest()` still hashing file **bytes**, B-7 intact, `_filter_rules` byte-identical. QA: **14 PASS / 1 BLOCKED / 2 NOT-DISCRIMINATING**, AC-15 **BLOCKED by construction → operator obligation id 5, nothing substituted (the eighth consecutive time)**. `verify_all PASS 17 / WARN 0 / FAIL 0 / SKIP 1` at eight checkpoints; `baseline.json` held at `test_count: 0`. Live host untouched: `MainPID`/`ActiveEnterTimestamp` identical throughout, `is-active` never called. | 2026-08-15 | `docs/features/_archived/override-error-envelope/` (mode: full) |
+| T-25 | output-layer-contract | **DELIVERED — one contract, two homes, both already in the file; `bin/sc` +80/−41 of which the machinery share is one import and one guarded statement, and the batch's highest over-build risk did not materialise.** The **string layer**: a key *is* its own English rendering (the five `ls.*` keys became `#`/`On`/`Type`/`Name`/`Address`), carries its own field punctuation inside the translated string, and renders **one invariant form per count phrase** for every value — 14 members, byte counts in, `{n}/{total}` fractions out. The **stream layer**: one `io.TextIOWrapper(sys.stdout.buffer, encoding=sys.stdout.encoding, errors="backslashreplace", newline="\n", line_buffering=True)` at the top of `main()`, guarded on the stream having a binary buffer, buying write-order fidelity **and** unencodable-character survival together. FR-8 is not a third home — four `cmd_status` sites re-use the existing `_plain()`. **Nothing new was created**: no `en` table, no catalogue, no formatter, no plural engine, no second key per phrase, no print wrapper, no new file, no new function (top-level `def`/`class` count **113**, unchanged). **R-19, R-33, R-34, R-38 and R-40 CLOSED** — R-19 known since T-02 and deferred by every task since — and **T-23's BLOCKED-BY-T-25 clause discharged**. **Four dispatch claims refuted by first-hand re-verification**, three load-bearing: R-19's stated cause is wrong (in English *every* `t()` lookup is a designed miss and the key **is** the rendering, so no `en` table and no change to `t()` were needed); R-33 inverted **two** headings, not one, and `cmd_update_interval` had the identical shape; the T-23 hand-off was far wider than `cmd_add`'s one `→` (`sc ls` prints `●`/`→` on ordinary rows, so English `sc ls` was broken outright under a non-UTF-8 stdout); and the defect was **published** in `README.md:94` and `docs/dev-map.md:90-92`, which no row mentioned. **Rule 85 was tested, not accepted, and the smaller design won on its own merits**: the gate **re-priced the rejected flush route itself** and found no smaller construct exists on the 3.6 floor (`reconfigure()` is 3.7-only, `sys.stdout.errors` is read-only, `PYTHONIOENCODING` needs a re-exec), so once the re-wrap exists `line_buffering=True` costs **zero** additional lines — and it corrected the rejected route's site count **in that route's favour** (4 → 3) without changing the ruling. **One rollback, and no code defect at any stage**: the MAJOR was a *record* defect — C-6 discharged as "structurally unreachable" when it was conditional on `PYTHONIOENCODING` being unset **and** on `cmd_config`'s own locale-decode defect staying unfixed; the developer **confirmed the reviewer by measurement rather than deferring** (exit **0** with 269 ASCII bytes `json.loads` rejects, against HEAD's exit 1) and found it wider still. **R-22 honoured at three stages with two criteria reported NOT-DISCRIMINATING rather than passed** (AC-12's comparison clause named a `sc doctor` routing-mode rendering that does not exist — QA measured `grep -ci` = 0 on both builds; AC-13 was satisfiable by an empty screen), and QA reproduced the trap live: **HEAD's heading row satisfies `.isascii()`**. QA: **16/16 criteria, nothing BLOCKED** — the first delivery in this pool's recent history to append **no** operator obligation — 14 adversarial cases all survived, the sharpest being a **latin-1 stdout that can encode part of the data** (candidate prints `café-é` *and* an escaped `日本-jp` at exit 0 where HEAD aborts after row 1) and a **240 KB child** (candidate headings at lines 1/4003/8005 against HEAD's 8001/8003/8005 — the per-site `flush=True` route would not have survived it). **A safety near-miss was caught, voided and re-taken**: a hand-written loader re-exec'd the installed `/usr/local/bin/sc` under password-less `sudo`; caught before any write, run declared **void**, all five cases re-taken on the mandated recipe reproducing byte-for-byte, and the reviewer ruled it write-free on evidence *independent* of the harness's own witness (→ **R-78**). C-1 held as a real floor: **142 runs, 142 `[C-1] VERDICT OK`, 0 void**, and QA found a **second** hard-coded write path nobody had named (`cmd_update_interval`'s `/etc/systemd/system/…timer.d`). T-13 and T-06 intact: `_write_private()` still the sole writer of `config.json`, `sc config` still renders `_redact(doc, False)`, no credential path on the diff. `verify_all PASS 17 / WARN 0 / FAIL 0 / SKIP 1` at every checkpoint (QA re-ran it four times); `baseline.json` held at `test_count: 0`. Live host untouched: witnessed with `systemctl show -p MainPID -p ActiveEnterTimestamp`, `is-active` never called. | 2026-08-15 | `docs/features/_archived/output-layer-contract/` (mode: full) |
 
 ## Notes
 
 ### Open rows surfaced by T-14 (R-15 … R-18)
 
 R-15/R-16 filed by the requirement-analyst at stage 1′; R-17 by the PM at delivery. **Three of the
-four are now closed** — R-15/R-16 by T-24, R-17 by T-23 — leaving only R-18, which T-27 owns.
+four are closed** — R-15/R-16 by T-24, R-17 by T-23 — leaving only R-18, which T-27 owns.
 
-1. **R-15 — CLOSED 2026-08-15 by T-24**, with a third instance no row had recorded (the JSON
-   scanner's depth exhaustion is a `RecursionError`, so a deep enough override tracebacked *before*
-   `_merge`). Neither forbidden fix was used: the composed-document assertion was not widened and
-   `_filter_rules` is byte-identical. Full row rotated to `docs/tasks-archive.md`.
-2. **R-16 — CLOSED 2026-08-15 by T-24**, after **four declines** (T-15/T-16/T-17/T-21, R-54), and
-   its README obligation shipped with the fix. **The counter-weight that justified deferring it was
-   refuted**: the loudness `06` measured protects the running *service*, not the stored
-   configuration — `sing-box check` runs **after** `_write_private()` and after the drift record is
-   baselined, so the previous working `config.json` is already destroyed (now **R-73**). Full row
-   rotated to `docs/tasks-archive.md`.
-3. **R-17 — CLOSED 2026-08-15 by T-23**; the limit is that it closes the disk layer only — printing
-   a non-ASCII tag under such a locale still fails, which is T-25's. Full row rotated to
+1. **R-15 / R-16 — CLOSED 2026-08-15 by T-24**; **R-17 — CLOSED 2026-08-15 by T-23**, and its one
+   stated limit (it closed the disk layer only; printing a non-ASCII tag under a non-UTF-8 locale
+   still failed) is **CLOSED 2026-08-15 by T-25**. Row text and closure detail rotated to
    `docs/tasks-archive.md`.
-4. **R-18 — `archive-task.sh`'s rotation is dead code; one-line cause known, owner assigned.**
+2. **R-18 — `archive-task.sh`'s rotation is dead code; one-line cause known, owner assigned.**
    `archive-task.sh:89-94` counts **bullets** (`grep '^\s*-\s'`) against 30 while `verify_all` **F.4
    counts lines**, so the two differ by the file's header and the branch can never fire on any index
    with one. Confirmed **twelve times**, once per delivery, each paying a manual rotation. The file
@@ -48,13 +39,13 @@ four are now closed** — R-15/R-16 by T-24, R-17 by T-23 — leaving only R-18,
 Filed by the PM at delivery; R-19 was made a non-goal (D-13/NG-10), R-20 … R-22 are QA's DEF-1/3/4/5,
 each routed here rather than back into T-15 because none was fixable inside that task's frozen set.
 
-1. **R-19 — the five namespaced `ls.*` translation keys print literally in English**
-   (`bin/sc:183-187` + the `sc ls` header): `TRANSLATIONS` has no `en` table, so `t()` returns the
-   key verbatim and the English header reads `ls.idx … Delay`, visibly mixed. Known since T-02,
-   never filed against these five until T-15. **Owner: T-25** `output-layer-contract`. Every task
-   since has been bound not to spread the defect — T-24 shipped its one new key in both languages
-   for this reason. Full row rotated to `docs/tasks-archive.md`.
-2. **R-20 — CLOSED by T-18** (2026-08-14), exactly as this row prescribed: one exception envelope at `clash_api()`, no caller-side guard. Row text rotated to `docs/tasks-archive.md`. It was **wider than filed** — six escaping classes, not four.
+1. **R-19 — CLOSED 2026-08-15 by T-25**, after being known since T-02 and deferred by every task
+   since. English `sc ls` now reads `#  On  Type  Name  Address  Delay`. **The row's stated cause
+   was wrong**, and T-25's analyst refuted it first-hand: `t()` returning the key on a miss is not
+   the defect — in English *every* lookup is a designed miss and the key **is** the rendering, so
+   the defect is a key that is not its own English rendering. No `en` table and no change to `t()`
+   were needed or made. Row text rotated to `docs/tasks-archive.md`.
+2. **R-20 — CLOSED by T-18** (2026-08-14): one exception envelope at `clash_api()`, no caller-side guard; **wider than filed** — six escaping classes, not four. Row text rotated to `docs/tasks-archive.md`.
 3. **R-21 — `RESERVED_TAGS` does not cover sing-box's implicit `GLOBAL` selector.** `bin/sc:56`
    reserves `proxy`/`direct`/`auto`, but the live `GET /proxies` returns a `GLOBAL` entry that is not
    an `sc` outbound at all. A node tagged exactly `GLOBAL` mints cleanly, the real checker accepts the
@@ -63,10 +54,10 @@ each routed here rather than back into T-15 because none was fixable inside that
    `stored_delays()`'s map is keyed by the API's tags, not by `sc`'s nodes.
 4. **R-22 — a practice, not work to close: an AC set that pins the artifact and never the behaviour
    will pass a gate it should fail.** Carried in every dispatch since; honoured by T-18, T-19, T-06,
-   T-20, T-22, T-23 and T-24 (which attacked it at four stages and had QA kill six wrong builds).
-   **T-24 adds its sharpest counter-example yet**: a control placed at the *obvious* key certified
-   nothing, because correct code and HEAD were identical there — see **R-74**. Full row rotated to
-   `docs/tasks-archive.md`.
+   T-20, T-22, T-23, T-24 (four stages, six wrong builds killed) and **T-25**, which reported **two
+   criteria NOT-DISCRIMINATING rather than passed** and reproduced the trap live: HEAD's `ls.idx …`
+   heading row satisfies `.isascii()`, so a naive "is it English?" check passes on the broken build.
+   Full row rotated to `docs/tasks-archive.md`.
 
 ### Open rows surfaced by T-16 (R-23 … R-27)
 
@@ -101,8 +92,8 @@ is **closed by T-23**; R-22(a) honoured and R-22(b) moot now that R-20 is fixed.
 |---|---|---|
 | R-31 | **Operator obligation, not a code row.** AC-B1/AC-B2 — one run of `sudo python3 <repo>/bin/sc status` on this pure-TUN host, compared against an independent echo endpoint in the same minute — is the criterion R-22 exists to force, and it is the one promise T-18 did **not** close by a run. It blocked on `sudo -n true` → "a password is required" with no interactive terminal; running non-root would have taken the import-time re-exec into the **installed** `/usr/local/bin/sc`, so QA correctly did not attempt it. The behavioural goal itself was observed by another route (egress `38.47.117.142`, matching three echo endpoints, service witness unchanged), so what is owed is the shipped invocation form end to end as root. Recipe and witnesses in `07_DELIVERY.md`. | owner |
 | R-32 | **`_doctor_clash()`'s PROBLEM message now names a cause it does not have.** `"no answer within the 3s timeout"` / 「3 秒超时内无响应」 (`bin/sc` key `:291`) now renders for BC-2 … BC-5 and BC-7 — states in which an answer *did* arrive well within the timeout. A pre-existing imprecision (HEAD already used it for a 4xx and for a refused connection) that T-18 widened to four more states. Deliberately not fixed: `sc doctor`'s wording was frozen by T-18's out-of-scope item 5 and BC-14. Code reviewer's CR-2 / RES-1. | T-20 |
-| R-33 | **`sc status > file` prints the `ip` output above the first heading.** `cmd_status`'s `print()` is block-buffered when stdout is a pipe while its `subprocess.run(["ip", …])` children write fd 1 immediately, so the sections come out reordered — in exactly the redirected bug-report case. Pre-existing and identical at HEAD (control run), so no regression, and no AC covered it. `_doctor_print()` already flushes per row for this same reason, so the fix shape exists in-tree. QA-D1, MAJOR. | next task touching `cmd_status` |
-| R-34 | **"exactly one value line per heading" is falsifiable, and the promise is what needs narrowing.** A Clash API answering `{"mode":"rule\nINJECTED"}` yields two lines under `=== Route mode ===`, candidate and control alike. BC-12 declines a *size* cap, not an output-shape guarantee, so this is not covered by an existing ruling. The R-22 shape once more: a promise materially wider than the behaviour. QA-D2, MINOR. | next task writing ACs over `sc status` |
+| R-33 | **CLOSED 2026-08-15 by T-25**, and it was **wider than filed**: `cmd_status` runs *two* children (`systemctl`/`rc-service`, then `ip`), so two headings inverted rather than one, and `cmd_update_interval` had the identical shape. Both are inside the guarantee, plus `argparse`'s own stdout output, because the one stream statement sits before `parse_args()`. QA measured a **240 KB child**: candidate headings at lines 1/4003/8005 against HEAD's 8001/8003/8005 — the per-site `flush=True` route this row proposed would not have survived it. Full row rotated to `docs/tasks-archive.md`. | **closed** — T-25 |
+| R-34 | **CLOSED 2026-08-15 by T-25 by narrowing the promise, as this row asked.** The falsifiable claim is replaced by the true one — `sc` adds no line of its own — and the criterion that measured it was reported **NOT-DISCRIMINATING** first (nothing asserted the section had printed at all; `is_running()` returns `False` off its final line when neither init system is set), then re-asserted with the section proved printed on candidate **and** HEAD. Full row rotated to `docs/tasks-archive.md`. | **closed** — T-25 |
 | R-35 | **A number for R-23/R-3's family: `timeout=N` bounds each socket operation, not the call.** A peer dripping one body byte every 2 s keeps a `timeout=3` `urlopen` alive **30.1 s** and then returns success — measured, candidate and control alike, so not a T-18 defect. Any "it gives up after N seconds" claim about `clash_api()` or `_egress_ip()` is false as written. Attach to R-3's row when that failure class is next opened. | unassigned |
 
 ### Open rows surfaced by T-19 (R-36 … R-41)
@@ -117,9 +108,9 @@ discipline held — AC-B9 BLOCKED, never substituted (→ R-41).
 |---|---|---|
 | R-36 | **AC-S3's ledger carve-out omits `docs/batches/**`.** QA-D2: `BATCH_PLAN.md` (M) and `BATCH_LOG.md` (??) are in neither of AC-S3's two lists, and the criterion says a path in neither list *is* a failure — yet both are the batch loop's, both predate stage 4, and neither was written by any T-19 stage. The candidate itself is clean; the criterion's text is what needs the third carve-out. Any future task reusing this AC template inherits the false failure. | next task writing an AC over the committed diff |
 | R-37 | **`.harness/rules/70-doc-size.md` defines no `## Stage-doc boundary rule` on this project**, so units the PM's dispatch requires in a contract portion (rule 85's `## Smaller alternative rejected`, the FR/BC/AC coverage table, C-6's per-edit-id size table, C-2/C-3/C-4/C-5/C-8's evidence) fit no declared stage-doc shape. Recorded as a gap at stages 2 (E-20), 3, 5 (RES-10) and 6 (QA-D1) — **five stages in one task**, each carrying it as a named section rather than inventing one. Cheapest fix is one section in rule 70. | unassigned |
-| R-38 | **The zh rule-set row's separator is an ASCII `, ` where `sc doctor`'s is a localised `，`.** `sc status` prints `可用, 30 天前` because I-3 fixes the separator inside the format string `"%-20s %s, %s"`, while `sc doctor` reads `可用，5572 字节` because its separator lives inside the key `"{reason}, {size} bytes"` (`bin/sc:278`). Implemented exactly as designed, so this is a design item rather than drift (CR-5/RES-4); fixing it costs one key plus one zh entry, against a budget that landed at the +80 ceiling. | next task touching `cmd_status`'s rule-set section or T-20 |
+| R-38 | **CLOSED 2026-08-15 by T-25.** One separator convention: punctuation that joins the fields of one rendered line lives **inside** the translated string (`sc doctor`'s convention), and `sc status` adopted it. Cost was one new table entry; the English rendering is byte-identical to HEAD, so the change is exactly the Chinese `, `→`，`. Full row rotated to `docs/tasks-archive.md`. | **closed** — T-25 |
 | R-39 | **`_status_view()`'s docstring (`bin/sc:856-857`) repeats a false attribution**: it says `generate_config()` destructures the 3-tuple. It does not — it only passes `report` through; `_runtime_overlay()` (`:1815`), `usable_tags()` (`:905`) and `_warn_degraded()` (`:976`) are the three real sites. Found as F-14, answered as A-1, and **corrected in `docs/dev-map.md` at round 4′** because that line was already being edited; the docstring was left because the line was not otherwise edited and `bin/sc` was at the +80 ceiling (RES-5). | next task editing `_status_view()` |
-| R-40 | **`_age_text()` renders `1 days ago`** — the ladder emits the largest unit only and pluralises like the existing `{n} ruleset(s)` keys, so a 36-hour-old file reads `1 days ago`. Deliberate per Q-11 (one deterministic vocabulary) and now observable in shipped output rather than hypothetical (RS-5/RES-6). A future task should add plural handling for every key at once rather than for this one. | unassigned |
+| R-40 | **CLOSED 2026-08-15 by T-25 for every count key at once**, exactly as this row demanded rather than for the one symptom: a population of **14** phrases, one invariant rendered form each (the `(s)` idiom already in-tree), byte counts **included** and `{n}/{total}` fractions correctly **excluded** — no plural-selection mechanism, no second key per phrase, no per-language rules. Full row rotated to `docs/tasks-archive.md`. | **closed** — T-25 |
 | R-41 | **Operator obligation, not a code row.** AC-B9/P-6 — the shipped invocation form, run as root against the live unit — is the one promise T-19 did not close by a run, and it is the *only* observation of the goal's stated mechanism ("systemd records the run as failed"). The whole of the evidence is the unit-file read confirmed at the gate: `Type=oneshot`, one un-prefixed `ExecStart`, no `SuccessExitStatus=`, no `Restart=`. K-18 forbids it to every agent here, and QA reported it **BLOCKED rather than substituting the unit-file read** (the R-31 precedent, honoured). Recipe: trigger the unit once, then `systemctl show -p Result -p ExecMainStatus sing-box-rules-update.service`. Carries the standing **R-30** obligation with it — the change reaches the live host only when a human installs the new `bin/sc` and runs `sc reload`. | owner |
 
 Unnumbered, all pre-existing or accepted: `HELP_EN` says `active node` where `README.md:245` says
@@ -143,32 +134,24 @@ and 5 each recorded it). **R-4/R-9 unchanged** (`test_count: 0`, ten tasks runni
 | R-42 | **CLOSED 2026-08-15 by T-22 `share-url-userinfo-contract`.** The row was right about the defect and **understated its class**: the same missing judgment truncated trojan / hysteria2 passwords at a raw colon and double-decoded shadowsocks passwords recovered from base64, so the fix is one construct (`_userinfo`) consumed by five call sites rather than a tuic patch. Discharged with the tuic empty-password case measured red at HEAD on all five fixtures and green on the candidate through the **emitted document**. Two facts worth carrying: a real `sing-box check` **accepts** an empty tuic password (so no config-level test could ever have caught this), and already-stored nodes are **not** repaired by the fix — `sc rm` + `sc add` is required, filed as operator obligation **id 3**. | **closed** — T-22 |
 | R-43 | **BC-13's third clause and K-14 cannot both hold.** A drift record that exists, is non-empty and is **not a digest** makes `sc config` print `This has drifted…`, while BC-13 says a record that is "empty, unreadable, or **not a digest**" is treated as BC-12 (no provenance line — absent means *unknown*, never *drifted*). Not a code defect and not fixable inside T-06: V-12 shows `_warn_drift()` at **HEAD** warns in exactly that state, so making `_drift_state()` return `None` here would change `_warn_drift()`'s observable behaviour and break K-14, which the gate made binding. Either BC-13 drops its third clause or K-14 is re-scoped. QA-1, MINOR. | requirement-analyst / architect, next task touching the drift quartet |
 | R-44 | **Gate answer D-2's premise is false on CPython, and a number for it.** D-2 ruled no recursion guard was needed because "`json.loads` raises `RecursionError` before `_redact()` is reached". `json.loads` uses the **C scanner**, whose depth budget is not the Python recursion limit, so a ~1000-level-deep document parses fine and the pure-Python walk is what overflows — 27 lines of traceback out of `bin/sc:2719`, exit 1, stdout empty, **no credential byte in the traceback**. Depth 990 renders fine (1 988 974 B). Reachable only by a hand-edited or `override.json`-supplied document; nothing `sc` composes comes near. **No cap should be added on QA's say-so** — BC-10 and D-2 both argue against one. QA-2, MINOR. | architect, next task touching `_redact()` |
-| R-45 | **The `BrokenPipeError` guard covers the stdout write only.** K-6 scoped it to the single write plus its flush, so the two-or-three stderr writes above it are unguarded and `sc config 2>&1 \| head -1` can still surface a Python-level error. BC-14 was worded for stdout alone (`sc config \| head -5`, fully handled), so the code is faithful and the gap is upstream. QA found it **milder than predicted**: five runs of five exit **120** (CPython's "failed to flush a standard stream at shutdown") with **no** traceback — nothing can be printed when the only stream left is the broken one. Widening the guard is machinery rule 85 does not fund for a case nobody has reported. CR-2/RES-6/QA-4. | architect, if the case is ever reported |
+| R-45 | **The `BrokenPipeError` guard covers the stdout write only.** K-6 scoped it to the single write plus its flush, so the two-or-three stderr writes above it are unguarded and `sc config 2>&1 \| head -1` can still surface a Python-level error. BC-14 was worded for stdout alone (`sc config \| head -5`, fully handled), so the code is faithful and the gap is upstream. QA found it **milder than predicted**: five runs of five exit **120** (CPython's "failed to flush a standard stream at shutdown") with **no** traceback — nothing can be printed when the only stream left is the broken one. Widening the guard is machinery rule 85 does not fund for a case nobody has reported. CR-2/RES-6/QA-4. **Price updated 2026-08-15 by T-25 (RES-4): the row stays declined, but an un-guarded command at pipe-buffer scale now emits two extra `Exception ignored in: <_io.TextIOWrapper …>` stderr lines**, because two wrappers sit over one `BufferedWriter`. Reachable in no shipped consumer (`install.sh:567,590` and `restricted-network-regression.sh:283` all redirect; the timer unit has no pipeline), exit status and traceback unchanged, and `sc config`'s `os._exit(1)` unaffected (measured at 1 MB). Recorded so whoever next prices R-45 does not re-measure it. | architect, if the case is ever reported |
 | R-46 | **`SECRET_KEYS` omits inbound TLS private-key material** (`key`, `certificate`, `key_path`) — the most likely *real* instance of the FR-9 limit both READMEs publish, and the same class as the READMEs' own `auth_token` example. `sc` never emits an inbound TLS key, so nothing shipped leaks, and QA confirmed the limit behaves exactly as documented (an inbound user's `auth_str` and an inbound's `tls.key` print verbatim while the sibling user's `password` is masked). Recorded so the boundary of Q-5's "floor, not the guarantee" is a **reviewed** decision rather than an unexamined one. CR-4, NIT. | requirement-analyst, at pool intake if revisited |
 | R-47 | **Operator obligation, not a code row.** AC-B9 — the shipped invocation `sc config` run as root on the live host, printing the live configuration with every credential masked and the service untouched — is the one promise T-06 did not close by a run. No agent in this pipeline holds an interactive sudo credential (R-31), and running non-root would take the import-time re-exec into the **installed** `/usr/local/bin/sc`, so QA reported it **BLOCKED and did not substitute an artifact check** (the R-31/R-41 precedent, honoured a third time). The behavioural goal itself *was* observed by another route — AC-B1/AC-B2 against a six-scheme fixture, 10 == 10 positions. Carries the standing **R-30** obligation: the change reaches the live host only when a human installs the new `bin/sc`. | owner |
 
-Unnumbered, all pre-existing or accepted: `sc config >&-` (stdout closed outright, not a
-short-reading pipe) gives `AttributeError: 'NoneType' object has no attribute 'write'` and exit 1,
-where `sc status >&-` exits 0 silently — `print()` returns quietly when `sys.stdout is None` while
-`sys.stdout.write` does not; outside BC-14's wording and K-6's guard by design, no leak, no write
-(QA-3). A `config.json` containing `NaN`/`Infinity` (a `json.loads` extension) is re-emitted
-verbatim, so a *strict* parse fails while `jq` accepts it — masking unaffected, document faithful
-to disk (QA-5). A credential whose value is the empty string still renders the mask, so an **unset**
-credential is indistinguishable from a set one — FR-5 as written, a decision not an accident
-(RES-5). The provenance line may describe a newer inode than the document printed if `sc reload`
-lands mid-read; the document is still whole per BC-11 (RES-1). `json.loads` keeps the last of
-duplicate keys, so a hand-edited file with a repeated key is shown without the earlier one (RES-2).
-The unnamed-encoding item (RS-6/GC-7/RES-3) is **CLOSED for the state documents by T-23**;
-`cmd_config`'s own reader keeps its locale decode **deliberately** (T-23 Q-6/K-10 — decoding it
-would trade its good one-sentence failure for a stdout traceback).
+Unnumbered, all pre-existing or accepted: `sc config >&-` gives `AttributeError` + exit 1 where
+`sc status >&-` exits 0 silently (`print()` returns quietly on a `None` stream; **T-25 confirmed
+this is unchanged** — its stream statement is guarded on the stream having a binary buffer, QA-3);
+`NaN`/`Infinity` is re-emitted verbatim, so a strict parse fails while `jq` accepts it (QA-5); an
+empty-string credential still renders the mask, so unset and set are indistinguishable (RES-5); the
+provenance line may describe a newer inode than the document printed (RES-1); duplicate keys keep
+the last (RES-2). The unnamed-encoding item (RS-6/GC-7/RES-3) is **CLOSED for the state documents by
+T-23**; `cmd_config`'s own reader keeps its locale decode — deliberate at T-23, now **R-76**.
 
 ### Open rows surfaced by T-20 (R-48 … R-52)
 
 Filed by the PM at delivery. R-48 … R-50 are QA's DEF-1 … DEF-3, each reproduced independently at
-stage 6 and each pre-recorded as a code-review residual; R-51 and R-52 are boundaries the pipeline
-accepted deliberately. **R-32 and R-43 are closed by T-20** (the Clash row no longer asserts an
-unobserved cause; BC-13's third clause gave way to T-06's K-14, so a present non-digest drift
-record reads *drifted*). **R-10 closed, R-11 half-closed** — see the T-13 block above.
+stage 6; R-51 and R-52 are boundaries the pipeline accepted deliberately. **R-32 and R-43 closed by
+T-20**; **R-10 closed, R-11 half-closed** — see the T-13 block above.
 
 | id | statement | owner |
 |---|---|---|
@@ -181,28 +164,22 @@ record reads *drifted*). **R-10 closed, R-11 half-closed** — see the T-13 bloc
 ### Rotated-but-open blocks — read them in `docs/tasks-archive.md`
 
 Five blocks live in `docs/tasks-archive.md` § "Still-open rows rotated for space (NOT closed)".
-**None is closed**; each was moved only to keep this board under its 300-line F.5 cap, and
-completed rows were always rotated first.
+**None is closed** — each moved only to keep this board under F.5's 300-line cap, completed rows first.
 
-- **T-02 follow-ups** and **"Carried to T-07"** — moved at T-19 delivery. **Now largely discharged
-  or ruled on by T-07**: the "846-assertion harness" and T-08's two inherited defects were found to
-  reference files that **were never committed and no longer exist** (`.gitignore:19` ignores `test/`
-  wholesale), so T-07 converted them into binding requirements instead of carrying them as
-  unfixable TODOs; of T-02's four unverified items only **BC-32** is closed (by E3, and closed
-  *by construction of the test* — closed in fact only when a `[VM]` run reports `E3 PASS`).
-  BC-25, the D-2 escalation and AC-26 on a real 3.6 interpreter stay open there.
-- **T-08's remaining rows** — moved at T-06 delivery. **The `CURL_OPTS_*` dev-map seam row is
-  CLOSED by T-07** (`docs/dev-map.md`, one `## Reusable utilities` row naming the flag policy block
-  and the three facts that make it a seam). `baseline.json`'s `test_count: 0` stays open (R-4/R-9).
-- **T-11's R-1 … R-8** — moved at T-06 delivery. The `install.sh` `set -e` assignment-abort
-  family, including the unguarded `mktemp -d` assignments. **Read by T-07 and deliberately not
-  covered** — the restricted-network scenario reaches none of those call sites, so covering them
-  would need faults the scenario does not inject. All eight stay open and unclaimed.
-- **T-13's R-9 … R-14** — moved at T-07 delivery. **R-9 (the committed `bin/sc` test harness) is the
-  live one and T-07 deliberately did not claim it**, leaving it the `verify_all` wiring, the `.ps1`
-  mirror, `baseline.json`/R-4 and defusing the import-time auto-elevate — but T-07 makes it
-  **cheaper**, since a committed, runnable, git-tracked test artifact that never imports `bin/sc`
-  now exists to build from. R-10 closed, R-11 half-closed (T-20 block above).
+- **T-02 follow-ups** + **"Carried to T-07"** (moved at T-19 delivery) — largely discharged by T-07,
+  which found the "846-assertion harness" and T-08's two inherited defects referenced files that
+  **were never committed and no longer exist** (`.gitignore:19` ignores `test/`) and converted them
+  into binding requirements. Of T-02's four unverified items only **BC-32** is closed, and only by
+  construction; BC-25, the D-2 escalation and AC-26 on a real 3.6 interpreter stay open.
+- **T-08's remaining rows** (moved at T-06 delivery) — the `CURL_OPTS_*` dev-map seam row is **CLOSED
+  by T-07**; `baseline.json`'s `test_count: 0` stays open (R-4/R-9).
+- **T-11's R-1 … R-8** (moved at T-06 delivery) — the `install.sh` `set -e` assignment-abort family.
+  **Read by T-07 and deliberately not covered**: the restricted-network scenario reaches none of
+  those call sites. All eight open and unclaimed.
+- **T-13's R-9 … R-14** (moved at T-07 delivery) — **R-9, the committed `bin/sc` test harness, is the
+  live one**; T-07 deliberately did not claim it but made it cheaper (a committed, runnable,
+  git-tracked artifact that never imports `bin/sc` now exists to build from). **T-28 owns it.**
+  R-10 closed, R-11 half-closed (T-20 block above).
 
 
 ### Open rows surfaced by T-21 (R-53 … R-55) — explore mode, so none is a code claim
@@ -236,14 +213,10 @@ confirmed a seventh time**, recorded at stages 1, 2, 3, 5 and 6 of this task alo
 
 Filed by the PM at delivery; detail in `docs/features/_archived/share-url-userinfo-contract/`.
 **R-42 is CLOSED above** by this task. **R-18 confirmed a tenth time** — `archive-task.sh` counts
-*bullets* against 30 while F.4 counts *lines*, so it rotated nothing at the cap and the index was
-hand-rotated again (**T-27** owns the one-line fix). **R-37 confirmed an eleventh time**, recorded
-independently at this task's stages 1, 3, 5 and 6 — rule 70 still declares no
-`## Stage-doc boundary rule`, so a code listing bound to a stage document has no home in either the
-reviewer or the QA schema. **R-4/R-9 unchanged** (`test_count: 0`, thirteen tasks running; T-28 owns
-it and now depends on this task's fix being in place). **R-46 stays filed** — Q-5's re-open predicate
-is checkable and did not fire: `SECRET_KEYS` and `VISIBLE_IN_OUTBOUND` are byte-identical and no new
-key enters an outbound.
+*bullets* against 30 while F.4 counts *lines* (**T-27** owns the one-line fix); **R-37 an eleventh**,
+recorded independently at stages 1, 3, 5 and 6. **R-4/R-9 unchanged** (`test_count: 0`; **T-28** owns
+it and depends on this task's fix). **R-46 stays filed** — Q-5's re-open predicate is checkable and
+did not fire.
 
 | id | row | owner |
 |---|---|---|
@@ -268,15 +241,11 @@ Filed by the PM at delivery; detail in `docs/features/_archived/state-file-io-co
 ### Open rows surfaced by T-24 (R-70 … R-74)
 
 Filed by the PM at delivery; detail in `docs/features/_archived/override-error-envelope/`.
-**R-18 confirmed a thirteenth time** (index hand-rotated again). **R-15, R-16 and R-26 are CLOSED**
-by this task — R-16 after **four declines** (T-15/T-16/T-17/T-21, R-54), and its README obligation
-shipped with the fix. **R-44 deliberately not closed**: no cap was added on anyone's say-so, and
-stage 6 measured why one is not needed (the band is empty). **R-69 discharged as constraints** —
-`main()`'s arm still renders `e.path or CFG_PATH` for T-23's 16 call sites, unnarrowed.
-**R-12 not closed and its population is now WIDER**: shapes that used to traceback end in the
-sentence-and-exit path, which still prints no run-level outcome line. **R-37 confirmed a
-thirteenth time**; **R-61 honoured** (the gate amended K-16 rather than approving a cap it had to
-re-derive). **R-22 honoured at four stages**, and QA killed six wrong builds.
+**R-15, R-16 and R-26 CLOSED** by this task (R-16 after four declines, README obligation shipped
+with the fix); **R-44 deliberately not closed** (stage 6 measured the band empty, so no cap on
+anyone's say-so); **R-69 discharged as constraints**; **R-12 not closed and now WIDER**. R-18 / R-37
+confirmed a thirteenth time; **R-61 honoured** (the gate amended K-16 rather than approving a cap it
+disbelieved); **R-22 honoured at four stages**, QA killing six wrong builds.
 
 | id | row | owner |
 |---|---|---|
@@ -290,6 +259,37 @@ Unnumbered, accepted or already-owned: the `CHANGELOG.md` write-failure clause h
 though two internal markers scope it correctly (CR-8/RES-8, NIT); on the `[]` fixture HEAD produces
 **two** silent accidents rather than the one C-2 predicted, since `"x" not in []` is `True` for both
 accessors (QA DEF-4); and `docs/dev-map.md:52`'s three citations were **already stale at HEAD**.
+
+### Open rows surfaced by T-25 (R-75 … R-79)
+
+Filed by the PM at delivery; detail in `docs/features/_archived/output-layer-contract/`.
+**R-19, R-33, R-34, R-38 and R-40 are CLOSED** by this task — R-19 after being known since T-02 and
+deferred by every task since, and R-33/R-40 were each **wider than filed**. **T-23's BLOCKED-BY-T-25
+clause is discharged** (and was far wider than `cmd_add`'s one `→`: `sc ls` prints `●`/`→` on ordinary
+rows, so English `sc ls` was broken outright under a non-UTF-8 stdout). **R-45 stays declined**, but
+its price rose: an un-guarded command at pipe-buffer scale now emits two extra `Exception ignored in:
+<_io.TextIOWrapper …>` stderr lines, because two wrappers sit over one `BufferedWriter` — reachable
+in no shipped consumer, exit status and traceback unchanged. R-18 confirmed a **fourteenth** time
+(index hand-rotated again; **T-27** owns the one-line fix) and R-37 a **fourteenth**, recorded
+independently at stages 1, 2, 3, 5 and 6. **R-22 honoured**, with two criteria reported
+NOT-DISCRIMINATING rather than passed and the trap reproduced live (HEAD's `ls.idx …` heading row
+satisfies `.isascii()`). `.harness/operator-obligations.md` row 4 step R-5 **marked closed in place**
+(QA-4): `sc add` under a proved non-UTF-8 stdout now exits **0**. **Nothing was BLOCKED** — for the
+first time in this pool's recent history no new operator obligation was appended.
+
+| id | row | owner |
+|---|---|---|
+| R-75 | **The `失败：` diagnostic grep already matches two lines that do not mean "this rule-set file was not updated", and one of them collides in both languages.** `bin/sc:145` (`Error: applying timer failed: {err}` → `错误：应用 timer 失败：{err}`) carries **both** load-bearing literals — `failed: ` in English *and* `失败：` in Chinese — while `:136` (`Config check failed:` → `配置检查失败：`) carries only the Chinese one and is reachable into `install.log` through `sc update-rules` → config regeneration. Both pre-existing; T-25 touched neither and its own census was clean (104 forms/language, 0 hits), so this is the **family** statement rather than the one site the analyst first found. Reviewer CR-6 / RES-5 + analyst Q-17. | next task touching either sentence, or T-28 when it pins the grep |
+| R-76 | **`cmd_config`'s `CFG_PATH.read_text()` is T-23's locale-decode defect in a third reader — and repairing it falsifies two published README sentences unless they are read at the same time.** `bin/sc:3113` has no `encoding=`, so under a non-UTF-8 locale `sc config` ends at the read with exit 1. That defect is currently the *only* thing keeping `sc config`'s escape path unreachable without an env var: with T-23's explicit UTF-8 decode applied, a CJK-tagged document decodes and then escapes on the way out at **exit 0**, measured. Both READMEs' `:297` sentences are already written for that post-repair world (T-25's CR-10 disposition, taken deliberately), so **the repair's duty is to verify them, not to change them**. Reviewer CR-1/CR-10 / RES-6. | next task touching `cmd_config`, or whoever completes T-23's reader family |
+| R-77 | **The mandated fixture-loader recipe cannot load `bin/sc` under the one environment every locale criterion needs.** `docs/dev-map.md:136`'s bare `open("bin/sc").read()` decodes with the **locale** codec while CPython reads a script as UTF-8 (PEP 263), so `LC_ALL=C PYTHONUTF8=0` gives `UnicodeDecodeError: 'ascii' codec can't decode byte 0xe2 in position 29`. T-25's QA added `encoding="utf-8"` in its own harness; the recipe should carry it, or the next locale test reads the failure as a harness bug. One keyword. QA-1. | next task touching the dev-map loader recipe, or T-28 |
+| R-78 | **The loader row states its rule but not its failure signature, and the signature is what a fresh context actually sees.** `docs/dev-map.md:121-158` says "use this one, do not re-invent it"; a context that skips it does **not** get a loud "you imported the installed build" — it gets an argparse usage error about its own argv at exit 2, which reads like a bug in the harness. T-25 lost a round-4′ run to exactly this (re-exec into `/usr/local/bin/sc` under password-less `sudo`; caught before any write, run declared void, all five cases re-taken and reproducing byte-for-byte). One clause naming the signature. Reviewer RES-7. | next task touching the dev-map loader recipe |
+| R-79 | **A cost clause states a loss that was never available to lose.** `docs/dev-map.md:78` records that `errors="backslashreplace"` displaces the POSIX locale's `surrogateescape`, so undecodable-byte data renders `\udcXX` instead of round-tripping. True against a *future* reader — but on **both** named instances HEAD aborts before reaching the line (`sc update-rules` at `↓`, `sc doctor` at `—`, measured under `LC_ALL=C PYTHONUTF8=0`), so the byte fidelity was never observable on the shipped build. The row should say the loss is prospective, or a reader will hunt a regression that never shipped. QA-5. | next task touching that dev-map row |
+
+Unnumbered, folded here rather than numbered: **QA-2** — `04_DEVELOPMENT.md`'s K-6 resolution records
+"16 static labels (9 ∪ 7)" where an independent enumeration finds **15** (9 sections ∪ **6** probe
+labels), 18 with `DOCTOR_MARK`; all 18 are in the `zh` table, so AC-4's verdict is unaffected and only
+the number is wrong. **QA-3** — a 28th `bin/sc` hunk (an `_age_text` docstring line) is named by no
+`L-` row and no drift block; correct, non-executable, measured to change nothing.
 
 ## Conventions
 
