@@ -14,37 +14,28 @@
 
 | ID | Slug | Outcome | Completed | Doc folder |
 |---|---|---|---|---|
-| T-22 | share-url-userinfo-contract | **DELIVERED** — `urlparse().username` truncates at the first colon, so `parse_tuic`'s guard was structurally dead and every tuic outbound `sc` ever emitted carried `"password": ""`. Fixed as one construct, `_userinfo()`, with five call sites taking a projection (+21/−11); **R-42 closed**, R-62/R-63 filed. Full outcome row rotated to `docs/tasks-archive.md` at T-23 delivery under rule 70's F.5 cap. | 2026-08-15 | `docs/features/_archived/share-url-userinfo-contract/` (mode: full) |
-| T-23 | state-file-io-contract | **DELIVERED — one reader, one degrade, and `main()`'s existing error arm untouched; the row's own anchor row R-29 was refuted twice in the process.** `_read_state(path, default, member)` is now the file's only statement of how a state document is decoded (`read_bytes().decode("utf-8")`, never `read_text()`), parsed and shape-checked; its *unusable* answer is the **existing** `OverrideError` envelope with `.path` set, so `main()`'s **unedited** `Cannot use {path}: {problem}` arm renders the sentence for **16 unguarded call sites with zero edits to them**. `_settings_or_empty()` is the single degrade, and FR-5's once-per-run warning needs no flag because `main()` already calls `_load_lang()` exactly once, before `LANG` exists — which is also what makes that line English. **R-17, R-25, R-27, R-29 and R-62 closed.** **What the brief got wrong, found by re-verifying rather than inheriting (nine clauses, three load-bearing)**: R-29's own prescribed `except (OSError, ValueError, TypeError)` is **insufficient** — two of the four readers it names reach `.get()` on a non-dict and raise **`AttributeError`**, so the is-a-dict check and not the catch tuple is what closes the class; R-29's `"telemetry"` example **does not raise at all** in `_ipv6_setting()` but returns `auto` by legal substring test, a silently wrong answer worse than the traceback the row was filed for; and the family was **22 call sites**, not four. **Rule 85 was tested by reconstruction**: the architect wrote out the smaller design (*three local hardenings*, ≈+13/−9) and conceded it correct on 12 of 21 criteria, and the gate **rebuilt it and corrected the architect in the smaller design's disfavour** — it fails AC-1/AC-2/AC-3 too, because `_resolve_clash_port()` is a fifth settings reader running **outside `main()`'s try** — while the *nearer* alternative proved **~4 lines larger**. **R-61 honoured**: the gate found NFR-1's `−30` a prediction masquerading as a cap and **amended it in writing** rather than approving a cap it disbelieved; the diff landed at **+76/−51, 46 code**, exactly at the amended cap. **2 rollbacks, neither for a code defect** — the developer found that **AC-11/AC-12 named an environment that is not non-UTF-8** (PEP 540 auto-enables UTF-8 Mode for a `C` `LC_CTYPE`, so **HEAD passed both criteria unchanged** and the whole locale dimension would have been certified vacuously), that their "exits 0" clause was unsatisfiable in scope, and that AC-8's control was **11 tracebacks + 1 silently wrong answer**, not 12 tracebacks; then the reviewer sent back two MAJOR prose defects, a `CHANGELOG.md` claiming `sc add` 「不再报错」 (forbidden by name by BC-14) and a `docs/dev-map.md` row still describing the defect this diff closed. **The R-22 trap was attacked at three stages and QA killed the wrong build**: a candidate with an unconditional `raise _unusable(...)` **passes AC-1/AC-2/AC-3** and dies on AC-5 and AC-10 — the controls are real. QA also proved C-5's fixture restriction load-bearing (on an excluded `update_interval: "每天"` correct code legitimately diverges from HEAD). **T-13 and T-14 both survive verbatim**: `fchmod` still lands on the still-empty descriptor before the first credential byte, and the drift digest still hashes file **bytes**. QA: **18 PASS / 0 FAIL / 1 BLOCKED / 1 NOT-DISCRIMINATING** (AC-9 reported as not discriminating rather than passed, per the gate's own C-6), ≈150 fixture runs, 2000 concurrent reads against a live writer with 0 torn documents, a UTF-16 `nodes.json` rejected by name, and 33 repetitions with zero disagreement. AC-21 **BLOCKED by construction → operator obligation id 4**, nothing substituted — the **seventh** consecutive time. AC-11/AC-12's process-exit clause recorded **BLOCKED-BY-T-25** (`cmd_add`'s success line prints an sc-authored `U+2192` to a strict stdout, so even an all-ASCII URL exits non-zero **after** the bytes are safely on disk) — never a pass, never a fail, never dropped. `verify_all PASS 17 / WARN 0 / FAIL 0 / SKIP 1` at four checkpoints; `baseline.json` held at `test_count: 0` (T-28 owns the suite). Live host untouched: `MainPID`/`ActiveEnterTimestamp` identical at three readings, `is-active` never called. Product diff 4 files, `bin/sc` **+76/−51**. | 2026-08-15 | `docs/features/_archived/state-file-io-contract/` (mode: full) |
+| T-24 | override-error-envelope | **DELIVERED — one exception envelope, one type-mismatch vocabulary that cost zero new translation keys, and one gating condition; `bin/sc` +79/−55 and not one of the three rollbacks was for a code defect.** A single `try` inside `generate_config()` spans `if override is not None:` through a hoisted `json.dumps`, with `except OverrideError: raise` first (without it the generic arm swallows the specific sentence and destroys `e.path`) and one `except Exception` arm rendering `no configuration could be produced from it ({fault})` with `type(e).__name__` only; the load wrapper carries the same arm, and `_write_private` / `_record_generated` / `sing-box check` all stay **below** the region, so no path reaches the writer with an override that failed. `_merge`'s loop was re-derived around the **target's current type**, so an array-valued key admits a directive object and nothing else — object, scalar, `null` and bare array all reach the sentence that **already existed**, which is why FR-3 added **zero** keys and **deleted** a branch. **R-15, R-16 and R-26 CLOSED** — R-16 after **four declines** (T-15/T-16/T-17/T-21, R-54), its README obligation shipped with the fix; **R-44 deliberately not closed** (no cap on anyone's say-so) and **R-69 discharged as constraints**, `main()`'s arm still serving T-23's 16 call sites unnarrowed; **R-12 not closed and now wider**. **The brief was refuted in four places by re-verifying rather than inheriting**, three load-bearing: R-16's counter-weight is false (`sing-box check` runs *after* the write and after the drift record is baselined, so the loudness protects the running service and not the stored configuration — now R-73); R-44's override route is **already structurally closed** by the deep copy; and a **third R-15 instance no row recorded** (the JSON scanner's depth exhaustion is a `RecursionError`, not the `ValueError` the load caught, so a deep enough override tracebacked *before* `_merge`). **Rule 85 was tested and the architect corrected in the smaller design's *favour***: the gate found **M8 coverable by the rejected design at zero added lines** and **M9 a conjecture rather than a constructed hole** — QA then measured the band **EMPTY** (deepcopy 498, `json.dumps` 996, `json.loads` 9997; width 0), so the envelope's justification rests on FR-2's totality plus this repo's own measured leaf-enumeration evidence, never on "two constructible holes" (corrected into `.harness/rejected-decisions.md`, C-9). **R-61 honoured**: the gate re-derived K-16 arithmetically and amended it in writing rather than approving it; the developer landed **0 lines beyond the published split** and reported its re-indent as *smaller* than designed rather than absorbing the discrepancy. **The R-22 trap was attacked at four stages**: the gate found **five criteria that could not detect what they claimed** (AC-2's clause (iv) vacuous without a sentinel `config.json`; AC-2's own entry point unable to produce its own observables; AC-7 passed by a build with no gating at all), the developer found AC-2's **control wrong at the obvious key** and ran both positions, and QA built **six wrong builds** and reported which criterion kills each — W-C (right sentence, right exit, **writes first**) dies to clause (iv) alone and only in the amended sentinel form, while **W-D (`fault=str(e)`) is killed by nothing** and was reported **NOT-DISCRIMINATING** rather than passed (→ R-71, T-28). **All three rollbacks were prose**: an unconditional silent-write claim, a universal no-echo promise refuted by `_anchor_index`'s own `match: {anchor}` **inside the region**, and an exit code measured under a stubbed `subprocess.run` that QA falsified by lifting the stub (→ R-74, five instances of one pattern). T-13 and T-14 both survive: `_write_private()` still the only writer with `fchmod` on the still-empty descriptor, `_config_digest()` still hashing file **bytes**, B-7 intact, `_filter_rules` byte-identical. QA: **14 PASS / 1 BLOCKED / 2 NOT-DISCRIMINATING**, AC-15 **BLOCKED by construction → operator obligation id 5, nothing substituted (the eighth consecutive time)**. `verify_all PASS 17 / WARN 0 / FAIL 0 / SKIP 1` at eight checkpoints; `baseline.json` held at `test_count: 0`. Live host untouched: `MainPID`/`ActiveEnterTimestamp` identical throughout, `is-active` never called. | 2026-08-15 | `docs/features/_archived/override-error-envelope/` (mode: full) |
 
 ## Notes
 
 ### Open rows surfaced by T-14 (R-15 … R-18)
 
-R-15/R-16 filed by the requirement-analyst at stage 1′, discharging `06`'s two MINOR; scope rulings
-and reasons are in `docs/features/config-composition-layer/01_REQUIREMENT_ANALYSIS.md` §12.4.
-R-17 filed by the PM at delivery, discharging the gate's and the code reviewer's shared instruction
-to re-home R-4 rather than fix it inside a byte-identity gate.
+R-15/R-16 filed by the requirement-analyst at stage 1′; R-17 by the PM at delivery. **Three of the
+four are now closed** — R-15/R-16 by T-24, R-17 by T-23 — leaving only R-18, which T-27 owns.
 
-1. **R-15 — an override shape outside BC-8 … BC-14 reaches the user as a Python traceback instead of
-   a sentence.** Two measured instances: a 500-deep override makes `copy.deepcopy` raise
-   `RecursionError`, printing 2 999 lines into the log `install.sh` redirects (`06` D-2); and a
-   non-object element in `dns.rules` / `route.rules` reaches `AttributeError` in `_filter_rules`
-   (`05` MINOR-1). Both contained — no write, no service action, non-zero exit. **The coherent fix is
-   one exception envelope over the override pipeline**, not a per-shape guard. Do not fix by widening
-   `02` §6's shape assertion or by touching `_filter_rules` (pinned by AC-8). Owner: **T-24**.
-2. **R-16 — the merge has no type-mismatch vocabulary: a bare *object* silently replaces an existing
-   array.** `{"inbounds": {"mtu": 1500}}` replaces the TUN inbound array; `02` §5.3 specifies it, and
-   it is the unguarded mirror of D-5. Deliberately not fixed in T-14: D-5's rationale turns on the
-   wrong result being *valid and silent*, and `06` measured the mirror to be loud — the real
-   `sing-box` 1.13.15 returns `rc=1`, `sc reload` fails in the same invocation, the service is never
-   restarted. Owner: whichever of T-15 / T-16 / T-17 / T-21 first needs the vocabulary; it carries the
-   README obligation with the fix. Related boundary, same mechanism: an object keyed `"0"` does not
-   address array element 0 (`06` §8 O-5).
-3. **R-17 — CLOSED 2026-08-15 by T-23** (detail in the R-17 line of that task's block below and in
-   `07_DELIVERY.md`). The write path names its encoding and T-13's descriptor dance is byte-for-byte
-   intact; **the limit is that this closes the disk layer only** — printing a non-ASCII tag under such
-   a locale still fails, which is T-25's.
+1. **R-15 — CLOSED 2026-08-15 by T-24**, with a third instance no row had recorded (the JSON
+   scanner's depth exhaustion is a `RecursionError`, so a deep enough override tracebacked *before*
+   `_merge`). Neither forbidden fix was used: the composed-document assertion was not widened and
+   `_filter_rules` is byte-identical. Full row rotated to `docs/tasks-archive.md`.
+2. **R-16 — CLOSED 2026-08-15 by T-24**, after **four declines** (T-15/T-16/T-17/T-21, R-54), and
+   its README obligation shipped with the fix. **The counter-weight that justified deferring it was
+   refuted**: the loudness `06` measured protects the running *service*, not the stored
+   configuration — `sing-box check` runs **after** `_write_private()` and after the drift record is
+   baselined, so the previous working `config.json` is already destroyed (now **R-73**). Full row
+   rotated to `docs/tasks-archive.md`.
+3. **R-17 — CLOSED 2026-08-15 by T-23**; the limit is that it closes the disk layer only — printing
+   a non-ASCII tag under such a locale still fails, which is T-25's. Full row rotated to
+   `docs/tasks-archive.md`.
 4. **R-18 — `archive-task.sh`'s rotation is dead code; one-line cause known, owner assigned.**
    `archive-task.sh:89-94` counts **bullets** (`grep '^\s*-\s'`) against 30 while `verify_all` **F.4
    counts lines**, so the two differ by the file's header and the branch can never fire on any index
@@ -57,15 +48,12 @@ to re-home R-4 rather than fix it inside a byte-identity gate.
 Filed by the PM at delivery; R-19 was made a non-goal (D-13/NG-10), R-20 … R-22 are QA's DEF-1/3/4/5,
 each routed here rather than back into T-15 because none was fixable inside that task's frozen set.
 
-1. **R-19 — the five namespaced `ls.*` translation keys print literally in English.**
-   `bin/sc:183-187` + the `sc ls` header. `TRANSLATIONS` has no `en` table, so `t()` returns the key
-   verbatim and English users see `ls.idx  ls.active  ls.type  ls.name  ls.address` as column
-   headings. Known since T-02 ("`TRANSLATIONS` has no `en` table", follow-up note 2) but never filed
-   against these specific five. One-line fix per key: replace each with the English word it means.
-   T-15 deliberately did **not** fix them (`.harness/rules/85-design-discipline.md`'s counter-rule
-   forbids widening scope) and instead made its own new key an English sentence — so the English
-   header now reads `ls.idx … Delay`, visibly mixed until this lands. Natural owner: the next task
-   that changes `sc ls`'s columns.
+1. **R-19 — the five namespaced `ls.*` translation keys print literally in English**
+   (`bin/sc:183-187` + the `sc ls` header): `TRANSLATIONS` has no `en` table, so `t()` returns the
+   key verbatim and the English header reads `ls.idx … Delay`, visibly mixed. Known since T-02,
+   never filed against these five until T-15. **Owner: T-25** `output-layer-contract`. Every task
+   since has been bound not to spread the defect — T-24 shipped its one new key in both languages
+   for this reason. Full row rotated to `docs/tasks-archive.md`.
 2. **R-20 — CLOSED by T-18** (2026-08-14), exactly as this row prescribed: one exception envelope at `clash_api()`, no caller-side guard. Row text rotated to `docs/tasks-archive.md`. It was **wider than filed** — six escaping classes, not four.
 3. **R-21 — `RESERVED_TAGS` does not cover sing-box's implicit `GLOBAL` selector.** `bin/sc:56`
    reserves `proxy`/`direct`/`auto`, but the live `GET /proxies` returns a `GLOBAL` entry that is not
@@ -73,16 +61,12 @@ each routed here rather than back into T-15 because none was fixable inside that
    document, and `sc ls` prints that entry's stored delay in the node's row (`9999 ms` in QA's
    reproducer). Narrow, no exception, table intact. The general statement is that
    `stored_delays()`'s map is keyed by the API's tags, not by `sc`'s nodes.
-4. **R-22 — two upstream requirement defects, both found by running the software rather than reading
-   it.** (a) **No acceptance criterion observed the goal.** T-15's AC-1…AC-35 verify the emitted
-   document, the selection state machine and the `sc ls` rendering; not one asks whether a degraded
-   node stops carrying traffic. That is why DEF-2 — a promise materially wider than the behaviour —
-   passed stages 2, 3, 4 and 5 with every AC green. The row is the *pattern*: an AC set that pins the
-   artifact and never the behaviour will pass a gate it should fail. (b) **`BC-9`'s stated mechanism
-   is factually wrong** — "`clash_api()` returns `None` on every `URLError`/`HTTPError`" is not what
-   the code does (see R-20), and AC-24 inherited that reading. Not routed back to the analyst at
-   delivery: the gap in (a) had already been closed empirically by QA's own measurements, and (b)'s
-   consequence is R-20. Owner: the next task writing ACs against a behaviour with a live counterpart.
+4. **R-22 — a practice, not work to close: an AC set that pins the artifact and never the behaviour
+   will pass a gate it should fail.** Carried in every dispatch since; honoured by T-18, T-19, T-06,
+   T-20, T-22, T-23 and T-24 (which attacked it at four stages and had QA kill six wrong builds).
+   **T-24 adds its sharpest counter-example yet**: a control placed at the *obvious* key certified
+   nothing, because correct code and HEAD were identical there — see **R-74**. Full row rotated to
+   `docs/tasks-archive.md`.
 
 ### Open rows surfaced by T-16 (R-23 … R-27)
 
@@ -92,29 +76,26 @@ Filed by the PM at delivery; detail in `docs/features/_archived/dns-resilience/0
 |---|---|---|
 | R-23 | **A name whose only resolver is reached through a node stays unresolvable while that node accepts and never answers.** Not a defect — a measured capability gap: sing-box 1.13.15 has no DNS-query-level timeout at any level, no fall-through on failure, and `dns.final` is the no-match default, so no configuration this project emits can cover it. Re-pointing `final` to the domestic resolver was rejected on the merits (Q-17). Revisit only if a sing-box release adds a per-query bound or a real fallback transport; the probe deliberately established only that `timeout` is absent, not that no other key exists. | unassigned |
 | R-24 | **`sc ipv6 <value>` says "Nothing changed" at the one moment the user is most likely to be sitting in a stale-document stall, and names no escape.** Both sides of the comparison come from the current host, never from the document on disk — which is correct (AC-6 forbids the second opinion). The escape exists (`sc reload`, or a value that flips the decision) but is never prompted. Note `sc ipv6 off` repairs it only in one direction. BC-13 now states the general rule; making the *line* name the repair needs its own design round. | next task touching `cmd_ipv6` |
-| R-25 | **CLOSED 2026-08-15 by T-23** (with R-29, which superseded and widened it). `_load_lang()` now reads through the one state reader, so a non-UTF-8 `settings.json` degrades to `en` with one named stderr line instead of a traceback before any command runs. Its own anchor was **stale** (`:388-392`, not `:312-314`), as was the prescribed fix shape's (`:1712` now points into a DNS overlay) — both found by re-verification at stage 1 rather than inherited. | **closed** — T-23 |
-| R-26 | **`OverrideError` provenance is structural at two of its three sites.** The third (`generate_config()`'s three-key array guard) is correct today only by an argument in its own comment, not by call structure — the property the docstring and `docs/dev-map.md` both claim. Gating the guard on `override is not None` would make it structural at zero behavioural cost. | solution-architect / next override-pipeline task |
-| R-27 | **CLOSED 2026-08-15 by T-23.** `_resolve_clash_port()` now returns the freshly probed port **without writing** when the document cannot be read, so a `settings.json` the user can still repair by hand is never replaced by a single-key document `sc` composed. Measured both ways on the valid-UTF-8-but-not-JSON fixture: HEAD replaces the file, the candidate leaves it byte-identical. The accepted consequence — a re-probed port each run — is stated as BC-15. | **closed** — T-23 |
+| R-25 | **CLOSED 2026-08-15 by T-23** (with R-29, which superseded and widened it). Full row rotated to `docs/tasks-archive.md`. | **closed** — T-23 |
+| R-26 | **CLOSED 2026-08-15 by T-24** at the zero-behavioural-cost gating it predicted: `generate_config()`'s three-key array guard now sets `OVERRIDE_PATH if override is not None else None`, so provenance is structural at all three sites and the docstring's and `docs/dev-map.md`'s claim is true rather than argued. **One refinement the row did not anticipate**: gating the assertion *alone* converts a mislabelled sentence into a traceback, so the gate and the envelope had to land together. | **closed** — T-24 |
+| R-27 | **CLOSED 2026-08-15 by T-23.** Full row rotated to `docs/tasks-archive.md`. | **closed** — T-23 |
 
 ### Open rows surfaced by T-17 (R-28 … R-30)
 
 Filed by the PM at delivery; detail in `docs/features/_archived/telemetry-reject-list/07_DELIVERY.md`.
-(R-18 confirmed a fifth time; index hand-rotated.) **R-16 remains open and unclaimed**, declined by
-T-15, T-16 *and* T-17 — the last on the ground that its vocabulary would not serve the user-extension case.
+(R-18 confirmed a fifth time.) R-16 was declined here a third time; **T-24 closed it**.
 
 | id | row | owner |
 |---|---|---|
 | R-28 | **`TELEMETRY_NAMES` has no freshness owner.** A shipped name list ages: endpoints retire, vendors move collection, new dominant SDKs appear. T-17 deliberately adds no update path (a rule-set would be deleted by `_filter_rules()` on the degraded host that needs it), so the list is only ever revised by editing `bin/sc`. **The need is proven, not hypothetical**: one of the eighteen names stage 2 proposed did not resolve at all, and only C-3's first-hand check caught it. A task that re-runs a resolution check over the tuple would catch the next one in seconds. | unassigned |
-| R-29 | **CLOSED 2026-08-15 by T-23 — and its own prescription was wrong in two ways, both found by re-verifying rather than inheriting.** (a) `except (OSError, ValueError, TypeError)` is **insufficient**: `_load_lang()` and `_saved_clash_port()` reach `.get()` on a non-dict and raise **`AttributeError`**, which that tuple does not catch, so applied literally the fix would have left two of the four readers it names still tracebacking. The **is-a-dict check**, not the catch tuple, is what closes the class. (b) The `"telemetry"` example does not raise at all in `_ipv6_setting()` — `"ipv6" not in "telemetry"` is a legal substring test, so it returned `auto`: **a silently wrong answer, worse than the traceback the row was filed for.** The family was also 22 call sites, not the four named. | **closed** — T-23 |
+| R-29 | **CLOSED 2026-08-15 by T-23 — and its own prescription was wrong in two ways**, both found by re-verifying rather than inheriting (the catch tuple missed `AttributeError`; the `"telemetry"` example answered wrongly instead of raising). Full row rotated to `docs/tasks-archive.md`. | **closed** — T-23 |
 | R-30 | **Operator obligation, not a code row.** T-17's behaviour change reaches the owner's live host only when a human installs the new `bin/sc` and runs `sc reload` there — no agent on this project may touch `/usr/local/bin/` or the live service. Until then the running host keeps the pre-T-17 document. Stage 6 could not file this itself (`.harness/**` is outside the task's permitted diff) and routed it here. | owner |
 
 ### Open rows surfaced by T-18 (R-31 … R-35)
 
 Filed by the PM at delivery; detail in `docs/features/_archived/status-egress-via-clash-api/07_DELIVERY.md`.
-**R-18 confirmed a sixth time** (index hand-rotated again). **R-20 is closed** (above). T-18 stage 1's
-Q-5 — that `load_nodes()` carries R-29's classes plus an absent-file case — was **right and still
-undercounted**, and is **closed by T-23**. **R-22(a) was honoured** (AC-B1/AC-B2 observe the
-behaviour); R-22(b) is moot now that R-20 is fixed.
+R-18 confirmed a sixth time; **R-20 closed** (above); stage 1's Q-5 was right, still undercounted, and
+is **closed by T-23**; R-22(a) honoured and R-22(b) moot now that R-20 is fixed.
 
 | id | row | owner |
 |---|---|---|
@@ -127,10 +108,10 @@ behaviour); R-22(b) is moot now that R-20 is fixed.
 ### Open rows surfaced by T-19 (R-36 … R-41)
 
 Filed by the PM at delivery; detail in `docs/features/_archived/ruleset-staleness-visibility/07_DELIVERY.md`.
-**R-18 confirmed a seventh time** (index hand-rotated again). **R-12 narrowed, not closed** (Q-2): its two
-unwind paths already exit non-zero with the cause on stderr before any service-affecting action, so the row
-is now about the missing outcome *line* only. **R-4/R-9 unchanged** (`test_count: 0`, nine tasks running).
-**R-22 honoured; R-31's discipline held** — AC-B9 BLOCKED, never substituted (→ R-41).
+R-18 confirmed a seventh time. **R-12 narrowed, not closed** (Q-2): its two unwind paths already exit
+non-zero with the cause on stderr before any service-affecting action, so the row is now about the missing
+outcome *line* only — and **T-24 widened its population** (→ R-70…R-74 block). R-22 honoured; R-31's
+discipline held — AC-B9 BLOCKED, never substituted (→ R-41).
 
 | id | row | owner |
 |---|---|---|
@@ -229,7 +210,7 @@ completed rows were always rotated first.
 | id | statement | owner |
 |---|---|---|
 | R-53 | **`RULESET_BASES`' four entries span three failure domains, not four.** Measured 2026-08-14: `cdn.jsdelivr.net` and `testingcf.jsdelivr.net` both answered from `104.17.207.5`/`104.17.208.5` — one Cloudflare edge — leaving Cloudflare (bases 1+2), `ghfast.top` (3) and Fastly (4). A *fifth* base does not help (GitHub Releases share base 4's Fastly IP); a one-entry data change to base 2 would. **No evidence it is needed** — 24/24 fetches succeeded — so this is an observation, not a proposal. | unassigned |
-| R-54 | **R-16 re-homed: T-21 formally declines ownership.** R-16 (the merge has no type-mismatch vocabulary — a bare object silently replaces an array) named T-15/T-16/T-17/T-21 as candidate owners. T-15…T-17 have all shipped without needing it, and T-21 is an `explore` task that ships **no code**, so it cannot claim it. R-16 stays **open and unclaimed**; the next task that needs the vocabulary owns it, and it still carries the README obligation with the fix. | next task needing the array/object merge vocabulary |
+| R-54 | **CLOSED 2026-08-15 by T-24**, which took ownership after R-16's fifth decline and shipped the README obligation with the fix. The re-homing worked exactly as written: the next task that *needed* the vocabulary owned it. Full row rotated to `docs/tasks-archive.md`. | **closed** — T-24 |
 | R-55 | **Two sentences the README owes users, both established by measurement.** (1) Rule-set downloads follow the *host's* routing — tunnelled on a running host (`rule=final` -> `proxy`, observed) and direct at install time (`install.sh:567` precedes `systemctl start` at `:593`) — so there is nothing to configure, and a `direct` default would re-create this batch's founding failure. (2) An alternate rule source is expressible **today** as a `type: remote` entry in `override.json` (verified against sing-box 1.13.15), with the caveat that such rule-sets live in `cache_file` and therefore sit outside `sc`'s validity, age and `doctor` reporting. | next task touching the README rule-set section |
 
 ### Open rows surfaced by T-07 (R-56 … R-61)
@@ -272,9 +253,8 @@ key enters an outbound.
 ### Open rows surfaced by T-23 (R-64 … R-69)
 
 Filed by the PM at delivery; detail in `docs/features/_archived/state-file-io-contract/`.
-**R-17, R-25, R-27, R-29, R-62 CLOSED above.** **R-18 confirmed a twelfth time** (four lines hand-rotated
-before the harvest; **T-27** owns it); **R-37 a twelfth time**; **R-4/R-9 unchanged**, but T-28's stated
-dependency on this row is satisfied; **R-16 open and unclaimed**, declined a fifth time.
+**R-17, R-25, R-27, R-29, R-62 CLOSED above.** R-18 confirmed a twelfth time (four lines hand-rotated;
+**T-27** owns it) and R-37 a twelfth; R-16 was still open here after a fifth decline — **T-24 closed it**.
 
 | id | row | owner |
 |---|---|---|
@@ -284,6 +264,27 @@ dependency on this row is satisfied; **R-16 open and unclaimed**, declined a fif
 | R-67 | **A criteria gap of exactly the shape the gate caught once and missed once.** T-23's FR-6 named eight commands that must abort on an unusable `settings.json`; seven were verified by run, and the eighth — `sc update-interval` — is **unreachable under the mandated fixture**, because `cmd_update_interval` is `if SYSTEMD: … elif OPENRC: …` and `SYSTEMD = OPENRC = False` takes neither arm, so it exits **0** having read nothing. Identical in shape to the `sc status` / `is_running()` trap the gate *did* catch (C-1). QA substituted nothing: reaching the systemd arm needs a live `daemon-reload` + `restart`. **Not a product defect** — the two `load_settings()` calls are unguarded and inside `main()`'s try, the same mechanism proven for the other seven. The lesson is the row: **a criterion over a command gated on `SYSTEMD`/`OPENRC` must name the exclusion the way C-1 does.** QA DEF-1. | requirement-analyst, T-28 and any task writing ACs over an init-system-gated command |
 | R-68 | **Operator obligation, not a code row.** AC-21 — install the new `bin/sc`, `sudo sc add` a share URL carrying a non-ASCII password, `sc reload`, and confirm the real `sing-box check` accepts the regenerated document — is the one promise T-23 did not close by a run: it needs root and the **installed** `/usr/local/bin/sc` against the live service, and an un-neutralised import re-execs into it. QA reported it **BLOCKED and substituted nothing** (R-31/R-41/R-47/R-52/R-60 and obligation 3, honoured a **seventh** time) and filed it as **id 4** in `.harness/operator-obligations.md` with the recipe. Carries the standing **R-30** obligation: the change reaches the running host only when a human installs the new `bin/sc`. | owner |
 | R-69 | **T-24 inherits a second consumer of `OverrideError`, and one line it must move rather than rewrite.** T-23 routes state-document failures through the *existing* envelope so `main()`'s arm serves 16 call sites with no new key and no second arm — the gate ruled this legitimate reuse rather than a mortgage, on the condition that `_unusable()` is the **single** construction site. So if T-24 renames or re-parents the class, `_unusable()` is the one line to move, and `main()`'s arm **must keep honouring `e.path`** and must not be narrowed back to the override. Related: `_load_override()` and `_read_state()` are deliberately **two** implementations of "is this JSON document usable?" — the override's stat-first, size-cap and whitespace-as-absent policies were **not** copied, and collapsing them is only safe if all three survive. RT-1 / RT-2. | **T-24** `override-error-envelope` |
+
+### Open rows surfaced by T-24 (R-70 … R-74)
+
+Filed by the PM at delivery; detail in `docs/features/_archived/override-error-envelope/`.
+**R-18 confirmed a thirteenth time** (index hand-rotated again). **R-15, R-16 and R-26 are CLOSED**
+by this task — R-16 after **four declines** (T-15/T-16/T-17/T-21, R-54), and its README obligation
+shipped with the fix. **R-44 deliberately not closed**: no cap was added on anyone's say-so, and
+stage 6 measured why one is not needed (the band is empty). **R-69 discharged as constraints** —
+`main()`'s arm still renders `e.path or CFG_PATH` for T-23's 16 call sites, unnarrowed.
+**R-12 not closed and its population is now WIDER**: shapes that used to traceback end in the
+sentence-and-exit path, which still prints no run-level outcome line. **R-37 confirmed a
+thirteenth time**; **R-61 honoured** (the gate amended K-16 rather than approving a cap it had to
+re-derive). **R-22 honoured at four stages**, and QA killed six wrong builds.
+
+| id | row | owner |
+|---|---|---|
+| R-70 | **`sc reload` tracebacks on a host with no `sing-box`.** `bin/sc:2135`'s `subprocess.run([SB_BIN, "check", …])` carries no `shutil.which` guard where `cmd_doctor` does at `:2603`, so a missing binary raises `FileNotFoundError` from **outside** the new envelope — it sits below the region by design (Q-8 rejected widening the region to cover the checker). Confirmed by construction at three stages: every success-path fixture had to stub `subprocess.run`. Measured shape: `exit=1`, traceback, and on the malformed-override path the overwrite and the baselined digest still happen while the attribution to the checker does not. Gate F-14 / stage-4 boundary note / QA §RES-7. | next task touching `reload_or_restart()` or the checker call |
+| R-71 | **No criterion in this project controls the no-echo property at runtime.** QA built `fault=str(e)` in place of `type(e).__name__` and it **survives all nine malformed members and every AC-2 clause**, rendering `('int' object has no attribute 'get')` — a value out of the user's document — onto the stream `install.sh` captures. BC-4 holds in the shipped file **by construction only**; six purpose-built carriers produced no actual echo, so the hazard is real but unrealised. A runtime carrier assertion is the missing control. QA-3, NOT-DISCRIMINATING rather than passed. Related: **QA-4** — C-5's "found as a `t()` key" is satisfied by a *partial* bare-literal build; the strengthened form is "no emission site is a bare literal". | **T-28** `committed-test-suite` |
+| R-72 | **An existing error message echoes user-supplied JSON into the captured log.** `_anchor_index()` (`bin/sc:1400-1404`, zh key `:370-371`) renders `—— match：{anchor}` with `anchor = json.dumps(match, …)` — arbitrary user JSON, on stderr, into `/var/log/sing-box/install.log`. Pre-existing and **deliberately** left alone: BC-4 scopes its ban to sentences a task introduces or newly reaches, and T-24's envelope does not newly reach it. It is reachable from the READMEs' **own published** `$before`/`$after` recipe, whose zero-or-several failure both READMEs advertise. Twice a rollback cause here, because two drafts published a no-echo guarantee this sentence refutes. Analyst re-homed finding 1 / CR-8. | next task touching `_anchor_index` or the override error strings |
+| R-73 | **The drift record is baselined onto a document the checker then rejects.** `_record_generated()` runs **before** `sing-box check`, so on any override that produces a checker-invalid document the record already reads as "what `sc` last wrote" while the service still runs the previous configuration. Measured at spawn time by QA (round 3) on `dns.servers` / `inbounds` / `outbounds`: the digest equals the sha256 of the just-written broken document before the checker is even spawned. Not a T-24 defect — T-24 stops the malformed shapes it owns *before* the write — but it is the general statement behind that clause, and it is what makes an unguarded-key failure destroy the working configuration rather than merely fail. Analyst re-homed finding 3. | next task touching `_record_generated()` / the reload ordering |
+| R-74 | **A prose claim about a *measured* outcome went wrong five times in one task, always in the same direction.** CR-1, CR-3, CR-8, QA-1 and QA-6 were each a shipped sentence claiming slightly more than the code delivers — an unconditional silent-write claim, a universal fault-clause promise, a universal no-echo promise, an exit code measured under a stub, and a present-tense claim that a closed defect was open. **Every one was in prose; not one was in code.** The specific traps, worth carrying: a universal quantifier over a region must be enumerated against every sentence the region can produce *before* it is written; and a figure measured under a stub is a claim about the stub, not about the build. Not work — a practice, in the shape of R-22. | every stage that writes a user-facing or record sentence |
 
 Unnumbered, accepted or already-owned: the `CHANGELOG.md` write-failure clause has an elided subject
 though two internal markers scope it correctly (CR-8/RES-8, NIT); on the `[]` fixture HEAD produces

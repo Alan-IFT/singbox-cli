@@ -371,6 +371,8 @@ TRANSLATIONS = {
             "在 {at}：{name} 匹配到 {count} 个元素，但必须恰好匹配 1 个 —— match：{anchor}",
         "the top level": "顶层",
         "at {at}: this must stay an array": "在 {at}：这里必须仍然是数组",
+        "no configuration could be produced from it ({fault})":
+            "无法据此生成配置（{fault}）",
         # sc config — the two notes it always writes and the two provenance sentences.
         # None of these may contain 失败 either (same grep literal as above).
         "Showing the configuration on disk: {path}": "正在显示磁盘上的配置：{path}",
@@ -539,7 +541,7 @@ def _init_files():
 
 
 def _unusable(path, problem):
-    """A state document's failure, carrying WHOSE document it was; returned, not raised."""
+    """An unusable document's failure, carrying WHOSE it was; returned, not raised."""
     failure = OverrideError(problem)
     failure.path = path
     return failure
@@ -1438,12 +1440,15 @@ def _merge(target, overlay, at=""):
     from the overlay keeps its current value and its current position. That last clause is
     load-bearing for byte-identity — assigning to a key a dict already has never moves it.
 
-    A bare array where the document already holds one is an error naming the directives
-    (a user writing one dns rule to ADD it and silently getting a one-rule DNS section
-    would still pass `sing-box check` while misrouting everything), while a bare array at
-    a key the document does not have is simply accepted: there is no existing array to be
-    ambiguous about. A directive at a key that does not exist is likewise an error, not a
-    silent create — a misspelt path is the likeliest user error of all.
+    A key whose current value is an array accepts exactly ONE kind of overlay value: a
+    directive object. An object, a scalar, a JSON null or a bare array written there is
+    the same error naming the vocabulary — a user writing one dns rule to ADD it and
+    silently getting a one-rule DNS section would still pass `sing-box check` while
+    misrouting everything, and an object or a scalar dropped over that array is the same
+    accident one shape further along. At a key the document does NOT have, a bare array
+    is simply accepted: there is no existing array to be ambiguous about. A directive at
+    a key that does not exist is likewise an error, not a silent create — a misspelt path
+    is the likeliest user error of all.
     """
     root = _directive_of(overlay, at or t("the top level"))
     if root is not None:
@@ -1452,25 +1457,29 @@ def _merge(target, overlay, at=""):
                               name=root[0]))
     for key, value in overlay.items():
         where = (at + "." + key) if at else key
-        if isinstance(value, dict):
-            directive = _directive_of(value, where)
+        # Recognised BEFORE any test on the target, once per dict-valued overlay key, so
+        # "unknown directive" and "cannot be combined with other keys" keep firing ahead
+        # of every rule below, at every target type.
+        directive = _directive_of(value, where) if isinstance(value, dict) else None
+        if isinstance(target.get(key), list):
+            # The whole array position, decided on the TARGET's current type: one
+            # admissible value, one expression assigned, one sentence for every other
+            # shape. Branching on the overlay value's type instead is what made an
+            # object over an array a silent replacement and a scalar over one a
+            # silent scalar.
             if directive is None:
-                if isinstance(target.get(key), dict):
-                    _merge(target[key], value, where)
-                else:
-                    target[key] = copy.deepcopy(value)
-            elif isinstance(target.get(key), list):
-                target[key] = _apply_directive(target[key], directive[0], directive[1],
-                                               where)
-            else:
-                raise OverrideError(t("at {at}: {name} can only be applied to an array "
-                                      "that already exists", at=where,
-                                      name=directive[0]))
-        elif isinstance(value, list):
-            if isinstance(target.get(key), list):
                 raise OverrideError(t("at {at}: an existing array must be changed with "
                                       "one of {directives}", at=where,
                                       directives=_directive_list()))
+            target[key] = _apply_directive(target[key], directive[0], directive[1],
+                                           where)
+        elif directive is not None:
+            raise OverrideError(t("at {at}: {name} can only be applied to an array "
+                                  "that already exists", at=where,
+                                  name=directive[0]))
+        elif isinstance(value, dict) and isinstance(target.get(key), dict):
+            _merge(target[key], value, where)
+        elif isinstance(value, (dict, list)):
             target[key] = copy.deepcopy(value)
         else:
             target[key] = value                         # scalars, JSON null included
@@ -2038,6 +2047,9 @@ def generate_config():
     except OverrideError as e:
         e.path = OVERRIDE_PATH
         raise
+    except Exception as e:
+        raise _unusable(OVERRIDE_PATH, t("no configuration could be produced from it "
+                                         "({fault})", fault=type(e).__name__)) from None
 
     nodes_data = load_nodes()
     nodes = nodes_data["nodes"]
@@ -2066,42 +2078,54 @@ def generate_config():
     # call buys is provenance: two failure sources now have two code sites.
     config = _compose([_runtime_overlay(nodes, active, report), _dns_overlay(),
                        _telemetry_overlay()])
-    if override is not None:
-        try:
-            _merge(config, override)
-        except OverrideError as e:
-            e.path = OVERRIDE_PATH
-            raise
+    # THE region: from the override document's bytes to the emitted document's bytes.
+    # Every step inside it has override-supplied content among its inputs, so a failure
+    # at ANY of them is a failure to produce a configuration from this document — one
+    # sentence naming the fault's class, never a traceback and never a written file. Only
+    # the class name: an exception's own message can quote a value the document supplied.
+    try:
+        if override is not None:
+            try:
+                _merge(config, override)
+            except OverrideError as e:
+                e.path = OVERRIDE_PATH
+                raise
 
-    # NOT schema validation — that is `sing-box check`'s job. Exactly the three arrays the
-    # block below indexes into, so an override that turns one of them into a scalar earns
-    # a sentence rather than a traceback. It cannot fire when there is no override — every
-    # overlay sc composes leaves all three arrays — which is why this raise, too, names the
-    # user's document.
-    for at in ("dns.rules", "route.rules", "route.rule_set"):
-        if not isinstance(_dig(config, at), list):
-            failure = OverrideError(t("at {at}: this must stay an array", at=at))
-            failure.path = OVERRIDE_PATH
-            raise failure
+        # NOT schema validation — that is `sing-box check`'s job. Exactly the three arrays
+        # the block below indexes into, so an override that turns one of them into a scalar
+        # earns a sentence rather than a traceback. Every overlay sc composes leaves all
+        # three arrays, so today it cannot fire without an override — but WHOSE document is
+        # named is decided by whether there IS one, not by that argument holding (R-26).
+        for at in ("dns.rules", "route.rules", "route.rule_set"):
+            if not isinstance(_dig(config, at), list):
+                raise _unusable(OVERRIDE_PATH if override is not None else None,
+                                t("at {at}: this must stay an array", at=at))
 
-    # Degrade per file: drop every rule that references a rule-set the composed document
-    # does not DEFINE, in BOTH rule arrays. The tags come from the document rather than
-    # from usable_tags(report) — identical by construction when there is no override,
-    # since the overlay builds route.rule_set from exactly the usable entries of the same
-    # report, and it is what stops a user-defined rule-set having every rule referencing
-    # it silently deleted. Computed BEFORE the empty-case deletion below.
-    defined = set(d.get("tag") for d in config["route"]["rule_set"]
-                  if isinstance(d, dict))
-    if not config["route"]["rule_set"]:
-        del config["route"]["rule_set"]     # an absent optional field beats an empty one
-    config["dns"]["rules"] = _filter_rules(config["dns"]["rules"], defined)
-    config["route"]["rules"] = _filter_rules(config["route"]["rules"], defined)
-    _warn_degraded(report)
-    _warn_drift()       # stderr only, and BEFORE the file it warns about is replaced
+        # Degrade per file: drop every rule that references a rule-set the composed
+        # document does not DEFINE, in BOTH rule arrays. The tags come from the document
+        # rather than from usable_tags(report) — identical by construction when there is
+        # no override, since the overlay builds route.rule_set from exactly the usable
+        # entries of the same report, and it is what stops a user-defined rule-set having
+        # every rule referencing it silently deleted. BEFORE the empty-case deletion below.
+        defined = set(d.get("tag") for d in config["route"]["rule_set"]
+                      if isinstance(d, dict))
+        if not config["route"]["rule_set"]:
+            del config["route"]["rule_set"]  # an absent optional field beats an empty one
+        config["dns"]["rules"] = _filter_rules(config["dns"]["rules"], defined)
+        config["route"]["rules"] = _filter_rules(config["route"]["rules"], defined)
+        _warn_degraded(report)
+        _warn_drift()       # stderr only, and BEFORE the file it warns about is replaced
+        text = json.dumps(config, indent=2, ensure_ascii=False)
+    except OverrideError:
+        raise
+    except Exception as e:
+        raise _unusable(OVERRIDE_PATH if override is not None else None,
+                        t("no configuration could be produced from it ({fault})",
+                          fault=type(e).__name__)) from None
 
     # Ordering versus `sing-box check` is unchanged: the config is written first.
     try:
-        _write_private(CFG_PATH, json.dumps(config, indent=2, ensure_ascii=False))
+        _write_private(CFG_PATH, text)
     except (OSError, ValueError) as e:
         sys.stderr.write("⚠️  " + t("Could not write {path}: {err}", path=CFG_PATH,
                                     err=_plain(getattr(e, "strerror", None) or str(e))) + "\n")

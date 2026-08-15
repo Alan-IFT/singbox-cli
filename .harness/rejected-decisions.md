@@ -515,3 +515,38 @@ stage 5. Filed by the PM at delivery because `.harness/**` is outside the task's
 - **Origin:** T-22 `share-url-userinfo-contract`, stage 2 (rejected-alternative section), adjudicated
   first-hand at stage 3 (`03_RATIONALE.md` §"Rule-85 adjudication") and re-confirmed unchanged at
   stage 3 round 2.
+
+## `override-error-envelope-point-fixes-without-a-region` — declined 2026-08-15 (T-24)
+- **Decision:** declined. Design **S** — a leaf enumeration (`except (ValueError, RecursionError)`
+  at the load, `except RecursionError` around the merge, a `try` around the two `_filter_rules`
+  calls, plus the same `_merge` and path-label edits, `≈ +36/−31`) — was rejected in favour of one
+  contiguous `try` region inside `generate_config()` spanning `if override is not None:` through a
+  hoisted `json.dumps`, with `except OverrideError: raise` first and one `except Exception` arm
+  (`bin/sc` +79/−55).
+- **Why, stated as the gate corrected it and not as the architect first argued it.** The architect
+  conceded S satisfies **19 of the 21 binding units**, including **every one of AC-1…AC-15**, and
+  claimed the extra code bought two constructible holes. **The gate tested that claim and struck
+  half of it, in the smaller design's favour**: **M8** (`{"route": {"rule_set": {"$append":
+  [{"tag": ["a"]}]}}}` → `TypeError: unhashable type: 'list'`) is real and reachable from
+  `override.json`, but S covers it at **zero** added lines by opening its `try` two statements
+  earlier — so M8 alone does not buy the envelope. And **M9** (the `json.dumps` band) was a
+  **conjecture, not a constructed hole**; stage 6 then measured the band by bisection and found it
+  **EMPTY** (`copy.deepcopy` overflows at depth 498, `json.dumps(indent=2)` at 996, `json.loads` at
+  9997 on CPython 3.12.3 — the band `[996, 498)` has width 0), confirming the gate.
+- **What the decision actually rests on**, therefore: **FR-2's totality claim** — "a failure
+  *anywhere in that region*" is a property no enumeration can discharge — plus **this repository's
+  own measured evidence that leaf enumerations at data boundaries ship incomplete**
+  (§`clash-api-bare-except-and-leaf-enumeration`: four leaves filed, a fifth found at stage 4, a
+  sixth at stage 6). It rests on **neither** "two constructible holes", and any future reader
+  citing that phrase is citing a claim two later stages refuted.
+- **The nearer alternative was tested too** and its refutation-by-provenance ("appending
+  `RecursionError` to the enumeration that already omitted it is the same act one class later") was
+  rated **rhetoric as written** by the gate, though its conclusion survives on the evidence above:
+  the load's `try` wraps one statement that raises at least `RecursionError` **and** `MemoryError`,
+  neither a `ValueError`.
+- **Also declined as larger:** a schema language, a validator, a new exception hierarchy or taxonomy,
+  and any depth / node / size cap (**R-44**, **BC-8** — the recursion limit is never raised, and the
+  deep copy overflowing ~20× earlier than the masking walk is what keeps R-44 unreachable through
+  `override.json` for free).
+- **Origin:** T-24 `override-error-envelope`, stage 2 (`## Smaller alternative rejected`), corrected
+  at stage 3 (F-1, F-2, F-3 → C-9) and measured at stage 6 (C-11).

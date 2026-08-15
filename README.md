@@ -397,6 +397,8 @@ An override that is absent, empty, or `{}` changes nothing. One that cannot be a
 
 `$before` / `$after` take `{"match": {…}, "values": […]}`. `match` selects by subset equality — every key/value in it must equal the element's — and must match **exactly one** element; zero or several is an error, never a silent no-op. Anchors rather than numeric indices, because sing-box evaluates `dns.rules` and `route.rules` in order and an index is wrong the moment anything inserts earlier.
 
+A key whose current value is an array therefore accepts **only** a directive object: an object, a scalar, `null` or a bare array written there is an error naming the five directives, never a silent replacement. To empty an array, use `$replace` with `[]`.
+
 Example — insert an AAAA-suppressing DNS rule immediately after the `clash_mode: Direct` rule:
 
 ```json

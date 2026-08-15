@@ -169,6 +169,14 @@ or its remainder — so a scheme's grammar is a choice of projection, never a se
 recovered from base64 was never URI text and is deliberately outside it.
 _Avoid_: `urlparse().username`, credential parsing, userinfo helper, split the password
 
+**document envelope**:
+The single region of config generation that spans the user override's bytes to the emitted
+document's bytes, inside which *any* exception becomes one unusable-document sentence naming a
+path and a fault class. It is a region, not a list of catch sites: what makes it honest is that
+nothing inside it can reach the user as a traceback, and what makes it truthful is that the
+write and the checker sit outside it, keeping their own renderings.
+_Avoid_: error handler, try block, catch-all, guard
+
 **state document**:
 A JSON document `sc` both authors and reads back as its own persistent state — `settings.json` and
 `nodes.json`, and those two only. One reader decodes every state document as UTF-8 independently of

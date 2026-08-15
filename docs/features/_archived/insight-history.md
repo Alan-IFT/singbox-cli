@@ -285,3 +285,20 @@ Four lines rotated by hand to make room for T-23's harvest, keeping `.harness/in
 
 - 2026-08-14 · `urlopen(timeout=N)` bounds each socket operation, never the call's total wall clock: a peer dripping one body byte every 2 s keeps a `timeout=3` request alive **30.1 s** and then returns success, so any "it gives up after N seconds" claim about `clash_api()` or `_egress_ip()` is false as written · evidence: status-egress-via-clash-api
   - **Why rotated:** same ruling as the line above — R-35's row in `docs/tasks.md` carries the number and the measurement, and the batch plan cites it as a reason not to build a task. It is a fact to reason with, not a trap that fires unannounced.
+
+## Rotated 2026-08-15 (during `override-error-envelope` / T-24 archive)
+
+`archive-task.sh` harvested 2 new insights and again did **not** auto-rotate the overflow (**R-18,
+confirmed a thirteenth time** — it counts bullets where `verify_all` F.4 counts lines, so on an index
+with a header the branch can never fire; **T-27** owns the one-line fix). The index stood at 31 lines
+against its 30 cap; the PM rotated these two by hand.
+
+Both are **rule-set sourcing research**, and both were chosen for the standard reason: a committed
+artefact now carries the knowledge. `RULESET_BASES`' failure-domain count lives in **R-53**'s row in
+`docs/tasks.md` (filed explicitly as an observation that proposes nothing, since 24/24 fetches
+succeeded), and the publishing-layout survey is settled history recorded in T-20's and T-21's
+delivery documents. Neither is a trap a future task can walk into unaware — unlike the entries kept,
+which are all live hazards for the *next* harness someone writes.
+
+- 2026-08-14 · No publisher of sing-box rule-sets ships `.srs` as a GitHub **Release asset** — MetaCubeX/meta-rules-dat (1 release, 28 assets), 2dust/sing-box-rules (30), SagerNet/sing-geosite (11) and sing-geoip (4) publish only aggregate `.dat`/`.db`/`.mmdb`/`.7z` there and keep every `.srs` on a git **branch** (3790 files on one such branch) — and the `.db` they do ship is refused by sing-box 1.13.15 with `geosite database is deprecated in sing-box 1.8.0 and removed in sing-box 1.12.0`, a bogus-key control proving the field is decoded and *then* rejected · evidence: ruleset-source-strategy-from-v2rayn
+- 2026-08-14 · GitHub **Release assets are not a second CDN**: `github.com/…/releases/download/…` 302s to a signed, ~1 h-expiry `release-assets.githubusercontent.com` URL answering on **185.199.108.133** — one of the same four Fastly anycast addresses `raw.githubusercontent.com` resolves to, `via: 1.1 varnish` — so a network blocking raw *by address* blocks releases with it; measured alongside, `cdn.jsdelivr.net` and `testingcf.jsdelivr.net` share one Cloudflare edge, leaving `RULESET_BASES`' four entries spanning **three** failure domains · evidence: ruleset-source-strategy-from-v2rayn
