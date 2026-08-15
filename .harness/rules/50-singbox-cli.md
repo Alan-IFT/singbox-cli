@@ -20,14 +20,14 @@
 <!-- source: README.md -->
 
 There is **no compile step and no dependency manifest** — the top level carries no
-`package.json`, `pyproject.toml`, `requirements.txt`, `Cargo.toml`, or `go.mod`, and there
-is no test directory. `bin/sc` is a single Python 3 file run directly; `install.sh` and
-`uninstall.sh` are Bash scripts run with `sudo bash`.
+`package.json`, `pyproject.toml`, `requirements.txt`, `Cargo.toml`, or `go.mod`, and the
+committed tests live in `.harness/scripts/`. `bin/sc` is a single Python 3 file run
+directly; `install.sh` and `uninstall.sh` are Bash scripts run with `sudo bash`.
 
 - Build: **none** — nothing is compiled. `install.sh` copies `bin/sc` to `/usr/local/bin/`
   and downloads the sing-box binary from GitHub Releases.
-- Test: `<your test command>` — no suite exists yet. Fill this in on the first task that
-  adds one, then wire it into `verify_all` section B.
+- Test: `python3 .harness/scripts/check-sc-contracts.py` — 14 contract assertions over
+  `bin/sc`, wired as `verify_all` B.4 against `.harness/scripts/baseline.json`'s floor.
 - Lint / typecheck: `<your linter>` — no lint config is committed. If you add one, wire it
   into `verify_all` section B at the same time.
 
@@ -35,7 +35,9 @@ is no test directory. `bin/sc` is a single Python 3 file run directly; `install.
 `python3 -m py_compile bin/sc` plus `bash -n` on `install.sh` and `uninstall.sh`, and it
 fails the run on a parse error. **B.2 is a real gate too since T-11**: it runs
 `.harness/scripts/check-i18n-parity.sh install.sh`, which renders every `t()` key in both
-languages and fails the run on a key-set or `printf`-specifier mismatch. **B.3 (lint) is
+languages and fails the run on a key-set or `printf`-specifier mismatch. **B.4 and B.5 are
+real gates since T-28**: B.4 runs `check-sc-contracts.py` and fails below `baseline.json`'s
+`test_count`; B.5 runs `restricted-network-regression.sh --self-check`. **B.3 (lint) is
 still SKIP** — the first task that adds a lint config must replace that SKIP, because a
 permanently SKIPping check proves nothing.
 

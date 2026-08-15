@@ -69,23 +69,31 @@ Step "A.2" "No .env files committed" {
 
 # >>> HARNESS:B-CUSTOM:BEGIN (your build/test/lint checks live here; preserved across /harness-upgrade) <<<
 # --- B. Build / test (CUSTOMIZE FOR Python 3 CLI (sc) + Bash installer/uninstaller, systemd/OpenRC service units, multi-distro package managers (apt/dnf/pacman/zypper/apk), sing-box binary management) ---
-Step "B.1" "Build" {
-    # TODO: Replace with your build command, e.g.:
-    #   if (-not (Test-Path "Cargo.toml")) { return "SKIP" }
-    #   & cargo build 2>&1 | Out-Null
+# Every id below carries the identical check name to its verify_all.sh counterpart, and
+# every SKIP states its reason on the run's output. The reason lands BEFORE the status
+# word because Step writes "[id] name ..." -NoNewline and only then invokes this block.
+Step "B.1" "Syntax (bin/sc, install.sh, uninstall.sh)" {
+    Write-Host " (not run here: the gate is python3 -m py_compile plus bash -n)" -NoNewline
     return "SKIP"
 }
 
-Step "B.2" "Tests pass" {
-    # TODO: Replace with your test command, e.g.:
-    #   if (-not (Test-Path "tests")) { return "SKIP" }
-    #   & pytest 2>&1 | Out-Null
+Step "B.2" "install.sh bilingual key parity" {
+    Write-Host " (not run here: the check is a Bash script over install.sh)" -NoNewline
     return "SKIP"
 }
 
 Step "B.3" "Lint" {
-    # TODO: Replace with your lint command, e.g.:
-    #   & cargo clippy -- -D warnings 2>&1 | Out-Null
+    Write-Host " (no lint config is committed)" -NoNewline
+    return "SKIP"
+}
+
+Step "B.4" "bin/sc contract assertions" {
+    Write-Host " (Linux-only by subject: POSIX file modes and os.geteuid)" -NoNewline
+    return "SKIP"
+}
+
+Step "B.5" "restricted-network self-check" {
+    Write-Host " (a Bash scenario script)" -NoNewline
     return "SKIP"
 }
 # >>> HARNESS:B-CUSTOM:END <<<

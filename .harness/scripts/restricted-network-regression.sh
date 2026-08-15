@@ -27,8 +27,9 @@
 # /etc/hosts、装过服务、写过 /etc/sing-box。跑完请直接销毁这台虚拟机，不要在同一台
 # 机器上跑第二次（第二次会因为前置条件 6 报 UNMET）。
 # ==============================================================================
-# Below this line everything, runtime output included, is English — so no string
-# of this file can collide with `bin/sc`'s load-bearing `失败：` grep.
+# Below this line every string this file PRINTS is English, and its only non-ASCII
+# literals are the installer banner glyphs it greps for — so nothing this file emits
+# can collide with the localized failure-prefix grep `sc` and the installer rely on.
 #
 # SAFETY: outside its mktemp work dir the only host file this writes is
 # /etc/hosts, and only once all four gates in main() have passed; it never runs
@@ -87,9 +88,10 @@ val() { local s="${1#*$2=}"; printf '%s' "${s%%;*}"; }
 # candidate bin/sc — its import-time auto-elevate re-execs the INSTALLED sc.
 derive_bases() { sed -n '/^RULESET_BASES = (/,/^)/p' "$1" | grep -oE 'https?://[^"]+'; }
 host_of() { local h="${1#*://}"; printf '%s' "${h%%/*}"; }
-# /etc/hosts maps names, not addresses: an address literal, a port-bearing
-# authority, localhost or an empty host is UNCOVERABLE — named, never skipped.
-uncoverable() { case "$1" in ""|localhost|*:*|[0-9]*.[0-9]*.[0-9]*.[0-9]*) return 0 ;; esac; return 1; }
+# /etc/hosts maps names, not addresses: an address literal, a port-bearing or
+# userinfo-bearing authority, localhost or an empty host is UNCOVERABLE — named,
+# never skipped (R-56: `u@cdn.example` is not a name /etc/hosts can hold).
+uncoverable() { case "$1" in ""|localhost|*@*|*:*|[0-9]*.[0-9]*.[0-9]*.[0-9]*) return 0 ;; esac; return 1; }
 # Sets BASES / HOSTS / BAD. Returns 1 on BC-13 (nothing parsed) or BC-2 (a
 # shipped source the blackout cannot cover). The command substitution's status is
 # deliberately NOT consulted (the emptiness of BASES is the datum instead).
@@ -296,22 +298,20 @@ main() {
     # --- E3 / E4 / E6: cross-arm pairs, so they are composed last -------------
     local o3="log_mode=$lmode;failed_lines=$nfail;bases_named=$nbase;aggregate=$agg"
     o3="$o3;degradation=$degr;log_path_on_screen=$named;nolog_form=$nolog"
-    if [ -n "$rblock" ]; then set_c 3 BLOCKED "$o3" "$rblock"
-    elif [ "$nolog" -ge 1 ]; then set_c 3 FAIL "$o3" "rec_failed=$nrf;rec_ok=$nok"
-    else
-        st=FAIL
-        [ "$lmode" = 640 ] && [ "$nfail" -eq 4 ] && [ "$nbase" -eq 4 ] && [ "$agg" -ge 1 ] &&
-            [ "$degr" -ge 1 ] && [ "$named" -ge 1 ] && st=PASS
-        set_c 3 "$st" "$o3" "rec_failed=$nrf;rec_ok=$nok"
-    fi
+    # E5's shape (:273): an observation already falsified on its own terms is FAIL, and
+    # `rblock` can only block a verdict that is otherwise PASS. The old `nolog` arm is
+    # now a clause of the conjunction, so "log not writable" stays FAIL. Same at E4.
+    st=FAIL
+    [ "$nolog" -eq 0 ] && [ "$lmode" = 640 ] && [ "$nfail" -eq 4 ] && [ "$nbase" -eq 4 ] &&
+        [ "$agg" -ge 1 ] && [ "$degr" -ge 1 ] && [ "$named" -ge 1 ] && st=PASS
+    if [ "$st" = PASS ] && [ -n "$rblock" ]; then set_c 3 BLOCKED "$o3" "$rblock"
+    else set_c 3 "$st" "$o3" "rec_failed=$nrf;rec_ok=$nok"; fi
     local o4="mode=$cmode;$bcf;sing_box_check=$ccheck"
-    if [ -n "$rblock" ]; then set_c 4 BLOCKED "$o4" "$rblock"
-    else
-        st=FAIL
-        [ "$cmode" = 600 ] && [ "$(val "$bcf" defs)" = 0 ] && [ "$(val "$bcf" route_refs)" = 0 ] &&
-            [ "$(val "$bcf" dns_refs)" = 0 ] && [ "$ccheck" -eq 0 ] && st=PASS
-        set_c 4 "$st" "$o4" "rec_defs=$(val "$rcf" defs);rec_dns_refs=$(val "$rcf" dns_refs)"
-    fi
+    st=FAIL
+    [ "$cmode" = 600 ] && [ "$(val "$bcf" defs)" = 0 ] && [ "$(val "$bcf" route_refs)" = 0 ] &&
+        [ "$(val "$bcf" dns_refs)" = 0 ] && [ "$ccheck" -eq 0 ] && st=PASS
+    if [ "$st" = PASS ] && [ -n "$rblock" ]; then set_c 4 BLOCKED "$o4" "$rblock"
+    else set_c 4 "$st" "$o4" "rec_defs=$(val "$rcf" defs);rec_dns_refs=$(val "$rcf" dns_refs)"; fi
     local o6="urc=$urc;ok_lines=$nok;$rcf;mainpid=$pid_b->$pid_a" rd rr rdn
     rd=$(val "$rcf" defs); rr=$(val "$rcf" route_refs); rdn=$(val "$rcf" dns_refs)
     if [ -n "$rblock" ] || [ "$nrf" -eq 4 ]; then

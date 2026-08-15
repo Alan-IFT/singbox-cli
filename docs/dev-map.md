@@ -19,9 +19,12 @@ singbox-cli/
 └── .harness/           ← pipeline rules, scripts, insight index (not shipped)
 ```
 
-There is **no build step, no dependency manifest and no test directory.** `.harness/scripts/verify_all.sh`
-B.1 syntax-checks `bin/sc`, `install.sh`, `uninstall.sh`; B.2 runs the `install.sh` bilingual
-key-parity check (T-11); B.3 (lint) is still `SKIP`.
+There is **no build step and no dependency manifest**, and the committed tests live in
+`.harness/scripts/` rather than a test directory (`.gitignore:19` ignores `test/` wholesale).
+`.harness/scripts/verify_all.sh` B.1 syntax-checks `bin/sc`, `install.sh`, `uninstall.sh`; B.2 runs
+the `install.sh` bilingual key-parity check (T-11); B.3 (lint) is still `SKIP`; **B.4 runs the
+committed contract suite** `check-sc-contracts.py` against `baseline.json`'s assertion floor and B.5
+runs `restricted-network-regression.sh --self-check` (T-28).
 
 ## `bin/sc` internal sections (in file order)
 
@@ -80,7 +83,8 @@ key-parity check (T-11); B.3 (lint) is still `SKIP`.
 | Apply a config change | `generate_config()` → `restart_service()` / `reload_or_restart()` / `clash_api()` | `bin/sc` | Node and mode switches go through the Clash API; structural changes need a restart. |
 | Bilingual parity proof for `install.sh` | `check-i18n-parity.sh [FILE]` | `.harness/scripts/` | `t()` key + `printf`-specifier parity for `install.sh`; extracts the function and renders every key under `set -u`; wired as `verify_all` B.2. Exit 0 parity holds / 1 broken / 2 cannot decide — **2 is a failure for the caller, never a pass**. Does not cover `bin/sc` (no `en` table, different shape). |
 | Which curl flags the installer uses | `CURL_OPTS_QUIET` / `CURL_OPTS_PROGRESS` | `install.sh` `# download flag policy` | THE two arrays every `curl` in the installer draws from — decided once, at one site. Three facts make it a seam rather than a preference: `-s` and `--progress-bar` are **not additive** (`-s` wins and shows nothing), so the progress variant **drops** `-s` instead of adding a flag; `-S` is kept in **both** (with `-s` it is what keeps curl's error text on stderr, without it a no-op); and the selector is `[ -t 2 ]` — the terminal-ness of **stderr**, not stdout — because curl writes its meter to stderr and does not suppress it when stderr is redirected, which is what keeps `0x0D` and partial redraws out of a captured `install.log`. Every option used exists in curl 7.29 (RHEL 7, the oldest supported distro). Closing rule: a new transfer uses one of the two arrays, **never inline flags**. |
-| "Does a restricted-network install still end in a working degraded state?" | `restricted-network-regression.sh [--self-check]` | `.harness/scripts/` | The scenario harness: it blackholes every rule-set source, runs `install.sh` from the checkout, and prints six condition lines E1…E6 — installer completes with the success banner and exit 0 (E1), both units enabled and the timer running (E2), the install log at `0640` carrying every source's cause plus the aggregate and degradation lines (E3), a `0600` `config.json` that defines and references no rule-set and passes `sing-box check` (E4), the service active **and settled** — two consecutive 1 s reads agreeing on a non-zero `MainPID`, or `BLOCKED`, because bare `active` cannot tell a settled service from a crash loop (E5) — and one `sc update-rules` with the blackout lifted restoring all four rule-sets, the references and the service (E6). Each line carries a `pair=` counter-observation from the same run, so a condition that could not be falsified reports `BLOCKED`, never `PASS`. It derives the blackout from `RULESET_BASES` **textually** (`sed`+`grep`) and never imports `bin/sc` — that import re-execs the *installed* `sc` against the live service. **Where it can run**: as root on a disposable, single-use systemd VM with `/dev/net/tun` and no configured install — never a workstation, where it refuses (exit 3) on `/etc/sing-box/nodes.json`; `--self-check` is the only form safe on a developer machine. Deliberately **not** wired into `verify_all` and with no `.ps1` mirror (like `check-i18n-parity.sh`); wiring is R-9's. |
+| "Does a restricted-network install still end in a working degraded state?" | `restricted-network-regression.sh [--self-check]` | `.harness/scripts/` | The scenario harness: it blackholes every rule-set source, runs `install.sh` from the checkout, and prints six condition lines E1…E6 — installer completes with the success banner and exit 0 (E1), both units enabled and the timer running (E2), the install log at `0640` carrying every source's cause plus the aggregate and degradation lines (E3), a `0600` `config.json` that defines and references no rule-set and passes `sing-box check` (E4), the service active **and settled** — two consecutive 1 s reads agreeing on a non-zero `MainPID`, or `BLOCKED`, because bare `active` cannot tell a settled service from a crash loop (E5) — and one `sc update-rules` with the blackout lifted restoring all four rule-sets, the references and the service (E6). Each line carries a `pair=` counter-observation from the same run, so a condition that could not be falsified reports `BLOCKED`, never `PASS`. It derives the blackout from `RULESET_BASES` **textually** (`sed`+`grep`) and never imports `bin/sc` — that import re-execs the *installed* `sc` against the live service. **Where it can run**: as root on a disposable, single-use systemd VM with `/dev/net/tun` and no configured install — never a workstation, where it refuses (exit 3) on `/etc/sing-box/nodes.json`; `--self-check` is the only form safe on a developer machine, and since T-28 it is wired as `verify_all` B.5 — the token form stays operator-only and there is no `.ps1` mirror (like `check-i18n-parity.sh`). |
+| "Does `bin/sc` still hold the contracts it ships?" | `check-sc-contracts.py [--source PATH] [--list] [NAME …]` | `.harness/scripts/` | THE committed test artifact: 14 named assertions, each a module-level function of the loaded module, over `_userinfo` / `_write_private` / `_read_state` / `_merge` / `generate_config`'s envelope / `_redact` / `_dns_overlay` / `TRANSLATIONS`. Loads `bin/sc` through the recipe above **plus** an exec-denying shim (see "Patterns to avoid"), repoints every path constant into a `mkdtemp` root and witnesses `/etc/sing-box` + `/var/lib/sing-box` around the run. Wired as `verify_all` B.4 against `baseline.json`'s `test_count` floor; `--source` drives a mutated clone, so the artifact itself carries no mutation machinery. Never calls `main()` or `_init_files()`. |
 
 ## Patterns to follow
 
@@ -123,8 +127,14 @@ key-parity check (T-11); B.3 (lint) is still `SKIP`.
   (Neutralise the *sudo re-exec* specifically: `cmd_uninstall` legitimately calls `os.execvp("bash", …)`,
   so a blanket "no `os.execvp`" guard refuses to load a healthy file.)
   **The recipe — use this one, do not re-invent it** (T-13; it neutralises the re-exec *without*
-  mutating `bin/sc`'s source, so a refactor of the elevate block cannot defeat it, and it fails
-  closed if `geteuid` moves):
+  mutating `bin/sc`'s source). **What it guarantees and what it does not**: it defeats the
+  *predicate* `os.geteuid() != 0`, never the *capability* — the shim copies the real `os.__dict__`,
+  so `shim.execvp` IS `os.execvp`, and a guard refactored to `os.getuid()` / `os.getresuid()` /
+  `os.geteuid() > 0` re-execs the INSTALLED `sc` under `sudo` from inside the harness. Deny the
+  capability too: on the shim, **every process-start name in `dir(os)`** must raise — `exec*` /
+  `spawn*` / `fork*` / `system`, **and** `popen` (it runs `/bin/sh -c`) and `posix_spawn*` (3.8+),
+  which begin with none of the first three. A name prefix is not a capability either: that list
+  is the whole guarantee, so a name a future CPython adds to `os` belongs in it.
 
   ```python
   assert os.geteuid() != 0                       # refuse to run as root, loudly
@@ -133,29 +143,38 @@ key-parity check (T-11); B.3 (lint) is still `SKIP`.
   shim.geteuid = lambda: 0                       # the elevate branch is simply not taken
   sys.modules["os"] = shim
   try:
-      exec(compile(open("bin/sc").read(), "bin/sc", "exec"), sc.__dict__)
+      exec(compile(open("bin/sc", encoding="utf-8").read(), "bin/sc", "exec"), sc.__dict__)
   finally:
       sys.modules["os"] = os                     # restore IMMEDIATELY, in a finally
   ```
 
-  Then repoint all **eight** path constants —
+  Then repoint all **nine** path constants —
   `sc.CFG_DIR / CFG_PATH / NODES_PATH / SETTINGS_PATH / RULES_DIR / OVERRIDE_PATH / STATE_PATH /
-  IF_INET6_PATH` —
+  IF_INET6_PATH / LIB_DIR` —
   into a `mkdtemp()` root, set `sc.SYSTEMD = sc.OPENRC = False`, `sc.CLASH_PORT = 29090`,
   `sc.LANG = "en"|"zh"`, and
   `sc.SB_BIN = <stub script>` (a repointable constant — no `PATH` games). **Assert that every one of
-  the eight resolves inside the temp root** — that assertion, not vigilance, is what stops a
-  forgotten constant writing under `/etc`; three of them (`OVERRIDE_PATH`, `STATE_PATH`,
-  `IF_INET6_PATH`) were added after the recipe was first written, and `IF_INET6_PATH` is the one
-  that is not under `/etc/sing-box` at all — without repointing it the host's real IPv6 state
-  decides what the fixture emits. `TUN_IFACE` is *not* repointable after import (see `# Paths`).
+  the nine resolves inside the temp root** — that assertion, not vigilance, is what stops a
+  forgotten constant writing under `/etc`; four of them (`OVERRIDE_PATH`, `STATE_PATH`,
+  `IF_INET6_PATH`, `LIB_DIR`) were added after the recipe was first written, and two are not
+  under `/etc/sing-box` at all — `IF_INET6_PATH` (without repointing it the host's real IPv6
+  state decides what the fixture emits) and `LIB_DIR` (`/usr/local/lib/singbox-cli`).
+  `TUN_IFACE` is *not* repointable after import (see `# Paths`).
   Because `bin/sc` resolves
   `os` from `sc.__dict__`, monkeypatching `sc.os.replace` patches the shim only, never the harness's
   own `os` — restore it in a `finally` regardless. **Never drive `_init_files()`**: one of its
   `mkdir` calls hard-codes `/var/lib/sing-box` as a `Path` literal — the only directory in the
   function not built from a repointable constant — so it writes to the real `/var/lib` even in a
   fully redirected fixture; its nodes branch is now just a `save_nodes()` call, which a fixture
-  covers directly.
+  covers directly. Four clauses the recipe is incomplete without: **read the source with
+  `encoding="utf-8"`** (PEP 263 makes CPython read a script as UTF-8, a bare `open()` uses the
+  locale codec and dies on the first non-ASCII byte under `LC_ALL=C PYTHONUTF8=0` — R-77); **a
+  context that skips the recipe gets no loud "you imported the installed build"**, it gets an
+  argparse usage error about its own argv at **exit 2** from the re-exec'd `/usr/local/bin/sc`,
+  which reads like a harness bug (R-78); **`main()`'s read-only arm is only `("doctor", "config")`**,
+  so every other command drives `_init_files()` (R-84); and **`check-sc-contracts.py` is this
+  recipe's working reference** — its repointing assertion covers every attribute that IS a `Path`,
+  so it reaches neither a `Path` in a container (`PERIODIC_DIRS`) nor a `str` (`SB_BIN`).
 - Don't verify `install.sh` by running it. Extract the function under test with
   `sed -n '/^name() {/,/^}/p'`, source it into a `bash -uo pipefail -c` child alongside the
   extracted `t()`, and shadow externals (`chmod() { return 1; }`, `stat() { return 1; }`) to inject

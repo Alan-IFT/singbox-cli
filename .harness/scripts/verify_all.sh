@@ -75,6 +75,27 @@ else
     step "B.2" "install.sh bilingual key parity" "SKIP"
 fi
 step "B.3" "Lint" "SKIP"
+
+# B.4 — the committed bin/sc contract assertions (T-28). Invoked with NO name argument:
+# baseline.json's test_count is the floor for the FULL run's passed count. A missing
+# python3 FAILs here exactly as it does at B.1 — it never SKIPs.
+b4=""
+b4_floor=$(sed -n 's/.*"test_count"[[:space:]]*:[[:space:]]*\([0-9]\{1,\}\).*/\1/p' .harness/scripts/baseline.json 2>/dev/null)
+if ! command -v python3 >/dev/null 2>&1; then b4="python3 not found"
+elif [[ -z "$b4_floor" ]]; then b4=".harness/scripts/baseline.json is absent or its test_count unreadable"
+else
+    b4_out=$(python3 .harness/scripts/check-sc-contracts.py 2>&1); b4_rc=$?
+    b4_passed=$(printf '%s\n' "$b4_out" | sed -n 's/^summary: [0-9]* defined, [0-9]* run, \([0-9]*\) passed$/\1/p')
+    if [[ $b4_rc -ne 0 || -z "$b4_passed" ]]; then b4="exit $b4_rc, passed='$b4_passed'"$'\n'"$b4_out"
+    elif (( b4_passed < b4_floor )); then b4="$b4_passed assertion(s) passed, floor is $b4_floor"$'\n'"$b4_out"; fi
+fi
+[[ -z "$b4" ]] && step "B.4" "bin/sc contract assertions" "PASS" || step "B.4" "bin/sc contract assertions" "FAIL" "$b4"
+
+# B.5 — the restricted-network scenario's self-check: no root, no network, writes
+# nothing. Only --self-check is ever wired; the destructive token stays operator-only.
+b5_out=$(bash .harness/scripts/restricted-network-regression.sh --self-check 2>&1)
+if [[ $? -eq 0 ]]; then step "B.5" "restricted-network self-check" "PASS"
+else step "B.5" "restricted-network self-check" "FAIL" "$b5_out"; fi
 # >>> HARNESS:B-CUSTOM:END <<<
 
 # --- E. Project structure (Harness required) ---

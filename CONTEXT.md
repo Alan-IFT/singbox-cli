@@ -195,6 +195,21 @@ one (it is untrusted input, with its own size cap and policies), and neither is 
 document `sc` emits *for sing-box*, whose readers deliberately keep their own decoding).
 _Avoid_: config file, settings file, data file, state file (the file is not the category)
 
+**assertion floor**:
+The number in `.harness/scripts/baseline.json`'s `test_count` read by the committed test step as a
+minimum: the step fails when fewer assertions pass than the floor names. It is a ratchet, not a
+count — adding assertions never breaks it, and deliberately removing one costs a visible edit to
+the file in the same commit. This is what makes the number honest rather than decorative: it
+corresponds to what actually runs because a gate reads it.
+_Avoid_: test count, expected tests, coverage number, baseline
+
+**contract suite**:
+`.harness/scripts/check-sc-contracts.py` — the one committed test artifact, and the program the
+assertion floor counts. It loads `bin/sc` as a module in its own process (never as a program,
+never the installed build) and asserts named clauses by calling named functions of it; the
+`bin/sc` under test is a parameter, so a mutated copy is driven without editing the suite.
+_Avoid_: unit tests, test suite, harness (a harness is throwaway, this is committed), fixture
+
 ## Project intent
 
 **singbox-cli is a headless v2rayN.** Stated by the owner 2026-08-01: 「初衷是实现一个类似于非桌面版
