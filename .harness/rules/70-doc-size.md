@@ -13,6 +13,7 @@ discipline** (how to live under the cap without losing information).
 
 - Before adding a new rule fragment or agent definition.
 - Before pasting evidence into a stage doc (`01_*.md`…`07_*.md`) or `PM_LOG.md`.
+- When deciding which portion of a stage doc a unit belongs in — `## Stage-doc boundary rule` below.
 - When `verify_all` flags an `F.*` WARN.
 
 ## Caps
@@ -23,7 +24,7 @@ discipline** (how to live under the cap without losing information).
 | `CLAUDE.md` | 50 lines | Static bootstrap stub; not a content destination. | Move content into `.harness/rules/*.md` |
 | `.harness/rules/*.md` (each) | 200 lines | Loaded selectively; should fit comfortably with 2–3 siblings. | Split into `70a-…` / `70b-…` with distinct triggers |
 | `.harness/agents/*.md` (each) | 300 lines | Loaded when the agent is dispatched. | Refactor responsibilities, or move stable doc to `docs/` |
-| `.harness/insight-index.md` | 30 lines | Loaded at every task start by PM. | `.harness/scripts/archive-task` auto-rotates oldest to `docs/features/_archived/insight-history.md` |
+| `.harness/insight-index.md` | 30 lines | Loaded at every task start by PM. | The cap's measurement is the file's **line** count, the one `verify_all` F.4 takes; `.harness/scripts/archive-task` rotates oldest to `docs/features/_archived/insight-history.md` until the file it writes is at it. If F.4 still WARNs after an archive run, run the checks in rule 80's `## Local fixes to plugin-vendored scripts` against the script's current text |
 | `docs/tasks.md` | 300 lines | Loaded at every task start by PM. | Move oldest Completed rows to `docs/tasks-archive.md` (manual today; tooling later) |
 | Per-task `PM_LOG.md` | 500 lines | PM rereads for resume; downstream agents read for context. | "Compaction" pattern below |
 | Per-task stage doc (`0[1-7]_*.md`) | 500 lines each | Read by the next stage's agent. | "Reference, don't paste" pattern below |
@@ -75,6 +76,24 @@ checks start firing a month later.
 
 PM is responsible for triggering archive at end of full/goal mode
 (see `pm-orchestrator.md` step 10).
+
+## Stage-doc boundary rule
+
+Every unit a stage produces has **exactly one** destination. One test decides it:
+
+> **Does a later stage have to satisfy, implement or verify this unit?**
+> Yes → the contract portion `0N_*.md`. No — it explains, justifies, measures, compares or
+> records how the unit was reached → its sibling `0N_RATIONALE.md`.
+
+Those two are the only destinations: this rule creates no third document kind.
+
+**Precedence.** When another rule or an agent contract names a section of a stage doc — or names
+the destination for a kind of unit — *by name*, that naming decides where it lives, and the test
+above decides only what the naming does not cover.
+
+**A unit that fits no declared shape of its stage doc** is recorded as a **schema-gap row**, naming
+the unit and the destination it was given instead. Never invent a section for it and never open a
+new file: a gap is reported, not designed around.
 
 ## Adversarial check
 

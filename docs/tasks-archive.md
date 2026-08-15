@@ -436,3 +436,27 @@ Filed by the PM at delivery; detail in `docs/features/_archived/dns-resilience/0
 | R-25 | **CLOSED 2026-08-15 by T-23** (with R-29, which superseded and widened it). Full row rotated to `docs/tasks-archive.md`. | **closed** — T-23 |
 | R-26 | **CLOSED 2026-08-15 by T-24** at the zero-behavioural-cost gating it predicted: `generate_config()`'s three-key array guard now sets `OVERRIDE_PATH if override is not None else None`, so provenance is structural at all three sites and the docstring's and `docs/dev-map.md`'s claim is true rather than argued. **One refinement the row did not anticipate**: gating the assertion *alone* converts a mislabelled sentence into a traceback, so the gate and the envelope had to land together. | **closed** — T-24 |
 | R-27 | **CLOSED 2026-08-15 by T-23.** Full row rotated to `docs/tasks-archive.md`. | **closed** — T-23 |
+
+## Rotated 2026-08-16 (during `harness-self-maintenance` / T-27 delivery)
+
+Rotated because the block is now **fully closed**: R-15/R-16 by T-24, R-17 by T-23 (its stated limit
+by T-25), and **R-18 by T-27**. Nothing here is open.
+
+### T-14's block (R-15 … R-18) — all four closed
+
+1. **R-15 / R-16 — CLOSED 2026-08-15 by T-24**; **R-17 — CLOSED 2026-08-15 by T-23**, and its one
+   stated limit (it closed the disk layer only; printing a non-ASCII tag under a non-UTF-8 locale
+   still failed) **CLOSED 2026-08-15 by T-25**.
+2. **R-18 — CLOSED 2026-08-16 by T-27**, after being confirmed **sixteen times, once per delivery**,
+   each paying a manual rotation. The row's stated cause was exact and survived first-hand
+   re-verification: `archive-task.sh:89-94` counted **bullets** (`grep '^\s*-\s'`) against 30 while
+   `verify_all` **F.4** counts **lines** (`:213-219`), so on any index with a header the branch could
+   never fire before F.4 warned. Fixed by making the script take **the same measurement F.4 takes** —
+   `wc -l < "$insight_index"` — not by tuning a threshold and not by touching F.4, which is
+   byte-identical (weakening it was ruled out at stage 1 as OQ-5). Eight executable added lines, no
+   new function, no new file. The row's second half — durability of a local fix to a plugin-vendored
+   script — is answered by `.harness/rules/80-delivery-policy.md`'s new
+   `## Local fixes to plugin-vendored scripts`: a **check per fix** against whatever text arrives,
+   with the standing instruction *keep what arrives*, rather than a restore path that would discard
+   it. **Proved by this task's own archive run** rather than argued — the first delivery in
+   seventeen that needed no hand rotation.

@@ -77,9 +77,11 @@ if (( ${#harvested[@]} > 0 )); then
 fi
 
 # Step 2: rotate insight-index if it would exceed 30 lines
+index_lines=0  # the cap's own measurement — same tool, same file as verify_all F.4 (verify_all.sh:213-219)
+if [[ -f "$insight_index" ]]; then index_lines=$(wc -l < "$insight_index"); fi
 if [[ ! -f "$insight_index" ]]; then
     echo "Warning: .harness/insight-index.md missing — creating empty"
-    [[ "$DRY_RUN" == false ]] && touch "$insight_index"
+    if [[ "$DRY_RUN" == false ]]; then touch "$insight_index"; fi
 fi
 
 current=()  # see L13 note above
@@ -89,10 +91,12 @@ if [[ -f "$insight_index" ]]; then
     done < <(grep -E '^[[:space:]]*-[[:space:]]' "$insight_index" || true)
 fi
 
-total_after=$(( ${#current[@]} + ${#harvested[@]} ))
+total_after=$(( index_lines + ${#harvested[@]} ))
 rotated=()  # see L13 note above
-if (( total_after > 30 )); then
-    rotate_count=$(( total_after - 30 ))
+rotate_count=0
+if (( total_after > 30 )); then rotate_count=$(( total_after - 30 )); fi
+if (( rotate_count > ${#current[@]} )); then rotate_count=${#current[@]}; echo "Over cap: $(( total_after - 30 - rotate_count )) line(s) remain above 30 after rotating every entry present"; fi
+if (( rotate_count > 0 )); then
     echo "Rotating $rotate_count old insight(s) to insight-history.md"
     for ((i=0; i<rotate_count; i++)); do
         rotated+=("${current[$i]}")

@@ -8,6 +8,9 @@
 Read at **delivery time** — after a task reaches `DELIVERED` and `verify_all` is green — and
 whenever you are about to run `git commit` or `git push` in this repo.
 
+Read also **when writing an acceptance criterion over the committed diff** (stages 1-2) — for the
+process-path list below — and **after `/harness-upgrade`**, for the vendored-script fixes below.
+
 ## The policy
 
 The owner has **durably authorized** automatic commit and push. Do not ask for per-task
@@ -22,6 +25,20 @@ After each task reaches `DELIVERED` **and** `.harness/scripts/verify_all.sh` ret
 
 `origin` is the **public** repo `github.com/Alan-IFT/singbox-cli`. Every push is immediately
 world-visible. That is the owner's accepted trade-off, not a reason to re-confirm.
+
+## Process paths — what the pipeline writes about its own work
+
+Every delivery commit carries some of these. They are **not** product files (`docs/dev-map.md` is:
+it documents the code):
+
+- `docs/tasks.md`, `docs/tasks-archive.md` — the task board and its archive
+- `docs/features/<slug>/**`, `docs/features/_archived/**` — stage documents, `PM_LOG.md`, insight history
+- `docs/batches/**` — the batch loop's plan, log and report
+- `.harness/insight-index.md`
+- `.harness/rejected-decisions.md`, `.harness/operator-obligations.md`, `CONTEXT.md`
+
+**A criterion over the committed diff enumerates its own product files, cites this list for the
+rest, and never re-transcribes it; a path in neither list is a failure of that criterion.**
 
 ## Preconditions — all must hold before committing
 
@@ -45,6 +62,25 @@ The blanket authorization covers ordinary commit + push. It does **not** cover:
 
 If `origin/main` has moved ahead, **rebase or merge and re-run `verify_all`** before pushing;
 never force.
+
+## Local fixes to plugin-vendored scripts
+
+`/harness-upgrade` **replaces** each script its `refresh_set` names — `archive-task`, `guard-rm`,
+`harness-sync`, `install-hooks`, `migrate-scripts-layout`, the ambient hook pair, in both shells
+(`.harness/scripts/upgrade-project.sh:186-194`) — with the plugin's current template when the two
+differ, with no marker preservation and no backup (`:195-227`). `verify_all.{sh,ps1}` is **not** in
+that set (`:136-141`): it is spliced, HALTs on unmarked custom `B.*` checks, and gets a timestamped
+`.bak` (`:548-556`). So a note *inside* a `refresh_set` file dies with the fix it describes, and what
+arrives is a text of the plugin's choosing, not a revert of the local hunks. **Keep what arrives.**
+For each fix below, run its check against the arriving text and take the action for the verdict it
+gives, naming the version measured: a verdict is a property of that text, not a standing fact. A check
+whose command exits non-zero **did not complete** and yields no verdict — a run that wrote nothing is
+never *already provided*. `git log -p -- <path>` holds the pre-replacement text when an action needs it.
+
+| `.harness/scripts/archive-task.sh` fix | observable it restores · how its loss shows | check to run against the arriving text | *already provided* | *lost* |
+|---|---|---|---|---|
+| rotation decided on the index's **line** count | an archive run leaves `verify_all` F.4 PASS with no hand edit · **loud**: the index passes 30 lines and F.4 WARNs after every archive run | archive a fixture whose index is at the cap with ≥1 harvested insight, then `wc -l` the resulting index | ≤30 → change nothing | >30 → make the rotation decision read `wc -l` of the index — F.4's own measurement, `verify_all.sh:213-219` — instead of whatever it counts, and rotate until the file it writes is ≤30 lines |
+| the harvest carries a wrapped bullet whole | a `## Insight` bullet wrapped over several lines reaches the index with its continuation text and its trailing `· evidence: <slug>` tag · **silent**: entries truncate mid-sentence and lose the tag | archive a fixture whose `## Insight` bullet wraps over three lines with the tag on the last, then read what it wrote | continuation text and tag both present → change nothing | truncated or tag missing → restore the join inside the arriving text's own harvest step |
 
 ## Reporting
 
