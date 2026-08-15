@@ -189,7 +189,6 @@ TRANSLATIONS = {
             "错误：参数必须是 on / off / auto / show 之一",
         "{path}: ipv6 must be one of on / off / auto — using auto":
             "{path}：ipv6 必须是 on / off / auto 之一 —— 已按 auto 处理",
-        "Nothing changed — the sing-box service was not touched": "设置无变化 —— 未改动 sing-box 服务",
         "Configuration regenerated; sing-box restarted": "配置已重新生成，sing-box 已重启",
         # Telemetry name rejection. The setting line, the two meaning sentences (one per
         # setting), the argument error, the unrecognised-value line, and the no-op line —
@@ -307,8 +306,8 @@ TRANSLATIONS = {
             "自 sc 生成以来已被修改 —— 请把改动写入 {override}，再运行 `sc reload`",
         "no record of what sc last generated": "没有 sc 最近一次生成内容的记录",
         "{decision}; config.json carries this decision": "{decision}；config.json 与该决策一致",
-        "{decision}; config.json does not carry this decision — run `sc reload` to regenerate it":
-            "{decision}；config.json 与该决策不一致 —— 运行 `sc reload` 重新生成",
+        "{decision}; config.json does not carry this decision as the first dns.rules entry — run `sc reload` to regenerate it, and check {override} if it prepends a rule of its own":
+            "{decision}；config.json 的 dns.rules 第一条不是该决策对应的规则 —— 运行 `sc reload` 重新生成；若 {override} 自己往前插了规则，请检查它",
         "cannot determine this host's IPv6 addresses": "无法确定本机的 IPv6 地址",
         "the checker reported an error:": "检查器报告了错误：",
         "the checker reported an error, no message (exit {code})":
@@ -332,14 +331,14 @@ TRANSLATIONS = {
         "no nodes configured": "未配置任何节点",
         "{n}/{total} nodes carry a stored delay (history, not a fresh measurement); auto-select is on {current}":
             "{n}/{total} 个节点有已记录的延迟（历史值，非实时测量）；自动选择当前走 {current}",
-        "0/{total} nodes carry a stored delay — either no probe has completed yet or every node is failing; see `sc ls`":
-            "0/{total} 个节点有已记录的延迟 —— 可能探测尚未完成，也可能所有节点都不通；请查看 `sc ls`",
-        "{name} resolved in {ms} ms, through the running sing-box":
-            "{name} 用时 {ms} 毫秒解析成功（经由正在运行的 sing-box）",
-        "{name} returned no records after {ms} ms — try another node with `sc use <n>`":
-            "{name} 在 {ms} 毫秒后返回了空结果 —— 可用 `sc use <编号>` 换一个节点试试",
-        "no answer for {name} after {ms} ms — try another node with `sc use <n>`":
-            "{ms} 毫秒内没有收到 {name} 的解析结果 —— 可用 `sc use <编号>` 换一个节点试试",
+        "a stored delay was read for 0/{total} nodes — either no probe has completed yet, every node is failing, or the list could not be read; see `sc ls`":
+            "只读到 0/{total} 个节点的已记录延迟 —— 可能探测尚未完成、可能所有节点都不通，也可能这份列表没读出来；请查看 `sc ls`",
+        "the running sing-box answered for {name} in {ms} ms, possibly from its own DNS cache":
+            "正在运行的 sing-box 在 {ms} 毫秒内给出了 {name} 的应答，可能来自它自己的 DNS 缓存",
+        "{name} returned no records after {ms} ms — try another node with `sc use <n>`; an answer already cached by the running sing-box survives a node change":
+            "{name} 在 {ms} 毫秒后返回了空结果 —— 可用 `sc use <编号>` 换一个节点试试；正在运行的 sing-box 已缓存的应答不会因为换节点而失效",
+        "no answer for {name} after {ms} ms — try another node with `sc use <n>`; an answer already cached by the running sing-box survives a node change":
+            "{ms} 毫秒内没有收到 {name} 的解析结果 —— 可用 `sc use <编号>` 换一个节点试试；正在运行的 sing-box 已缓存的应答不会因为换节点而失效",
         "no credential file grants access to group or other, and the directory is not group- or other-writable":
             "没有凭据文件对同组或其他用户开放，目录本身也不可被同组或其他用户写入",
         "{n} path(s) grant access to group or other — run the command shown for each":
@@ -1706,9 +1705,9 @@ def ipv6_decision():
 
     `setting` is what is persisted, `suppress` is what the emitted document does about
     AAAA, and `sentence` is the already-translated evidence for it (None only when
-    detection failed, which has already spoken on stderr). Three callers — _dns_overlay(),
-    cmd_ipv6() and `sc doctor`'s AAAA row — and no other code re-derives any part of it, so
-    the document, what `sc ipv6` says about it and what `sc doctor` reports can never be
+    detection failed, which has already spoken on stderr). Three callers — cmd_ipv6(), `sc
+    doctor`'s AAAA row and generate_config() (which hands it to _dns_overlay()) — and no
+    other code re-derives it, so the document, `sc ipv6` and `sc doctor` can never be
     three opinions.
 
     Detection failure means DO NOT suppress: the two errors are not symmetric. Suppressing
@@ -1744,18 +1743,15 @@ def _aaaa_rule(suppress):
     """THE one place the predefined AAAA rule dict is spelled, for one decision.
 
     Pure: no I/O, no print, never raises, and it does NOT call ipv6_decision() — the caller
-    passes the decision in. That is what lets `sc doctor` ask "does the document carry this
-    decision?" as a membership test against the one authored rule, without a second
-    ipv6_decision() call and without re-spelling the literal a second time (a positional
-    index into the overlay would silently check the wrong rule the day a second one is
-    prepended).
+    passes the decision in — which is what lets `sc doctor` ask about this decision with no
+    second ipv6_decision() call, as a POSITION test against _dns_overlay()'s own payload.
     """
     return {"action": "predefined", "rcode": "NOERROR",
             "query_type": ([28, 64, 65] if suppress else [64, 65])}
 
 
-def _dns_overlay():
-    """THE one place the IPv6 decision reaches the emitted document.
+def _dns_overlay(suppress):
+    """THE one place the IPv6 decision reaches the emitted document, at THE one position.
 
     $prepend on dns.rules — an existing directive on an array CONFIG_BASE always defines,
     so this can never raise and needs no anchor a later edit to the base could break.
@@ -1770,8 +1766,11 @@ def _dns_overlay():
     replaces already did, and moving it must not change it. Only 28 (AAAA) is conditional.
     An empty NOERROR is the answer, never NXDOMAIN — NXDOMAIN would poison the negative
     cache for the whole name, its A record included.
+
+    The decision is passed IN, not read here — which keeps this pure and makes the payload
+    below the emitted position's ONE home, read by `sc doctor`'s AAAA row as well as emitted.
     """
-    return {"dns": {"rules": {"$prepend": [_aaaa_rule(ipv6_decision()[1])]}}}
+    return {"dns": {"rules": {"$prepend": [_aaaa_rule(suppress)]}}}
 
 
 # THE definition of the telemetry name list — one tuple, two consumers (_telemetry_overlay()
@@ -2089,8 +2088,8 @@ def generate_config():
     # LAST and still through the ONE _merge(), so the emitted bytes do not depend on it
     # being a third element of this list rather than a separate call. What the separate
     # call buys is provenance: two failure sources now have two code sites.
-    config = _compose([_runtime_overlay(nodes, active, report), _dns_overlay(),
-                       _telemetry_overlay()])
+    config = _compose([_runtime_overlay(nodes, active, report),
+                       _dns_overlay(ipv6_decision()[1]), _telemetry_overlay()])
     # THE region: from the override document's bytes to the emitted document's bytes.
     # Every step inside it has override-supplied content among its inputs, so a failure
     # at ANY of them is a failure to produce a configuration from this document — one
@@ -2220,15 +2219,18 @@ def stored_delays(port=None):
 
     Prints nothing, writes nothing, issues at most ONE GET and never a PUT/PATCH/DELETE,
     takes no `sc ls`-specific argument — so `sc doctor` can call it later unchanged. The
-    is_running() guard is INSIDE the function so every future caller inherits it: on a
+    is_running() guard is INSIDE the function so every caller naming no port inherits it: on a
     stopped host there is no request at all and therefore no 3 s wait.
+
+    port=None therefore also means "judge liveness yourself"; a NAMED port asserts the API
+    answers on it, so the guard — hard False where no init system exists — cannot override it.
 
     Every shape check is an isinstance test and there is no try/except: a malformed body
     must not reach a traceback, and a bare except would hide a real defect just as well as
     it hides a malformed body. bool is excluded explicitly — it is an int in Python, and
     `True` is not a delay.
     """
-    if not is_running():
+    if port is None and not is_running():
         return {}, None
     body = clash_api("GET", "/proxies", port=port)
     delays = {}
@@ -2681,14 +2683,13 @@ def _doctor_ipv6():
     """S4 — this host's effective AAAA decision, and whether config.json carries it.
 
     ONE row, and exactly ONE ipv6_decision() call per doctor run: the decision's own
-    sentence is what the row states, and the same decision is handed to _aaaa_rule() to
-    ask the document a membership question. _dns_overlay() is deliberately NOT called from
-    anywhere in this block — it would call ipv6_decision() a second time, printing BC-9's
-    stderr warning twice and reading the address source twice in one run.
+    sentence is what the row states, and the same decision is handed to _dns_overlay(),
+    which takes it as an argument and is therefore pure: no second ipv6_decision() call and
+    no second read of the address source in one run.
 
-    The row asks "does the document carry the rule this build authors for this decision?",
-    which is a membership test and never a second derivation — it re-spells no rule and
-    indexes no position. Detection failure (sentence None, already spoken on stderr) is
+    The row asks "does dns.rules BEGIN with what this build prepends for this decision?" —
+    a POSITION test read from the emitter's own payload: it re-spells no rule, defines no
+    index, and never a silent PROBLEM. Detection failure (sentence None, on stderr already) is
     UNKNOWN. The document is read exactly once, guarded by (OSError, ValueError) —
     UnicodeDecodeError is a ValueError, not an OSError — and every level below the top is
     guarded by isinstance in stored_delays()' house style, so a `dns` that is a string is
@@ -2714,12 +2715,14 @@ def _doctor_ipv6():
                    e=_plain(t("the top level must be a JSON object"))))]
     dns = doc.get("dns")
     rules = dns.get("rules") if isinstance(dns, dict) else None
-    if isinstance(rules, list) and _aaaa_rule(suppress) in rules:
+    prepend = _dns_overlay(suppress)["dns"]["rules"]["$prepend"]
+    if isinstance(rules, list) and rules[:len(prepend)] == prepend:
         return [(DOCTOR_OK, "IPv6 (AAAA)",
                  t("{decision}; config.json carries this decision", decision=sentence))]
     return [(DOCTOR_PROBLEM, "IPv6 (AAAA)",
-             t("{decision}; config.json does not carry this decision — run `sc reload` "
-               "to regenerate it", decision=sentence))]
+             t("{decision}; config.json does not carry this decision as the first dns.rules "
+               "entry — run `sc reload` to regenerate it, and check {override} if it "
+               "prepends a rule of its own", decision=sentence, override=str(OVERRIDE_PATH)))]
 
 
 def _doctor_service():
@@ -2808,6 +2811,9 @@ def _doctor_clash():
     HISTORY. The DNS row's milliseconds ARE measured, around the one call — and no row
     states a timeout value or a wall-clock bound, because urlopen(timeout=N) bounds each
     socket operation and not the call.
+
+    Nor does the DNS row claim a resolution: the install may answer any branch from its OWN
+    cache, which this probe populates, and no body carries a cache-hit flag — hence the clause.
     """
     port = _saved_clash_port()
     if port is None:
@@ -2852,9 +2858,9 @@ def _doctor_clash():
                                current=_plain(current or t("(none)")))))
             else:
                 rows.append((DOCTOR_PROBLEM, "node delays",
-                             t("0/{total} nodes carry a stored delay — either no probe "
-                               "has completed yet or every node is failing; see `sc ls`",
-                               total=total)))
+                             t("a stored delay was read for 0/{total} nodes — either no "
+                               "probe has completed yet, every node is failing, or the "
+                               "list could not be read; see `sc ls`", total=total)))
     # One lookup, of the SAME name the egress row resolves, asked of the running install's
     # own DNS router rather than of this host's resolver: on a machine whose TUN device is
     # down a host-side lookup would silently measure the wrong thing. Read-only GET.
@@ -2864,15 +2870,17 @@ def _doctor_clash():
     if lookup is None:
         rows.append((DOCTOR_PROBLEM, "DNS lookup",
                      t("no answer for {name} after {ms} ms — try another node with "
-                       "`sc use <n>`", name=EGRESS_HOST, ms=ms)))
+                       "`sc use <n>`; an answer already cached by the running sing-box "
+                       "survives a node change", name=EGRESS_HOST, ms=ms)))
     elif isinstance(lookup.get("Answer"), list) and lookup["Answer"]:
         rows.append((DOCTOR_OK, "DNS lookup",
-                     t("{name} resolved in {ms} ms, through the running sing-box",
-                       name=EGRESS_HOST, ms=ms)))
+                     t("the running sing-box answered for {name} in {ms} ms, possibly "
+                       "from its own DNS cache", name=EGRESS_HOST, ms=ms)))
     else:
         rows.append((DOCTOR_PROBLEM, "DNS lookup",
                      t("{name} returned no records after {ms} ms — try another node with "
-                       "`sc use <n>`", name=EGRESS_HOST, ms=ms)))
+                       "`sc use <n>`; an answer already cached by the running sing-box "
+                       "survives a node change", name=EGRESS_HOST, ms=ms)))
     return rows
 
 
@@ -3206,7 +3214,9 @@ def cmd_ipv6(args):
     if sentence is not None:
         print(sentence)
     if after == before:
-        print(t("Nothing changed — the sing-box service was not touched"))
+        # `sc telemetry`'s sentence for this exact state; the setting IS persisted here too.
+        print(t("Nothing changed — the sing-box service was not touched; run `sc reload` "
+                "to apply this setting to a configuration generated before it"))
         return
     if not reload_or_restart():
         sys.exit(t("Reload failed"))

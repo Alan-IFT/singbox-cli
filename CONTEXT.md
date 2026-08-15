@@ -103,6 +103,15 @@ rule order carries meaning, so a default array merge would be silently wrong. Di
 only at merge positions, never inside a value being inserted wholesale.
 _Avoid_: operator, strategy, merge mode
 
+**emitted position**:
+The index at which an `sc`-authored overlay places its own rule in an array the base template
+defines — for the AAAA rule, the head of `dns.rules`. It is a promise, not an implementation
+detail: that position is what makes the rule apply in `rule`, `global` and `direct` alike, and
+both READMEs publish it. It has one home (the overlay's own directive payload) and two readers
+(the generator and `sc doctor`), so a probe asks the document about it by reading that payload
+rather than by spelling an index of its own.
+_Avoid_: index, offset, slot, ordering
+
 **user override**:
 The user-owned document `sc` reads and never writes, creates, or deletes, applied last. It is what
 makes a hand-made customization survive `sc reload` / `use` / `add`. Distinct from the systemd

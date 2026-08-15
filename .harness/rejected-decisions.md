@@ -584,3 +584,57 @@ stage 5. Filed by the PM at delivery because `.harness/**` is outside the task's
   3.7-only and `sys.stdout.errors` is read-only, so `io.TextIOWrapper` is the *only* construct that
   meets FR-7 at all — and once it exists, FR-6 costs zero additional lines. The site-count correction
   above *favours* the declined route and still does not change the ruling.
+
+## doctor-position-test-by-a-bare-head-slice
+- **Decision:** declined (the probe reads the emitter's own `$prepend` payload instead:
+  `prepend = _dns_overlay(suppress)["dns"]["rules"]["$prepend"]`, then
+  `rules[:len(prepend)] == prepend`).
+- **Why:** the smaller design — `rules[:1] == [_aaaa_rule(suppress)]`, `+1/−1`, no signature change,
+  no call-site edit — satisfies the requirement's AC-1/AC-2 exactly and was taken seriously for that
+  reason. It fails AC-3: the emitted position would then be spelled **twice**, `$prepend` in the
+  emitter and `[:1]` in the probe, with nothing coupling them. The ~6 extra lines buy a nameable
+  future edit (rule 85's own test): when `_dns_overlay()`'s payload grows a second rule, the probe
+  follows at **zero** edits, and if the directive is ever renamed the probe raises into a loud
+  `[UNKNOWN]` rather than shipping a silent false `[PROBLEM]`. The deeper reason the gate gave is
+  worth keeping: after the change `_dns_overlay(suppress)` and `_aaaa_rule(suppress)` have the *same
+  shape* — the decision is passed in rather than reached for — so it is **one concept instead of
+  two**, and rule 85 prices a design as its diff plus what a future reader must hold.
+- **Correction of record, so it is not re-transcribed:** the design's stated failure mode for the
+  bare slice was **mechanically wrong** and the gate caught it. A one-element slice never "compares
+  one element against two". With a payload `[aaaa, new]` the bare slice **passes while silently
+  under-checking**; only with `[new, aaaa]` does it report PROBLEM on every healthy host. The
+  rejection stands on the corrected mechanism, not the stated one.
+- **Known cost, accepted:** the coupling has a **silent** failure mode the membership test did not
+  have — an emptied `$prepend` payload makes `len(prepend) == 0`, so `[] == []` reads `[OK]` on every
+  document. No host is in that state (the payload is a one-element literal). Filed as **R-80**.
+- **Origin:** T-26 `doctor-rows-establish-their-fact`, stage 2 `## Smaller alternative rejected`,
+  tested rather than accepted at stage 3 (`03_RATIONALE.md` duty 1), which records that it
+  considered moving the ruling to the bare slice and what stopped it.
+
+## doctor-cache-free-dns-lookup
+- **Decision:** declined — **not available**, so the row's *claim* was narrowed instead of its check
+  strengthened. `sc doctor`'s DNS probe stays one read-only `GET /dns/query` for one name, byte-for-byte
+  unchanged.
+- **Why:** the row's defect was real (the probe is answered from *and populates* the install's own
+  `experimental.cache_file`, so within the TTL window it reported a cache hit rather than a resolution
+  through the tunnel). A first-hand read-only probe of the installed `sing-box` binary — run at stage 2
+  and **re-run independently at stage 3** — established that no bounded, cache-free lookup exists
+  through the Clash route at no new constant: `clashapi.cacheRouter`'s handler is a **mutating**
+  fake-IP flush (`flushFakeip`), `disable_cache` appears only in **configuration** vocabulary
+  (alongside `independent_cache` / `cache_capacity` / `disable_expire`), and
+  `no_cache` / `bypass_cache` / `skip_cache` / `cache_bypass` / `fresh=` / `refresh=` are absent.
+  Reaching the one real mechanism means writing `/etc/sing-box/config.json` and reloading the service,
+  which `sc doctor`'s process-wide read-only invariant forbids outright.
+- **The second leg is what makes the decline durable**, independent of any literal search's
+  resolution limit: the DNS-JSON body carries **no cache-hit indicator**, so even if a bypass
+  parameter existed the row would be *inferring* it was honoured — one proxy swapped for another,
+  which is the very defect the task exists to remove. Distinguishing a hit needs a second request
+  comparing TTLs, which the requirement forbids (zero added requests). **So the narrowed claim is
+  true in the world where the parameter exists and in the world where it does not**, and a later
+  observation of such a parameter does **not** reopen the task (gate BC-I).
+- **Also declined, same task:** a name no run warms; a per-run varying name; a second endpoint
+  constant; any cache flush, warm-up, TTL inspection or cache-hit detector, in code or in a fixture.
+- **Origin:** T-26 `doctor-rows-establish-their-fact` — requirement BC-10 routed the measurement to
+  stage 2 (the T-20 BC-16 precedent), stage 2 ran it and ruled, stage 3 reproduced every count and
+  upheld it. Filed against R-48, which is **closed by narrowing the claim, not by strengthening the
+  check**.
