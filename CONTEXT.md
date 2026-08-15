@@ -160,6 +160,15 @@ restoring one file byte-for-byte. It is a property the regression harness create
 disposable VM, never an accident of the network and never a substitution of the source list.
 _Avoid_: offline mode, air-gap, network failure, mock
 
+**userinfo reading**:
+The single judgment about a share URL's authority: the userinfo is the text before its **last** `@`,
+its field boundary is the **first unescaped colon** in that text, the split happens on the **raw**
+URI text, and each extracted field is percent-decoded **exactly once** afterwards. One construct in
+`bin/sc` states it and every parser takes a *projection* of it — the whole userinfo, its first field,
+or its remainder — so a scheme's grammar is a choice of projection, never a second parse. Material
+recovered from base64 was never URI text and is deliberately outside it.
+_Avoid_: `urlparse().username`, credential parsing, userinfo helper, split the password
+
 ## Project intent
 
 **singbox-cli is a headless v2rayN.** Stated by the owner 2026-08-01: 「初衷是实现一个类似于非桌面版

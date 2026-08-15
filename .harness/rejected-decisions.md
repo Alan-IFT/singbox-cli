@@ -494,3 +494,24 @@ stage 5. Filed by the PM at delivery because `.harness/**` is outside the task's
   environment variable's arrival in `sc`'s effective list could only be inferred afterwards from
   the failure text it produced.
 - **Origin:** T-07 `restricted-network-regression-test`, stage 2 (BC-3).
+
+## `share-url-userinfo-five-local-fixes` — declined 2026-08-15 (T-22)
+- **Decision:** declined. Five local per-parser fixes (~6 changed lines, zero new functions) were
+  rejected in favour of one `_userinfo(authority) -> (whole, first, rest)` construct (+21/−11).
+- **Why:** the smaller shape is genuinely **correct** — the gate reconstructed it line by line and
+  confirmed it satisfies every FR and every boundary condition, so this is not a case of the larger
+  design being safer. It fails on exactly one thing: it leaves **three idioms across five call
+  sites**, two of them still resting on `urlparse().username`'s hidden "first field of the userinfo"
+  semantics — the documented cause of the bug being fixed, in which one parser read `username` as an
+  id and two read it as the whole password. Rule 85's tie-break ("take the smaller design") settles
+  ties **between designs that satisfy the same requirement**, and these two do not: FR-1/AC-10 make
+  "exactly one construct states where a userinfo ends and when it is decoded" a checkable, swept
+  requirement. The ~13 extra lines buy the removal of the *premise*, not a fourth instance of the
+  fix. The three-value return was separately proved minimal in both directions: `whole` is not
+  recoverable from `(first, rest)` (`pw:` and `pw` both give `("pw", "")`), and `(first, rest)` is
+  not recoverable from `whole` after decoding (a decoded `%3A` is indistinguishable from a
+  delimiter). Also declined **as larger**: a per-scheme grammar table, a `mode=`/`whole=True`
+  parameter, and a new module.
+- **Origin:** T-22 `share-url-userinfo-contract`, stage 2 (rejected-alternative section), adjudicated
+  first-hand at stage 3 (`03_RATIONALE.md` §"Rule-85 adjudication") and re-confirmed unchanged at
+  stage 3 round 2.

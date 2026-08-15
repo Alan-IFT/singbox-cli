@@ -626,15 +626,28 @@ def _attach_tls(out, qs, host, default_sni=None):
     out["tls"] = tls
 
 
+def _userinfo(authority):
+    """THE reading of a share-URL userinfo -- (whole, first field, rest).
+    `authority` is text where a userinfo may be followed by "@": it ends at the
+    LAST "@" ("" if none), its field boundary is the FIRST raw colon, and each
+    projection is percent-decoded exactly once. No other site states any of these
+    rules for a userinfo field taken from URI text. Pure; total over every str."""
+    raw = authority.rpartition("@")[0]
+    first, _, rest = raw.partition(":")
+    dec = urllib.parse.unquote
+    return dec(raw), dec(first), dec(rest)
+
+
 def parse_vless(url):
     p = urllib.parse.urlparse(url)
     qs = urllib.parse.parse_qs(p.query)
+    _, uuid, _ = _userinfo(p.netloc)
     out = {
         "type": "vless",
         "tag": _name(p.fragment, p.hostname, p.port),
         "server": p.hostname,
         "server_port": p.port,
-        "uuid": p.username,
+        "uuid": uuid,
     }
     flow = _q(qs, "flow")
     if flow:
@@ -688,12 +701,13 @@ def parse_vmess(url):
 def parse_trojan(url):
     p = urllib.parse.urlparse(url)
     qs = urllib.parse.parse_qs(p.query)
+    password, _, _ = _userinfo(p.netloc)
     out = {
         "type": "trojan",
         "tag": _name(p.fragment, p.hostname, p.port or 443),
         "server": p.hostname,
         "server_port": p.port or 443,
-        "password": urllib.parse.unquote(p.username or ""),
+        "password": password,
     }
     if "security" not in qs:
         qs["security"] = ["tls"]
@@ -714,7 +728,7 @@ def parse_ss(url):
             decoded = _b64dec(userinfo)
             method, password = decoded.split(":", 1)
         except Exception:
-            method, password = userinfo.split(":", 1)
+            _, method, password = _userinfo(body)
         if "?" in hostpart:
             hostpart = hostpart.split("?", 1)[0]
         host, port = hostpart.rsplit(":", 1)
@@ -729,19 +743,20 @@ def parse_ss(url):
         "server": host,
         "server_port": int(port),
         "method": method,
-        "password": urllib.parse.unquote(password),
+        "password": password,
     }
 
 
 def parse_hy2(url):
     p = urllib.parse.urlparse(url)
     qs = urllib.parse.parse_qs(p.query)
+    password, _, _ = _userinfo(p.netloc)
     out = {
         "type": "hysteria2",
         "tag": _name(p.fragment, p.hostname, p.port or 443),
         "server": p.hostname,
         "server_port": p.port or 443,
-        "password": urllib.parse.unquote(p.username or ""),
+        "password": password,
     }
     sni = _q(qs, "sni") or p.hostname
     tls = {"enabled": True, "server_name": sni, "alpn": ["h3"]}
@@ -760,12 +775,7 @@ def parse_hy2(url):
 def parse_tuic(url):
     p = urllib.parse.urlparse(url)
     qs = urllib.parse.parse_qs(p.query)
-    userinfo = p.username or ""
-    if ":" in userinfo:
-        uuid, password = userinfo.split(":", 1)
-        password = urllib.parse.unquote(password)
-    else:
-        uuid, password = userinfo, ""
+    _, uuid, password = _userinfo(p.netloc)
     out = {
         "type": "tuic",
         "tag": _name(p.fragment, p.hostname, p.port or 443),
