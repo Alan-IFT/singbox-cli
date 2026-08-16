@@ -36,6 +36,7 @@ No credential byte from any host or node appears here, and no literal following 
 password / secret / token / api_key key exceeds 7 characters (BC-8, BC-9). Fixture
 hosts are .invalid names. Standard library only; Python 3.6 syntax floor.
 """
+import ast
 import json
 import os
 import shutil
@@ -361,6 +362,176 @@ def zh_placeholders_are_a_subset_of_their_key(sc):
     return "%d entries in %d table(s), 0 offenders" % (n, len(sc.TRANSLATIONS))
 
 
+def _literal_str(node):
+    """The str a literal ast node spells, else None. literal_eval, never ast.Str: that
+    class is deprecated and reading it warns, while Constant is only what 3.8+ parses."""
+    try:
+        value = ast.literal_eval(node)
+    except Exception:       # a name, an f-string, a call -- anything not a literal
+        return None
+    return value if isinstance(value, str) else None
+
+
+def _argument(node, index, name):
+    """The ast node of an argument given positionally at `index` or by keyword `name`."""
+    if index is not None and len(node.args) > index:
+        return node.args[index]
+    for kw in node.keywords:
+        if kw.arg == name:
+            return kw.value
+    return None
+
+
+def _io_callee(node):
+    """(what to call it, index of its `mode` argument) for a call in I-4's population.
+
+    None for everything else. The mode index differs per callee and is the whole reason
+    this is a table rather than a name test: Path.open(mode) puts it first, while the
+    builtin open(file, mode) and os.fdopen(fd, mode) put it second.
+    """
+    func = node.func
+    if isinstance(func, ast.Attribute):
+        if func.attr in ("read_text", "write_text"):
+            return (func.attr, None)            # no mode argument exists: always text
+        if func.attr == "open":
+            return ("Path.open", 0)
+        if func.attr == "fdopen":
+            return ("os.fdopen", 1)
+    elif isinstance(func, ast.Name) and func.id == "open":
+        return ("open", 1)
+    return None
+
+
+def _json_loads_over_read_bytes(node):
+    """json.loads(<...>.read_bytes()) -- bytes handed straight to the parser (insight 16)."""
+    func = node.func
+    if not (isinstance(func, ast.Attribute) and func.attr in ("load", "loads")
+            and isinstance(func.value, ast.Name) and func.value.id == "json" and node.args):
+        return False
+    arg = node.args[0]
+    return (isinstance(arg, ast.Call) and isinstance(arg.func, ast.Attribute)
+            and arg.func.attr == "read_bytes")
+
+
+def every_file_read_and_write_names_utf8(sc):
+    """FR-1 every text read and write in bin/sc names UTF-8, so no locale decides a codec.
+
+    THE POPULATION IS FILE TEXT I/O AND NOTHING ELSE (K-6): Path.read_text /
+    Path.write_text (no mode argument exists, so both are always text), Path.open,
+    os.fdopen and the builtin open(). A call of the open family is admitted as binary
+    ONLY by a literal "b" in its own mode argument -- it is then counted as inspected,
+    never as unseen -- and a mode that is not a literal cannot be proved binary and
+    FAILS. subprocess.run(..., text=True) decodes a pipe, not a file, and is outside
+    this bound (RES-1); bytes.decode() / str.encode() default to UTF-8 by definition.
+    Also asserts no json.loads() takes a read_bytes() result directly: its UTF-16/UTF-32
+    auto-detect would silently accept a document that is not UTF-8 at all.
+
+    Reads the source of the LOADED module, so --source drives a mutated clone. Pure: no
+    fixture, no subprocess, no I/O beyond reading that one file.
+    """
+    src = sc.generate_config.__code__.co_filename
+    with open(src, encoding="utf-8") as fh:
+        tree = ast.parse(fh.read(), src)
+    text_sites, binary_sites, offenders = 0, 0, []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if _json_loads_over_read_bytes(node):
+            offenders.append("line %d: json.loads() over read_bytes()" % node.lineno)
+            continue
+        callee = _io_callee(node)
+        if callee is None:
+            continue
+        name, mode_index = callee
+        where = "line %d: %s()" % (node.lineno, name)
+        if mode_index is not None:
+            mode = _argument(node, mode_index, "mode")
+            if mode is not None:
+                spelled = _literal_str(mode)
+                if spelled is None:
+                    offenders.append(where + ": its mode is not a literal, so binary "
+                                             "cannot be proved")
+                    continue
+                if "b" in spelled:
+                    binary_sites += 1
+                    continue
+        encoding = _argument(node, None, "encoding")
+        if encoding is None or _literal_str(encoding) != "utf-8":
+            offenders.append(where + ': no literal encoding="utf-8"')
+            continue
+        text_sites += 1
+    if offenders:
+        raise AssertionError("%d site(s) leaving a codec to the process locale:\n%s"
+                             % (len(offenders), "\n".join(offenders)))
+    if not text_sites or not binary_sites:
+        raise AssertionError("scanned %d text and %d binary site(s): a zero means the scan "
+                             "matched nothing and asserts nothing"
+                             % (text_sites, binary_sites))
+    return ("%d text site(s) name utf-8; %d binary site(s) admitted by a literal mode"
+            % (text_sites, binary_sites))
+
+
+def unusable_settings_refuses_regeneration(sc):
+    """FR-6 a present but unusable settings.json refuses every regenerating run.
+
+    "[]" is the document because its sentence is a fixed key with no interpolated parser
+    text (BC-3). The node store is VALID and written first: that is what proves the
+    refusal precedes load_nodes() rather than merely preceding a write.
+    """
+    fixture(sc, "unusable-settings")
+    sc.save_nodes({"active": "n1", "nodes": [
+        {"tag": "n1", "type": "trojan", "server": "a.invalid", "server_port": 443,
+         "password": "pw"}]})
+    sc.SETTINGS_PATH.write_text("[]", encoding="utf-8")
+    before = sc.SETTINGS_PATH.read_bytes()
+    _refused(sc, sc.generate_config, sc.SETTINGS_PATH,
+             sc.t("the top level must be a JSON object"), "an unusable settings.json")
+    _eq(sc.CFG_PATH.exists(), False, "whether a configuration reached disk")
+    _eq(sc.STATE_PATH.exists(), False, "whether a drift record reached disk")
+    _eq(sc.SETTINGS_PATH.read_bytes(), before, "the settings document's bytes")
+    return "refused by name with a valid node store present; no config, no drift record"
+
+
+def _write_failure(sc, document, what):
+    """save_settings() must exit with the rendered sentence; its cause clause, returned."""
+    template = sc.t("Could not write {path}: {err}", path=sc.SETTINGS_PATH, err="\x00")
+    head, _, tail = template.partition("\x00")
+    try:
+        sc.save_settings(document)
+    except SystemExit as e:
+        message = str(e.code)
+    except BaseException as e:      # anything else escaping IS the defect this pins
+        raise AssertionError("%s: %s left save_settings(): %s" % (what, type(e).__name__, e))
+    else:
+        raise AssertionError(what + ": save_settings() returned instead of exiting")
+    if not (message.startswith(head) and message.endswith(tail)):
+        raise AssertionError("%s: %r is not the rendered sentence" % (what, message))
+    if str(sc.SETTINGS_PATH) not in message:
+        raise AssertionError("%s: the sentence does not name the file" % (what,))
+    cause = message[len(head):len(message) - len(tail)] if tail else message[len(head):]
+    if not cause.strip():
+        raise AssertionError("%s: the cause clause is empty" % (what,))
+    return cause
+
+
+def settings_write_failure_is_a_sentence(sc):
+    """FR-4 a failed settings.json write is one sentence and a non-zero exit, never a
+    traceback -- including for a failure whose exception carries no .strerror, on which a
+    bare e.strerror would raise AttributeError inside the handler itself.
+
+    Asserts nothing about what is on disk afterwards: a part-way write_text legitimately
+    leaves a truncated document (BC-5), which this task states rather than repairs.
+    """
+    d = fixture(sc, "settings-write-failure")
+    sc.SETTINGS_PATH = d / "no-such-directory" / "settings.json"
+    os_cause = _write_failure(sc, {"lang": "en"}, "a parent directory that does not exist")
+    sc.SETTINGS_PATH = d / "settings.json"
+    # A lone surrogate: json.loads accepts the "\udXXX" escape a hand edit can supply, and
+    # json.dumps(ensure_ascii=False) hands it back to a UTF-8 encode that cannot take it.
+    lone = _write_failure(sc, {"lang": "\ud800"}, "a value UTF-8 cannot encode")
+    return "OSError -> %r; a value UTF-8 cannot encode -> %r" % (os_cause, lone)
+
+
 # Data, not discovery: this order is the run order and --list's, which is what makes two
 # runs byte-identical; len(TESTS) is "defined" and MUST equal baseline.json's test_count.
 TESTS = (
@@ -371,6 +542,8 @@ TESTS = (
     merge_array_key_demands_a_directive, unusable_fault_clause_is_a_class_name,
     redact_masks_secret_keys_at_every_depth, redact_masks_unlisted_keys_inside_outbounds,
     dns_overlay_prepend_is_head_of_dns_rules, zh_placeholders_are_a_subset_of_their_key,
+    every_file_read_and_write_names_utf8, unusable_settings_refuses_regeneration,
+    settings_write_failure_is_a_sentence,
 )
 
 

@@ -448,7 +448,8 @@ def _resolve_clash_port():
     settings["clash_api_port"] = port
     try:
         save_settings(settings)
-    except OSError:
+    # FR-5: save_settings() exits on failure now; this persist is not the run's purpose.
+    except SystemExit:
         pass
     return port
 
@@ -614,7 +615,12 @@ def _settings_or_empty(warn=False):
 
 def save_settings(d):
     # Locale-independent bytes, non-ASCII literal; mode and mechanism unchanged.
-    SETTINGS_PATH.write_text(json.dumps(d, indent=2, ensure_ascii=False), encoding="utf-8")
+    try:
+        SETTINGS_PATH.write_text(json.dumps(d, indent=2, ensure_ascii=False), encoding="utf-8")
+    # ValueError = the UnicodeEncodeError a lone surrogate raises; it has no .strerror.
+    except (OSError, ValueError) as e:
+        sys.exit(t("Could not write {path}: {err}",
+                   path=SETTINGS_PATH, err=_plain(getattr(e, "strerror", None) or str(e))))
 
 
 # ============ Share-URL parsers ============
@@ -1664,7 +1670,7 @@ def _global_ipv6_iface():
     shape. Never raises; prints nothing; the caller decides what a failure means.
     """
     try:
-        text = IF_INET6_PATH.read_text()
+        text = IF_INET6_PATH.read_text(encoding="utf-8")
     except OSError as e:
         return (None, e.strerror or str(e))
     except UnicodeDecodeError:
@@ -2012,7 +2018,7 @@ def _drift_state():
     Reads two files; writes nothing, and never logs the document's content.
     """
     try:
-        recorded = STATE_PATH.read_text().strip()
+        recorded = STATE_PATH.read_text(encoding="utf-8").strip()
     except (OSError, ValueError):
         return None
     if not recorded:
@@ -2063,6 +2069,9 @@ def generate_config():
         raise _unusable(OVERRIDE_PATH, t("no configuration could be produced from it "
                                          "({fault})", fault=type(e).__name__)) from None
 
+    # FR-6: a present but UNUSABLE settings.json refuses this run before anything is
+    # composed, written or restarted — the reader's own outcome, not a second opinion.
+    load_settings()
     nodes_data = load_nodes()
     nodes = nodes_data["nodes"]
     active = nodes_data.get("active")
@@ -2702,7 +2711,7 @@ def _doctor_ipv6():
         return [(DOCTOR_UNKNOWN, "IPv6 (AAAA)",
                  t("cannot determine this host's IPv6 addresses"))]
     try:
-        doc = json.loads(CFG_PATH.read_text())
+        doc = json.loads(CFG_PATH.read_text(encoding="utf-8"))
     except (OSError, ValueError) as e:
         return [(DOCTOR_UNKNOWN, "IPv6 (AAAA)",
                  t("cannot read {path}: {e}", path=str(CFG_PATH), e=_plain(str(e))))]
@@ -3118,7 +3127,7 @@ def cmd_config(args):
     there is no branch through which an unmasked value can be printed.
     """
     try:
-        raw = CFG_PATH.read_text()
+        raw = CFG_PATH.read_text(encoding="utf-8")
     except FileNotFoundError:
         sys.exit(_plain(t("no file at {path}", path=str(CFG_PATH))))
     except (OSError, ValueError) as e:
@@ -3393,7 +3402,13 @@ def cmd_update_rules(args):
             # Recovery: regenerate (never patch) so the restored rule-sets are actually
             # used. Runs before the non-zero exit, so a partial recovery still repairs the
             # config, and a failed check still blocks the restart below.
-            regen_ok = generate_config()
+            try:
+                regen_ok = generate_config()
+            except OverrideError as e:
+                # FR-7 scope: FR-6's refusal alone becomes an outcome this run reports.
+                if e.path != SETTINGS_PATH:
+                    raise
+                regen_ok = False
             if regen_ok:    # never claim a regeneration that did not happen
                 print(t("Rule-sets restored: {names} — config regenerated",
                         names=", ".join(gained)))
@@ -3449,7 +3464,7 @@ def cmd_update_interval(args):
         override_dir = Path("/etc/systemd/system/sing-box-rules-update.timer.d")
         override_dir.mkdir(parents=True, exist_ok=True)
         (override_dir / "override.conf").write_text(
-            f"[Timer]\nOnCalendar=\nOnCalendar={on_calendar}\n"
+            f"[Timer]\nOnCalendar=\nOnCalendar={on_calendar}\n", encoding="utf-8"
         )
 
         subprocess.run(["systemctl", "daemon-reload"], check=False)
@@ -3496,7 +3511,7 @@ def cmd_update_interval(args):
         target_dir = PERIODIC_DIRS[val.lower()]
         target_dir.mkdir(parents=True, exist_ok=True)
         script = target_dir / PERIODIC_SCRIPT
-        script.write_text("#!/bin/sh\n/usr/local/bin/sc update-rules\n")
+        script.write_text("#!/bin/sh\n/usr/local/bin/sc update-rules\n", encoding="utf-8")
         script.chmod(0o755)
 
         settings = load_settings()

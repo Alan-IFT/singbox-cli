@@ -1,8 +1,8 @@
 {
   "version": 1,
   "created": "2026-07-31",
-  "test_count": 14,
-  "passing_count": 14,
+  "test_count": 17,
+  "passing_count": 17,
   "warnings_baseline": 0,
   "notes": "test_count is the assertion floor read by verify_all.sh B.4: B.4 runs .harness/scripts/check-sc-contracts.py and FAILs when fewer assertions PASS than this number, when the suite exits non-zero, or when this file is missing. It is a ratchet — adding assertions never breaks it, removing one costs an edit here in the same commit. passing_count equals it because the delivered suite passes every assertion it defines."
 }
