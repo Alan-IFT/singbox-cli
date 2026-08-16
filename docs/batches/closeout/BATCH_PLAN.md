@@ -16,10 +16,10 @@ merits: T-21 recommended no code at all.
 
 | ID | Slug | Goal (one sentence) | Mode | Depends on | Status |
 |---|---|---|---|---|---|
-| T-29 | state-file-contract-completion | Finish the contract T-23 started: four bare `read_text()` calls remain in `bin/sc`, `save_settings()` is the only authored document whose write failure is never rendered, and an unusable `settings.json` still lets a regenerating run silently discard the user's stored choices. | full | — | pending |
-| T-30 | validate-before-baseline | Stop a configuration from being written and its drift digest baselined onto a document the checker then rejects, and stop `sc reload` tracebacking on a host with no `sing-box` binary — one ordering, two symptoms. | full | — | pending |
-| T-31 | suite-guarantee-boundaries | Make the committed suite's guarantees match its claims: the privilege denial that keeps `verify_all` from ever elevating is a **name list** covering only `os.*`, and the suite is structurally blind to zh-only regressions and to T-25's output-layer contract. | full | — | pending |
-| T-32 | record-accuracy-sweep | Correct the eleven filed sentences — in shipped prose, dev-map rows, rule fragments and a changelog lead — that claim something the code does not do, and add nothing else. | full | — | pending |
+| T-29 | state-file-contract-completion | Finish the contract T-23 started: four bare `read_text()` calls remain in `bin/sc`, `save_settings()` is the only authored document whose write failure is never rendered, and an unusable `settings.json` still lets a regenerating run silently discard the user's stored choices. | full | — | done (all three closed; R-76's sweep was six sites, wider than the row named) |
+| T-30 | validate-before-baseline | Stop a configuration from being written and its drift digest baselined onto a document the checker then rejects, and stop `sc reload` tracebacking on a host with no `sing-box` binary — one ordering, two symptoms. | full | — | done (R-70 + R-73 both closed as **one** design; R-81 ruled out as not one-line and left filed) |
+| T-31 | suite-guarantee-boundaries | Make the committed suite's guarantees match its claims: the privilege denial that keeps `verify_all` from ever elevating is a **name list** covering only `os.*`, and the suite is structurally blind to zh-only regressions and to T-25's output-layer contract. | full | — | done (R-93 capability half by a check, enumeration half **by narrowing the claim**; **R-95 + R-96 closed by a written boundary at zero code**; R-104 by new `verify_all` B.6) |
+| T-32 | record-accuracy-sweep | Correct the eleven filed sentences — in shipped prose, dev-map rows, rule fragments and a changelog lead — that claim something the code does not do, and add nothing else. | full | — | done (7 closed, **3 already discharged by T-28**, R-74 ruled open with reasons; no mechanism added) |
 
 ## Notes
 
