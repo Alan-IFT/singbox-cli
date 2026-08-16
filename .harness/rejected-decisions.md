@@ -672,11 +672,18 @@ stage 5. Filed by the PM at delivery because `.harness/**` is outside the task's
   shape as a mutant and found **0 observable differences across 13 cases** — a 9-case behavioural
   sweep plus a symlinked target, a `0666` target, `umask 000` and the real `sing-box` — with the
   committed suite reporting `18 defined, 18 run, 18 passed`. **A byte-comparison assertion would not
-  kill it.** Only a *structural* control (an `ast` clause or a grep that `generate_config()` installs
-  through `_write_private()` and contains no `os.replace`) can, and adding one needs a ruling,
-  because K-11 declined `ast` shape checks for statement **order** — this is a different subject
-  (which code owns the write). Until then this record **is** the enforcement, which is exactly the
-  situation this file exists for.
+  kill it.** Only a *structural* control can, and that ruling has since been made: **T-31** adopted
+  an `ast` clause — `config_json_is_installed_by_the_one_writer` in
+  `.harness/scripts/check-sc-contracts.py`, run by `verify_all` B.4 — on the ground that T-30's K-11
+  declined `ast` shape checks for statement **order** while this is a different subject (which code
+  owns the write). The clause is **positive-only**: at least one `_write_private(CFG_PATH, …)` call
+  inside `generate_config()`. The exclusivity half ("and nothing else installs it") was declined with
+  it, because the only implementable approximation is a list of `os.replace` / `os.rename` /
+  `shutil.move` / `Path.replace` spellings — a name list standing in for a capability. So this record
+  is **no longer the enforcement**: the shape declined here is now measured **red** against the
+  rebuilt mutant, and what this record still carries is the *reason* the extra call exists. Two
+  shapes the clause does not reach (a second installer beside a surviving call; a reshape that moves
+  the install into a helper) live in its own docstring, with the remedy — re-aim, never delete.
 - **Origin:** T-30 `validate-before-baseline` — priced as S-2 at stage 2, re-priced independently and
   upheld at stage 3 on the coverage ground above, and measured at stage 6 (QA DEF-3).
 
@@ -713,3 +720,58 @@ stage 5. Filed by the PM at delivery because `.harness/**` is outside the task's
   routed to the architect because the repair was a statement its own constraint forbade the developer
   to add; shape chosen at stage 2 round 2, tested and upheld at stage 3 round 2, both mutation
   directions measured red at stage 4 round 2.
+
+## denying-the-non-os-process-routes-by-a-wider-name-enumeration
+- **Decision:** declined (the load-time denial replaces `subprocess.Popen` on the real module for the
+  duration of the `exec()`, and the routes that remain are **written** on the claim surface rather
+  than closed).
+- **Why, per candidate.** **(2) Install a shimmed `subprocess` in `sys.modules`.** Declined on the
+  suite's own boundary conditions: any module the subject imports afterwards binds the shim, and the
+  binding outlives the load into the assertion phase, where `_CheckerStub` legitimately supplies a
+  `subprocess`-shaped object. It also costs more lines than the chosen closure. Those two grounds are
+  the whole decline; a third one was carried here and is **struck as false**: it read "buys nothing
+  the chosen closure does not already give, because the subject's `import subprocess` returns the
+  same module object either way" — under this candidate it returns the **shim** (measured), not the
+  same object. What the candidate buys is still nothing, but for a different and narrower reason: a
+  shim built the way this project builds its `os` shim (`__dict__.update`) carries the real `os` at
+  `shim.os`, so the attribute-chain family (iv) survives it unchanged; a shim that also dropped `os`
+  would remove one member of that family — `subprocess.os` — and leave `os.path.os`, `shutil.os` and
+  `tempfile.os` in it.
+  **(3) Deny the process-start names on the *real* `os` module too, for the load window.** Its
+  coverage delta, stated straight: it **would** close the attribute-chain family — `os.path.os`,
+  `subprocess.os`, `shutil.os`, `tempfile.os`, each of which is the real `os` one hop from the shim —
+  which is precisely the family the chosen denial leaves open. It does **not** close
+  `_posixsubprocess.fork_exec` or `ctypes`. Declined anyway, on three grounds that survive that
+  admission. It stops today's `subprocess.run` only through one CPython's internal dispatch choice
+  (`_USE_POSIX_SPAWN` True); the moment `posix_spawn` is unusable, `Popen` takes
+  `_posixsubprocess.fork_exec`, which consults no module attribute and reports nothing. It is a
+  second mutation of a **global module the harness itself uses**, during a window in which the
+  harness's own code runs, where the chosen denial mutates one attribute of one module. And the
+  requirement admits a written boundary at **zero lines** for exactly this family, which is what was
+  taken: the sentence is in the suite's header and in `docs/dev-map.md`'s recipe, in its own clause,
+  measured before and after.
+  **(5) `resource.setrlimit(RLIMIT_NPROC, (0, hard))` for the load window.** A genuine capability
+  closure one level below all of the above — it would stop `ctypes`' `fork` / `system` and
+  `_posixsubprocess.fork_exec` as well. Declined because it does **not** stop process *replacement*
+  (`ctypes…execv` replaces the image without creating a task), so the residual sentence stays true
+  either way: the mechanism shrinks a written residual without removing it. Against that it costs a
+  second, process-global mechanism nobody here reasons about, whose failure mode is an `EAGAIN`
+  surfacing as `BlockingIOError` rather than a named refusal, and whose restoration is a
+  resource-limit round trip rather than an attribute assignment.
+  **Also declined, same task:** adding `os.startfile` — or `os._execvpe` / `os._spawnvef`, or any
+  other name — to the denial tuple. `startfile` is a name no supported platform reaches: adding it
+  would make an unscoped sentence true without adding capability. The two private helpers are the
+  opposite case — they are in `dir(os)` **today**, and each was measured starting a process straight
+  through the delivered denial (`os._execvpe` replaced the loading interpreter, marker left, exit 0;
+  `os._spawnvef` forked first) — and they are declined for the reason this record exists: **the name
+  is not the mechanism.** A shim built by `__dict__.update` copies the *function objects*, whose
+  `__globals__` is the real `os` module dict, so denying `shim._execvpe` leaves `os.path.os._execvpe`
+  — measured, marker left, exit 0 — one attribute hop away in family (iv). Two more names buying no
+  capability is the defect this task exists to stop, one level down. The sentence was scoped to POSIX
+  **and to the public spellings** instead. Declined with them: any `dir(os)` meta-assertion, which
+  needs a hard-coded list of known process-starters — the same enumeration one level up — and would
+  report green on the day a future name arrives.
+- **Origin:** T-31 `suite-guarantee-boundaries` — priced against the task's own measurement: four
+  `subprocess` variants and `ctypes` each left a marker before the change; the three `subprocess`
+  variants flipped to `LoadRefused`, no marker, exit 2 after it; `ctypes` and both real-`os`
+  attribute-chain variants left theirs **both** times.

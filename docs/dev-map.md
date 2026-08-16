@@ -134,10 +134,72 @@ runs `restricted-network-regression.sh --self-check` (T-28).
   *predicate* `os.geteuid() != 0`, never the *capability* — the shim copies the real `os.__dict__`,
   so `shim.execvp` IS `os.execvp`, and a guard refactored to `os.getuid()` / `os.getresuid()` /
   `os.geteuid() > 0` re-execs the INSTALLED `sc` under `sudo` from inside the harness. Deny the
-  capability too: on the shim, **every process-start name in `dir(os)`** must raise — `exec*` /
-  `spawn*` / `fork*` / `system`, **and** `popen` (it runs `/bin/sh -c`) and `posix_spawn*` (3.8+),
-  which begin with none of the first three. A name prefix is not a capability either: that list
-  is the whole guarantee, so a name a future CPython adds to `os` belongs in it.
+  capability too, in **two halves that are not the same kind of thing**. **(a)** On the shim, every
+  **public** process-start name in `dir(os)` **on POSIX** must raise — `exec*` / `spawn*` / `fork*` /
+  `system`, **and** `popen` (it runs `/bin/sh -c`) and `posix_spawn*` (3.8+),
+  which begin with none of the first three. Half (a) *is* a name enumeration and stays one, so its
+  completeness claim is scoped **twice**, and both scopes are load-bearing: to POSIX, because
+  `os.startfile` exists only on Windows, where `verify_all.ps1`'s B.4 is an unconditional SKIP; and
+  to the **public** spellings, because every prefix in that tuple is public while `os._execvpe` and
+  `os._spawnvef` begin with `_` and match none of them. Those two are in `dir(os)` **today** and are
+  **open** — they are family **(ii)** below, with the enumeration and the measurement.
+  **(b)** For the duration of the `exec()` **only**,
+  replace `subprocess.Popen` on the **real** module object and restore it in the **same `finally`**
+  as the shim — binding the real `Popen` to a module-level name **at import**, not inside the loader:
+  a capture written *below* the displacement makes the `finally` restore the **denial** and makes the
+  leak check compare it with itself, so `subprocess.Popen` stays disabled for the rest of the process
+  while every test passes (measured). Half (b) is **not** an enumeration and must not be described as one: `Popen` is the
+  single choke point every documented entry point of that module (`run` / `call` / `check_call` /
+  `check_output` / `getoutput` / `getstatusoutput`) funnels through, and it sits *above* CPython's
+  `_USE_POSIX_SPAWN` choice, so it holds on the `posix_spawn` and the `fork_exec` dispatch alike.
+  Half (b) closes a **measured** hole, not a theoretical one: before T-31, a subject calling
+  `subprocess.call` / `Popen().wait()` / `subprocess.run` or `ctypes.CDLL(None).system` from its own
+  import **started a process and left its marker** on CPython 3.12.3, while the `os.posix_spawn`
+  control was refused.
+  **A name prefix is not a capability, and neither half is the whole guarantee.** Four route
+  families stay **open**, and this is where they are named. **(i)** A call reaching the C level
+  through neither `os` nor `subprocess.Popen`. The **cheapest** member is `import posix;
+  posix.system(…)` — `posix` is the C module `os` wraps, the recipe replaces `sys.modules["os"]`
+  and never `sys.modules["posix"]`, and it needs no attribute chain at all; also `ctypes`
+  (`CDLL(None).system` / `fork` / `execv`) and a direct `_posixsubprocess.fork_exec` —
+  re-measured, not assumed: the `posix` and the `ctypes` variants each still leave their marker
+  with both halves in force. **(ii)** A process-start name in `os` that no prefix matches — **not only
+  a future one**. Enumerated, not assumed: of the **402** names `dir(os)` has on CPython 3.12.3 the
+  tuple matches 22, and exactly **two** of the rest start a process — `os._execvpe` and
+  `os._spawnvef`, private helpers no public prefix reaches. Both measured against the delivered
+  suite (scratch subject, `/usr/bin/touch` on a scratch marker): `os._execvpe` **replaced the loading
+  interpreter** — marker left, **exit 0**, no summary, no refusal — and `os._spawnvef` **forked**
+  (`strace`: `execve` 1, `clone` 1) before the child's `exec` was refused. Adding the two names would
+  deny those two spellings and buy nothing, because the mechanism is the **binding, not the name**:
+  `shim.__dict__.update(os.__dict__)` copies the *function objects*, and a copied function's
+  `__globals__` **is** the real `os` module dict, so `_execvpe` calls the real `execv` and
+  `_spawnvef` the real `fork` whatever the shim's attributes say — measured, `os.path.os._execvpe(…)`
+  (the same helper through family (iv)) replaced the interpreter too. A longer list is not a stronger
+  guarantee, which is why T-31 added no name.
+  **(iii)** Any module added to the harness's pre-import line: by construction it binds the **real**
+  `os`, so the next task that adds one owes it the same pricing half (b) got. **(iv)** The real `os`
+  module itself, **one attribute hop** away and through neither half — `shim.__dict__.update(os.__dict__)`
+  copies the real `posixpath`, whose own `os` attribute **is** the real `os`, so `os.path.os.execvp(...)`
+  reaches it from the shim, and `subprocess.os` / `shutil.os` / `tempfile.os` reach it from every
+  module already imported; measured **before and after** half (b), `os.path.os.system(...)` and
+  `subprocess.os.system(...)` from a scratch subject's import each left their marker **both times**.
+  **Neither half covers the assertion phase** — the `finally` restores both displacements before the
+  first assertion runs, so this is where a fixture's own care is the only thing left. Repointing
+  `sc.SB_BIN` neutralises a call **argument**, not a call **site**: the only calls it reaches are the
+  three that pass `[SB_BIN, …]` — `bin/sc:2175`, the one `generate_config()` reaches, plus `:2634`
+  and `:2731`, which sit behind `shutil.which(SB_BIN)` and never run when the path is absent. Their
+  runner `_doctor_run` (`def` at `bin/sc:2599`, its one `subprocess.run` at `:2614`) is *general* and its
+  other callers pass real host tools (`:2827` `systemctl`, `:2831` `rc-update`, `:2853` `ip`), and
+  `sc.SYSTEMD = sc.OPENRC = False` empties the `if SYSTEMD:` / `elif OPENRC:` pairs and short-circuits `_doctor_service`
+  (`:2816`, taking `:2827` and `:2831` with it) — it leaves `cmd_status`'s `ip -br addr show` (`:2504`),
+  `cmd_sysproxy`'s `sudo -u <user> gsettings` (`:3406`) and `_doctor_tun`'s `:2853` unguarded, and it **routes into**
+  `cmd_log`'s `else`-arm holding `tail` (`:3607` with `-f`, which never returns and hangs the run, and `:3609`).
+  So what holds this phase is **which functions a test list names** — a review-time property of that list, enforced by
+  nothing in the recipe. Don't drive `cmd_status`, `cmd_sysproxy`, `cmd_log` or a `doctor` probe from a test.
+  **What this is, said plainly**: a guard against an *accidental* process start from the subject's
+  own import — the incident this bullet opens with, which has happened here — and **not** a sandbox against a
+  subject that seeks to escape. Those four families are open by design and measured open; a reader
+  may not take that list for a verified guarantee.
 
   ```python
   assert os.geteuid() != 0                       # refuse to run as root, loudly
@@ -178,6 +240,31 @@ runs `restricted-network-regression.sh --self-check` (T-28).
   so every other command drives `_init_files()` (R-84); and **`check-sc-contracts.py` is this
   recipe's working reference** — its repointing assertion covers every attribute that IS a `Path`,
   so it reaches neither a `Path` in a container (`PERIODIC_DIRS`) nor a `str` (`SB_BIN`).
+  **And three things the committed suite does not reach**, stated here so no future test task has to
+  infer them from what happens to be absent. **Language**: every sentence assertion pins the
+  **English key spelling** of the sentence it names; a translation-only wording regression is
+  outside its reach, and re-running the *same* assertions under another language cannot change that,
+  because the expected value and the observed value are both produced by the same `t()` lookup — so
+  a changed wording moves both sides together. There is **no second-language pass** and none is
+  wanted; a translation-*presence* check is refused too, because a key with no translation renders
+  its English text by design. Review, not a re-run, is what guards a translated wording.
+  **The output layer**: T-25's contract — what a user actually sees, in which encoding, on which
+  stream — is outside the reach of **any** assertion in that suite, because every one of them runs
+  `bin/sc`'s functions *in the harness's own process*. The scope stated exactly: no committed
+  artifact runs **this repository's** `bin/sc` as a program, and the **suite** starts no child
+  process at all. Both halves are narrower than they read: `verify_all.sh` itself runs `git`, `bash`
+  and `python3` — that is the harness around the suite, not the suite — and
+  `restricted-network-regression.sh:285` runs the **installed** `/usr/local/bin/sc` as root, on the
+  destructive operator-token arm `verify_all` cannot reach (B.5 wires `--self-check` only).
+  What verifies T-25's contract is review at change time plus an out-of-process
+  measurement taken by the task that changes the output layer — **not** `verify_all` B.5, which is
+  T-07's restricted-network self-check and asserts nothing about rendering. **The one writer**:
+  `config_json_is_installed_by_the_one_writer` enforces T-13's "`_write_private()` is the sole
+  writer" **by source and bounded to `generate_config()`**, because the property has no behavioural
+  reach at all (measured: 0 differences over 13 cases). Two residuals follow from that bound — a
+  *second* installer added alongside a surviving `_write_private(CFG_PATH, …)` call is not caught,
+  and moving the install into a helper reddens the clause while the invariant still holds, at which
+  point the clause is **re-aimed at the new owner, never deleted**.
 - Don't verify `install.sh` by running it. Extract the function under test with
   `sed -n '/^name() {/,/^}/p'`, source it into a `bash -uo pipefail -c` child alongside the
   extracted `t()`, and shadow externals (`chmod() { return 1; }`, `stat() { return 1; }`) to inject

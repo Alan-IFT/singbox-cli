@@ -15,22 +15,122 @@ that PREDICATE with an os shim whose geteuid returns 0, but the shim copies the 
 os.__dict__, so shim.execvp IS os.execvp: a guard refactored to os.getuid(),
 os.getresuid() or os.geteuid() > 0 would re-exec the installed build under sudo from
 inside verify_all on the owner's live machine (R-78 -- that has happened here). So
-load() also removes the CAPABILITY: on the shim, EVERY process-start name in dir(os)
-raises LoadRefused -- exec* / spawn* / fork* / system, and popen (which runs /bin/sh -c)
-and posix_spawn* (3.8+), which begin with none of the first three. Since bin/sc bound
-this shim as its own `os` at import, that denial outlives the load and covers the whole
-run. The denial is by NAME, so this enumeration IS the guarantee: a process-start name
-a future CPython adds to `os` belongs in load()'s tuple.
-  Covered: any process the loaded module starts or replaces itself with through its
-  own `os`, whatever uid source its guard reads -- the run aborts loudly instead.
-  NOT covered: an import-time re-exec that avoids `os` (subprocess, ctypes). SB_BIN
-  is repointed to a path that does not exist, so a subprocess.run reached from an
-  assertion raises FileNotFoundError rather than executing anything.
+load() also removes the CAPABILITY, in TWO halves that are not the same kind of thing:
+  (a) On the shim, every PUBLIC process-start name in dir(os) ON POSIX raises LoadRefused --
+  exec* / spawn* / fork* / system, and popen (which runs /bin/sh -c) and posix_spawn*
+  (3.8+), which begin with none of the first three. Half (a) IS a name enumeration and
+  stays one, so its completeness claim is scoped TWICE and both scopes are load-bearing.
+  To POSIX, because os.startfile exists only on Windows -- where verify_all.ps1's B.4 is an
+  unconditional SKIP and this file is not run at all. And to the PUBLIC spellings, because
+  every prefix in the tuple is public while os._execvpe and os._spawnvef begin with "_" and
+  match none of them: those two are in dir(os) TODAY, they are open, and they are family
+  (ii) below -- where the enumeration and the measurement are. Since bin/sc binds this shim
+  as its own `os` at import, half (a) outlives the load and covers the whole run.
+  (b) For the duration of exec() ONLY, subprocess.Popen is replaced on the REAL module
+  object and restored in the SAME finally as the shim. Half (b) is NOT an enumeration and
+  must not be described as one: Popen is the single choke point every documented entry
+  point of that module (run / call / check_call / check_output / getoutput /
+  getstatusoutput) funnels through, and it sits ABOVE CPython's _USE_POSIX_SPAWN choice,
+  so it holds on the posix_spawn and the fork_exec dispatch alike.
+  Half (b) closes a MEASURED hole, not a theoretical one: before this task, a subject
+  calling subprocess.call / Popen().wait() / subprocess.run or ctypes.CDLL(None).system
+  from its own import started a process and left its marker on CPython 3.12.3, while the
+  os.posix_spawn control was refused.
+  COVERED: any process the loaded module starts or replaces itself with through a PUBLIC
+  PROCESS-START NAME ON its own `os` (os.execvp, os.system, os.posix_spawn ...), whatever
+  uid source its guard reads, and any it starts through subprocess's public API while it is
+  being exec'd -- the run aborts loudly instead. An attribute of that same `os` which is
+  itself a MODULE is family (iv) below, not this: os.path.os is the real os and is open.
+  STILL OPEN -- four route families, named here because they are not closed:
+  (i)   a call reaching the C level through neither `os` nor subprocess.Popen. The CHEAPEST
+        member is `import posix; posix.system(...)`: posix is the C module os wraps, this
+        file replaces sys.modules["os"] and never sys.modules["posix"], and it needs no
+        attribute chain at all. Also ctypes (CDLL(None).system / fork / execv) and a direct
+        _posixsubprocess.fork_exec. Re-measured rather than assumed: the posix and the
+        ctypes variants each still leave their marker with both halves in force.
+  (ii)  a process-start name in `os` that no prefix in load()'s tuple matches -- NOT ONLY A
+        FUTURE ONE. Enumerated, not assumed: of the 402 names dir(os) has on CPython 3.12.3
+        the tuple matches 22, and exactly two of the rest start a process -- os._execvpe and
+        os._spawnvef, private helpers whose "_" no public prefix reaches. Both measured on
+        this delivery, scratch subject, /usr/bin/touch on a scratch marker: os._execvpe
+        REPLACED the loading interpreter (marker left, exit 0, no summary, no refusal), and
+        os._spawnvef FORKED (strace: execve 1, clone 1) before the child's exec was refused.
+        Adding the two names would deny those two spellings and buy nothing: the mechanism
+        is the binding, not the name -- shim.__dict__.update(os.__dict__) (:213) copies the
+        FUNCTION OBJECTS, and a copied function's __globals__ IS the real os module dict, so
+        _execvpe calls the real execv and _spawnvef the real fork whatever the shim's
+        attributes say. Measured: with both halves in force os.path.os._execvpe(...) -- the
+        same helper through family (iv) -- replaced the interpreter too, marker left, exit
+        0. A longer list is not a stronger guarantee, which is why this task added no name
+        to that tuple; the next private helper CPython adds arrives here, not in the tuple.
+  (iii) any module added to the pre-import line at :152-153 -- by construction it binds the
+        REAL os, so a future addition there owes the same pricing half (b) was given.
+        Today subprocess is the only one of them that can start a process.
+  (iv)  the real `os` module itself, ONE ATTRIBUTE HOP away and through neither half.
+        shim.__dict__.update(os.__dict__) (:213) copies the real posixpath, whose own `os`
+        attribute IS the real os -- so os.path.os.execvp(...) reaches it from the shim, and
+        subprocess.os / shutil.os / tempfile.os reach it from every module already
+        imported. Measured before AND after half (b): os.path.os.system(...) and
+        subprocess.os.system(...) from a scratch subject's import each left their marker
+        both times, exit 1, the load never refused.
+  THE ASSERTION PHASE IS COVERED BY NEITHER HALF, and this is where that is said. load()'s
+  finally restores both displacements before the first assertion runs. What SB_BIN's
+  repointing neutralises there is not a call SITE but an ARGUMENT: the only calls it reaches
+  are the three that pass [SB_BIN, ...]. bin/sc:2175, the one generate_config() reaches, gets
+  a path that does not exist and raises FileNotFoundError instead of executing, which that
+  caller already handles as "could not be run"; :2634 and :2731 sit behind
+  shutil.which(SB_BIN), which returns None for an absent path, so they never run at all.
+  Nothing else in bin/sc is neutralised. Their runner _doctor_run (def at bin/sc:2599, its one
+  subprocess.run at :2614) is GENERAL and its other callers pass real host tools (:2827
+  systemctl, :2831 rc-update, :2853 ip); fixture()'s SYSTEMD = OPENRC = False empties the
+  `if SYSTEMD:` / `elif OPENRC:` pairs and short-circuits
+  _doctor_service at :2816, so of those three only _doctor_tun's :2853 survives; it leaves that
+  call, cmd_status's `ip -br addr show` (:2504) and cmd_sysproxy's `sudo -u <user> gsettings`
+  (:3406) unguarded, and it ROUTES INTO cmd_log's else-arm holding `tail` (:3607 with -f, which
+  never returns, and :3609). So what holds this phase is WHICH FUNCTIONS THE TESTS LIST NAMES --
+  today not one of them drives a process call other than the SB_BIN one, measured: a full B.4 run
+  under strace -f makes 1 execve (this interpreter) and 0 clone/fork. That is a property of the
+  list, re-checked by review when a name is added, and enforced by nothing in this file. No
+  assertion may drive cmd_status, cmd_sysproxy, cmd_log or a doctor probe.
+  WHAT THIS IS, SAID PLAINLY: a guard against an ACCIDENTAL process start from the
+  subject's own import -- the R-78 incident, which has happened here -- and NOT a sandbox
+  against a subject that seeks to escape. The four families above are open by design and
+  measured open. A reader may not take that list for a verified guarantee.
 
 THE PATH INVARIANT (BC-2): fixture() repoints the nine names of PATHS, then asserts that
 every module attribute that IS a pathlib.Path resolves inside the run root -- exactly
 that, no more: a Path inside a container escapes the scan, so PERIODIC_DIRS (bin/sc:79-83,
 a dict of Paths) and SB_BIN (a str) are handled by hand; a bare Path constant is caught.
+
+WHAT THESE ASSERTIONS DO NOT REACH. Three limits, stated here so that no one has to infer
+them from what happens to be absent:
+  LANGUAGE. Every sentence assertion pins the ENGLISH KEY spelling of the sentence it
+  names, and nothing else. A translation-only wording regression -- a zh value edited to
+  say something different -- is outside their reach, and re-running the SAME assertions
+  under another language cannot change that: the expected value and the observed value are
+  both produced by the same t() lookup, so a changed wording moves both sides together and
+  no re-run discriminates it. There is no second-language pass here and none is wanted; a
+  translation-PRESENCE check is refused too, because a key with no translation renders its
+  English text by design. What guards a translated wording is review, not this file.
+  THE OUTPUT LAYER. T-25's contract -- what a user actually sees on a terminal, in which
+  encoding, with which stream -- is outside the reach of ANY assertion in this suite,
+  because every one of them runs bin/sc's functions IN THIS PROCESS. Scope, stated exactly:
+  no committed artifact runs THIS REPOSITORY'S bin/sc as a program, and this suite starts no
+  child process at all. Both halves are narrower than they read, so both are said in full:
+  verify_all.sh itself runs git, bash and python3 -- that is the harness around the suite,
+  not the suite -- and restricted-network-regression.sh:285 runs the INSTALLED
+  /usr/local/bin/sc as root, on the destructive operator-token arm that verify_all cannot
+  reach (B.5 wires --self-check only; that arm is :142-148 of the same file). What verifies
+  T-25's contract is review at change time plus an out-of-process measurement taken by the
+  task that changes the output layer. NOT verify_all B.5, which is T-07's restricted-network
+  self-check and asserts nothing whatever about rendering.
+  THE ONE WRITER, PARTLY. config_json_is_installed_by_the_one_writer enforces T-13's
+  invariant BOUNDED TO generate_config() and by source, because the property has no
+  behavioural reach at all (measured: 0 differences over 13 cases). Two residuals follow
+  from that bound: a SECOND installer added alongside a surviving _write_private(CFG_PATH,
+  ...) call is not caught, and moving the install into a helper reddens the clause while
+  the invariant still holds -- at which point the clause is re-aimed at the new owner,
+  never deleted. Its own docstring carries a third.
 
 No credential byte from any host or node appears here, and no literal following a
 password / secret / token / api_key key exceeds 7 characters (BC-8, BC-9). Fixture
@@ -52,6 +152,14 @@ from pathlib import Path
 import argparse, base64, copy, hashlib, http.client, io, socket  # noqa: E401,F401
 import stat, subprocess, time, urllib.parse, urllib.request      # noqa: E401,F401
 
+# The real Popen, bound HERE at import and never inside load(): half (b) restores THIS name
+# and then asserts against it, so no reordering of load()'s statements can leave the restore
+# putting the DENIAL back while the assertion compares it with itself -- which is what a
+# capture written below the displacement did, silently, for the whole rest of the process.
+# What that does not stop is a deliberate rebinding of this name inside load(); that is not
+# a reorder, and no assertion here is aimed at it.
+REAL_POPEN = subprocess.Popen
+
 # Resolved from this file's own location, never from the cwd: verify_all's checks are
 # cwd-sensitive (insight 13) and this one must not be.
 REPO = Path(__file__).resolve().parent.parent.parent
@@ -71,9 +179,9 @@ class LoadRefused(Exception):
 
 
 def _no_new_process(*args, **kwargs):
-    raise LoadRefused("bin/sc tried to start or replace a process during load (first "
-                      "argument: %r) -- its elevate guard is reading a uid source the "
-                      "geteuid shim does not cover" % (args[:1],))
+    raise LoadRefused("a process start or replacement during load (first argument: %r) -- "
+                      "perhaps an elevate guard reading a uid the geteuid shim misses, "
+                      "perhaps another process API this load denies" % (args[:1],))
 
 
 def _eq(got, want, what):
@@ -108,6 +216,10 @@ def load(src):
         if name.startswith(("exec", "spawn", "fork", "popen", "posix_spawn", "system")):
             setattr(shim, name, _no_new_process)
     mod = types.ModuleType("sc")
+    # Popen is the choke point every documented entry point of that module funnels through,
+    # and REAL_POPEN was captured at import, above -- there is no capture here to get out of
+    # order. Nothing that can raise may stand between these two lines and the try:.
+    subprocess.Popen = _no_new_process
     sys.modules["os"] = shim
     try:
         # encoding= is required: CPython reads a script as UTF-8 (PEP 263) while a bare
@@ -117,9 +229,10 @@ def load(src):
             text = fh.read()
         exec(compile(text, str(src), "exec"), mod.__dict__)
     finally:
-        sys.modules["os"] = os              # restore IMMEDIATELY, in a finally
-    if sys.modules["os"] is not os or mod.os is not shim:
-        raise LoadRefused("the os shim leaked out of the load")
+        sys.modules["os"] = os              # restore IMMEDIATELY, in a finally -- the SAME
+        subprocess.Popen = REAL_POPEN       # finally for BOTH displacements, never a second
+    if sys.modules["os"] is not os or mod.os is not shim or subprocess.Popen is not REAL_POPEN:
+        raise LoadRefused("a displacement made by the load did not survive its finally")
     return mod
 
 
@@ -471,6 +584,49 @@ def every_file_read_and_write_names_utf8(sc):
             % (text_sites, binary_sites))
 
 
+def config_json_is_installed_by_the_one_writer(sc):
+    """FR-7 generate_config() installs config.json through the one writer (T-13).
+
+    STRUCTURAL BY NECESSITY, not by preference: T-30 stage 6 built the declined shape --
+    `os.replace(candidate, CFG_PATH)` in place of the second `_write_private()` call -- and
+    measured 0 observable differences across 13 cases with this suite fully green
+    (.harness/rejected-decisions.md, candidate-installed-by-os-replace-instead-of-the-one-
+    writer). No byte-, mode- or timing-comparing assertion can pin which callee owns the
+    write, so a source clause is the only enforcement there is. Reads the source of the
+    LOADED module, so --source drives a mutated clone; its only I/O is that one file.
+
+    WHAT IT PINS: at least one call of the bare name `_write_private` inside the single
+    `generate_config` FunctionDef whose FIRST POSITIONAL argument is the bare name
+    `CFG_PATH`. No statement order, no argument count, no surrounding block.
+
+    THREE RESIDUALS, none of them a defect of bin/sc (RES-4, C-7):
+      * A SECOND installer added ALONGSIDE a surviving _write_private(CFG_PATH, ...) call
+        is not caught. The clause is positive-only on purpose: the negative half would be a
+        list of rename/replace/write spellings, i.e. a name list standing in for a
+        capability -- the defect this whole task exists to stop.
+      * Moving the install into a helper generate_config() calls REDDENS this clause while
+        the invariant still holds. Re-aim it at the new owner; never delete it.
+      * The destination argument is pinned as the bare name CFG_PATH in first-positional
+        position, so `_write_private(path=CFG_PATH, ...)` or `dest = CFG_PATH;
+        _write_private(dest, ...)` redden it too. That argument is not decoration: without
+        it the clause passes the measured mutant, which keeps bin/sc's OTHER
+        _write_private(Path(name), text) call. Same remedy -- re-aim, never delete.
+    """
+    src = sc.generate_config.__code__.co_filename
+    with open(src, encoding="utf-8") as fh:
+        defs = [n for n in ast.walk(ast.parse(fh.read(), src))
+                if isinstance(n, ast.FunctionDef) and n.name == "generate_config"]
+    _eq(len(defs), 1, "generate_config() definitions in " + src)
+    installs = [n.lineno for n in ast.walk(defs[0]) if isinstance(n, ast.Call)
+                and isinstance(n.func, ast.Name) and n.func.id == "_write_private"
+                and n.args and getattr(n.args[0], "id", None) == "CFG_PATH"]
+    if not installs:
+        raise AssertionError("no _write_private(CFG_PATH, ...) call inside generate_config():"
+                             " something else installs config.json in " + src)
+    return ("generate_config() installs config.json through _write_private(CFG_PATH, ...) at "
+            "line(s) " + ", ".join(str(n) for n in installs))
+
+
 def unusable_settings_refuses_regeneration(sc):
     """FR-6 a present but unusable settings.json refuses every regenerating run.
 
@@ -695,8 +851,8 @@ TESTS = (
     merge_array_key_demands_a_directive, unusable_fault_clause_is_a_class_name,
     redact_masks_secret_keys_at_every_depth, redact_masks_unlisted_keys_inside_outbounds,
     dns_overlay_prepend_is_head_of_dns_rules, zh_placeholders_are_a_subset_of_their_key,
-    every_file_read_and_write_names_utf8, unusable_settings_refuses_regeneration,
-    settings_write_failure_is_a_sentence,
+    every_file_read_and_write_names_utf8, config_json_is_installed_by_the_one_writer,
+    unusable_settings_refuses_regeneration, settings_write_failure_is_a_sentence,
     config_reaches_disk_only_when_the_checker_did_not_reject,
 )
 

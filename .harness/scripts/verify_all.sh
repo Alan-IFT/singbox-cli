@@ -76,18 +76,34 @@ else
 fi
 step "B.3" "Lint" "SKIP"
 
+# ONE definition of how a floor is read — a baseline.json on stdin, test_count's digits on
+# stdout, empty when the key is absent, non-numeric, or NOT A SINGLE VALUE: a duplicate or
+# nested unescaped "test_count" makes the sed print two lines, and a two-line value inside
+# (( )) is an arithmetic syntax error whose branch is the caller's PASS arm — a control that
+# fails open (R-104's own class). The shape test lives here, in the one reader, so both
+# callers get the same answer: an unusable floor reads as no floor, which B.4 already FAILs
+# on and B.6 already SKIPs on. B.4 reads the working tree's copy and B.6 the last commit's;
+# two spellings of this sed would be two answers to one question. A caller redirecting a
+# file in puts 2>/dev/null BEFORE the <: bash applies redirections left to right and reports
+# a failed one on the stderr in force at that point, so the other order prints an unowned
+# "No such file or directory" when baseline.json is absent (measured).
+floor_of() {
+    local v; v=$(sed -n 's/.*"test_count"[[:space:]]*:[[:space:]]*\([0-9]\{1,\}\).*/\1/p')
+    if [[ $v =~ ^[0-9]+$ ]]; then printf '%s\n' "$v"; fi
+}
+
 # B.4 — the committed bin/sc contract assertions (T-28). Invoked with NO name argument:
 # baseline.json's test_count is the floor for the FULL run's passed count. A missing
 # python3 FAILs here exactly as it does at B.1 — it never SKIPs.
 b4=""
-b4_floor=$(sed -n 's/.*"test_count"[[:space:]]*:[[:space:]]*\([0-9]\{1,\}\).*/\1/p' .harness/scripts/baseline.json 2>/dev/null)
+b4_floor=$(floor_of 2>/dev/null < .harness/scripts/baseline.json)
 if ! command -v python3 >/dev/null 2>&1; then b4="python3 not found"
 elif [[ -z "$b4_floor" ]]; then b4=".harness/scripts/baseline.json is absent or its test_count unreadable"
 else
     b4_out=$(python3 .harness/scripts/check-sc-contracts.py 2>&1); b4_rc=$?
     b4_passed=$(printf '%s\n' "$b4_out" | sed -n 's/^summary: [0-9]* defined, [0-9]* run, \([0-9]*\) passed$/\1/p')
     if [[ $b4_rc -ne 0 || -z "$b4_passed" ]]; then b4="exit $b4_rc, passed='$b4_passed'"$'\n'"$b4_out"
-    elif (( b4_passed < b4_floor )); then b4="$b4_passed assertion(s) passed, floor is $b4_floor"$'\n'"$b4_out"; fi
+    elif (( 10#$b4_passed < 10#$b4_floor )); then b4="$b4_passed assertion(s) passed, floor is $b4_floor"$'\n'"$b4_out"; fi
 fi
 [[ -z "$b4" ]] && step "B.4" "bin/sc contract assertions" "PASS" || step "B.4" "bin/sc contract assertions" "FAIL" "$b4"
 
@@ -96,6 +112,26 @@ fi
 b5_out=$(bash .harness/scripts/restricted-network-regression.sh --self-check 2>&1)
 if [[ $? -eq 0 ]]; then step "B.5" "restricted-network self-check" "PASS"
 else step "B.5" "restricted-network self-check" "FAIL" "$b5_out"; fi
+
+# B.6 — the floor is a ratchet, enforced: test_count may never be LOWER than the value in
+# the last commit. It answers "did the change about to be committed lower the floor", never
+# "is this floor honest" — a lowering already in HEAD is invisible to it (declared, not
+# discovered; baseline.json's notes says so too). An unusable reading of any kind — no .git,
+# no git, the file absent at HEAD, a non-numeric or duplicated test_count on either side — is
+# ONE empty-value branch: SKIP with a printed line, never a FAIL and never a silent PASS,
+# because floor_of() answers empty for every one of them. It never runs the suite. verify_all.ps1
+# has no counterpart and its own B.4 is an unconditional SKIP (verify_all.ps1:90-93), so on
+# Windows neither the floor nor its monotonicity is checked at all.
+b6_now=$(floor_of 2>/dev/null < .harness/scripts/baseline.json)
+b6_was=$([[ -d .git ]] && git show HEAD:.harness/scripts/baseline.json 2>/dev/null | floor_of)
+if [[ -z "$b6_now" || -z "$b6_was" ]]; then
+    step "B.6" "Assertion floor never below its last committed value" "SKIP"
+    echo "      comparison NOT performed: no single readable test_count in the working tree or at HEAD"
+elif (( 10#$b6_now < 10#$b6_was )); then
+    step "B.6" "Assertion floor never below its last committed value" "FAIL" "test_count is $b6_now in .harness/scripts/baseline.json and $b6_was at HEAD — the floor only goes up"
+else
+    step "B.6" "Assertion floor never below its last committed value" "PASS"
+fi
 # >>> HARNESS:B-CUSTOM:END <<<
 
 # --- E. Project structure (Harness required) ---

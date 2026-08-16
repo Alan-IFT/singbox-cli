@@ -219,6 +219,14 @@ never the installed build) and asserts named clauses by calling named functions 
 `bin/sc` under test is a parameter, so a mutated copy is driven without editing the suite.
 _Avoid_: unit tests, test suite, harness (a harness is throwaway, this is committed), fixture
 
+**claim surface**:
+The set of guarantee-shaped sentences a maintainer actually meets about the contract suite — its
+module header, `docs/dev-map.md`'s fixture-loader recipe block and its "what it guarantees / what
+it does not" text, and the assertion floor's `notes`. A guarantee that holds only in the code and
+not on this surface is unread; a sentence on this surface that the artifact does not enforce is a
+false assurance, so each one is either enforced or marked there as a boundary.
+_Avoid_: docs, comments, the documentation (the point is the specific places a claim is read)
+
 ## Project intent
 
 **singbox-cli is a headless v2rayN.** Stated by the owner 2026-08-01: 「初衷是实现一个类似于非桌面版
