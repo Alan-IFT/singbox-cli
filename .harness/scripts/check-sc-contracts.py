@@ -532,6 +532,159 @@ def settings_write_failure_is_a_sentence(sc):
     return "OSError -> %r; a value UTF-8 cannot encode -> %r" % (os_cause, lone)
 
 
+class _Verdict(object):
+    """What subprocess.run() hands back. PQ-1: .stdout is BYTES, never str -- _doctor_run
+    decodes it itself, and a str would raise there instead of here.
+
+    .stderr is a str and no build in this tree reads it: it exists so that a build reading
+    the pre-T-30 shape (capture_output=True, text=True, r.stderr) reaches its BEHAVIOUR
+    instead of dying on the stub's shape. Without it the HEAD control fails with an
+    AttributeError, which would pass this assertion off as discriminating while it merely
+    detected a spelling. Delete it and the control stops being one.
+    """
+
+    def __init__(self, returncode, stdout):
+        self.returncode, self.stdout = returncode, stdout
+        self.stderr = stdout.decode("utf-8", "replace")
+
+
+class _CheckerStub(object):
+    """`subprocess`, as generate_config() resolves it: PIPE / STDOUT plus a run() that
+    records what it was handed and then produces one of the three checker verdicts.
+
+    No child process is started (the module docstring's claim stays true), and the
+    recording happens at the ONE instant the candidate holds the whole document -- so the
+    candidate's mode and config.json's bytes are observed by a run, not by inspection.
+    """
+
+    PIPE = -1
+    STDOUT = -2
+
+    def __init__(self, sc, code):
+        self.sc, self.code, self.calls = sc, code, []
+
+    def run(self, cmd, **kwargs):
+        self.calls.append((list(cmd), _mode(cmd[3]), _bytes(self.sc.CFG_PATH)))
+        if self.code is None:                   # the binary cannot be run at all
+            raise OSError(8, "Exec format error", cmd[0])
+        # Quotes the path it was handed, as sing-box's own decode-class rejection does
+        # (measured, 1.13.15), so the run's substitution of that name really executes.
+        return _Verdict(self.code, b"FATAL decode config at "
+                        + cmd[3].encode("utf-8") + b": stub verdict\n")
+
+
+def _bytes(path):
+    """A path's bytes, or None when it has none. Total, so an absent file is a value."""
+    try:
+        return path.read_bytes()
+    except OSError:
+        return None
+
+
+def config_reaches_disk_only_when_the_checker_did_not_reject(sc):
+    """FR-1 the checker's verdict is taken on a candidate BEFORE config.json is replaced.
+
+    FOUR arms in one function. The first three drive one stub bound to sc.subprocess and
+    restored in a finally -- rejected (exit 1), accepted (exit 0), and could-not-be-run
+    (run() raises OSError) -- each in its own fixture whose config.json and drift record
+    carry SENTINEL bytes distinct from anything a run emits, so "left unchanged" and
+    "replaced" are two observations rather than one. A build that writes nothing at all
+    passes the first arm and fails the other two; a build that writes unconditionally does
+    the converse.
+
+    What makes each of those three a control rather than a description (PQ-2): exactly ONE
+    check per call, at an argv[3] that is NOT str(CFG_PATH) -- on HEAD that index holds
+    config.json itself -- whose DIRECTORY is CFG_DIR, at mode 0600, with config.json still
+    carrying its pre-run bytes at the instant the verdict is formed. The directory clause
+    is spelled os.path.dirname(cmd[3]) == str(sc.CFG_DIR) and NEVER as a containment
+    `str(sc.CFG_PATH) in cmd[3]`, which is satisfied by the very build this arm
+    discriminates: HEAD hands the checker str(CFG_PATH) itself, and a string contains
+    itself. str(CFG_PATH) is also a literal PREFIX of the candidate's own name, so the
+    containment can distinguish neither of the two builds it would be written for. What
+    the dirname clause catches (measured) is a build that mkstemps into TMPDIR --
+    violating I-1's dir=, BC-1/BC-2 and os.replace's EXDEV constraint -- which passed
+    every clause of this assertion before the clause existed, the listdir one included:
+    a candidate outside CFG_DIR never appears in a listing of CFG_DIR. The third arm is this task's R-70 half: no exception leaves generate_config()
+    when the binary will not exec, the document is installed anyway, the record is written
+    and the call reports success.
+
+    THE FOURTH ARM binds no stub at all and is a different kind of control. Read these
+    three facts before touching it:
+      * It PASSES on a HEAD clone, and that is correct. It is a REGRESSION control for
+        this design's own guarded region, never a HEAD discriminator -- HEAD's first tail
+        statement is _write_private(CFG_PATH, text) inside HEAD's own try, whose mkstemp
+        raises the same FileNotFoundError and renders the same "Could not write {path}"
+        key. The REJECTED arm is this assertion's HEAD discriminator; this one is not.
+      * It is the ONLY control anywhere in this suite for the guarded-region invariant:
+        no filesystem call in generate_config()'s tail may unwind without a rendered
+        run-level outcome line (BC-11). Nothing else observes it.
+      * It reddens for BOTH ways that invariant gets re-broken. Delete the
+        `if name is not None:` guard in the finally and os.unlink(None) raises TypeError
+        straight past the inner `except OSError` (UnboundLocalError if the sentinel is
+        deleted with it) -- either way an exception leaves generate_config(). Move the
+        mkstemp call back above the `try:` and its OSError leaves generate_config()
+        uncaught, because main()'s envelope takes OverrideError only, cmd_reload() has no
+        try, and cmd_update_rules()' recovery arm re-raises anything whose .path is not
+        SETTINGS_PATH.
+    Delete it and the control stops being one.
+    """
+    installed, recorded = b"SENTINEL-CONFIG\n", b"SENTINEL-DIGEST\n"
+    seen_modes = []
+    for label, code, want in (("rejected", 1, False), ("accepted", 0, True),
+                              ("cannot-run", None, True)):
+        d = fixture(sc, "checker-verdict-" + label)
+        sc.save_nodes({"active": "n1", "nodes": [
+            {"tag": "n1", "type": "trojan", "server": "a.invalid", "server_port": 443,
+             "password": "pw"}]})
+        sc.CFG_PATH.write_bytes(installed)
+        sc.STATE_PATH.write_bytes(recorded)
+        before = sorted(os.listdir(str(d)))
+        stub, real = _CheckerStub(sc, code), sc.subprocess
+        sc.subprocess = stub
+        try:
+            got = sc.generate_config()
+        finally:
+            sc.subprocess = real            # never leave the stub bound (K-11)
+        _eq(got, want, label + ": generate_config()'s return")
+        _eq(len(stub.calls), 1, label + ": number of `sing-box check` invocations")
+        cmd, mode, during = stub.calls[0]
+        _eq(cmd[1:3], ["check", "-c"], label + ": the checker's argv")
+        if cmd[3] == str(sc.CFG_PATH):
+            raise AssertionError(label + ": the checker was pointed at config.json itself")
+        _eq(os.path.dirname(cmd[3]), str(sc.CFG_DIR),
+            label + ": the directory the candidate was created in")
+        _eq(mode, 0o600, label + ": the candidate's mode while it held the document")
+        _eq(during, installed, label + ": config.json's bytes while the verdict was formed")
+        _eq(sorted(os.listdir(str(d))), before, label + ": the entries under CFG_DIR")
+        after, record = _bytes(sc.CFG_PATH), _bytes(sc.STATE_PATH)
+        if want is False:
+            _eq((after, record), (installed, recorded),
+                label + ": config.json and the drift record after the run")
+        else:
+            if after == installed:
+                raise AssertionError(label + ": config.json still holds the pre-run bytes")
+            json.loads(after.decode("utf-8"))       # what was installed IS a document
+            _eq(record, hashlib.sha256(after).hexdigest().encode("ascii") + b"\n",
+                label + ": the drift record after the run")
+        seen_modes.append("%s -> %r" % (label, got))
+    # Arm 4 -- BC-11 at the candidate's own creation. No stub: config.json's PARENT does
+    # not exist, so mkstemp raises FileNotFoundError, and it does so identically for root
+    # and non-root (a permission-based fixture would simply pass as root). Nothing earlier
+    # in generate_config() names CFG_PATH.parent -- the drift quartet degrades to None
+    # through _config_digest()'s own `except OSError` -- so mkstemp is the first statement
+    # that touches the absent directory and _write_private is never reached.
+    d = fixture(sc, "checker-verdict-candidate-uncreatable")
+    sc.save_nodes({"active": "n1", "nodes": [
+        {"tag": "n1", "type": "trojan", "server": "a.invalid", "server_port": 443,
+         "password": "pw"}]})
+    sc.CFG_PATH = d / "no-such-directory" / "config.json"
+    _eq(sc.generate_config(), False, "candidate-uncreatable: generate_config()'s return "
+        "(an exception leaving the call fails this arm, which is the point of it)")
+    seen_modes.append("candidate-uncreatable -> False, no raise")
+    return ("one check per call in CFG_DIR at a non-config.json path, mode 0600, "
+            "config.json intact at verdict time; " + ", ".join(seen_modes))
+
+
 # Data, not discovery: this order is the run order and --list's, which is what makes two
 # runs byte-identical; len(TESTS) is "defined" and MUST equal baseline.json's test_count.
 TESTS = (
@@ -544,6 +697,7 @@ TESTS = (
     dns_overlay_prepend_is_head_of_dns_rules, zh_placeholders_are_a_subset_of_their_key,
     every_file_read_and_write_names_utf8, unusable_settings_refuses_regeneration,
     settings_write_failure_is_a_sentence,
+    config_reaches_disk_only_when_the_checker_did_not_reject,
 )
 
 

@@ -219,6 +219,20 @@
 ## shared-singbox-check-wrapper
 - **Decision:** declined (`sc doctor`'s S3 invokes `sing-box check` directly; `generate_config()`'s
   invocation at `bin/sc:921-926` is left exactly as it is).
+- **Re-opened explicitly and UPHELD 2026-08-16 by T-30**, which routes `generate_config()`'s
+  invocation through `_doctor_run()`. The distinction that carried it: what this record refuses is a
+  function both sites ask *"is this config valid and what should I print"*; `_doctor_run()` takes an
+  arbitrary argv, **forms no verdict**, classifies nothing, truncates nothing, and its other caller
+  runs `sing-box version`. Argv, classification, wording and routing all stay at the call site, and
+  `bin/sc`'s I-15 fence forbids the runner ever gaining a per-caller parameter, a timeout, or
+  classification — that is the line past which this decline starts applying again. Reason (2)'s
+  premise survives the re-opening: the distinction it rests on is classify-and-truncate versus
+  warn-and-return, **not which file is checked** (T-30 checks a candidate, not the installed file).
+  Reason (3) turned into an argument *for* the reuse. Priced at stage 2, tested at stage 3.
+- **Reason (3)'s count is now two, not three** (corrected 2026-08-16, T-30): `generate_config()`'s
+  site left the `capture_output=` population when it moved to `_doctor_run()`'s 3.6-floor
+  `stdout=PIPE` + `stderr=STDOUT`. The two survivors are `bin/sc:2276` and `bin/sc:3541` — coordinates
+  taken against T-30's delivered tree, and the pool row is still open for them.
 - **Why:** three reasons, in order. (1) The judgment "is this config valid" is formed by the external
   binary, not by `bin/sc` — what a wrapper would share is a four-line invocation, i.e. a pass-through
   that fails the deletion test: delete it and no complexity reappears at either call site. (2) The two
@@ -638,3 +652,64 @@ stage 5. Filed by the PM at delivery because `.harness/**` is outside the task's
   stage 2 (the T-20 BC-16 precedent), stage 2 ran it and ruled, stage 3 reproduced every count and
   upheld it. Filed against R-48, which is **closed by narrowing the claim, not by strengthening the
   check**.
+
+## candidate-installed-by-os-replace-instead-of-the-one-writer
+- **Decision:** declined (the composed document is written **twice** — once to the candidate, once to
+  `config.json` — both times through `_write_private()`).
+- **Why:** the shape declined here is `os.replace(candidate, CFG_PATH)` after the checker accepts,
+  which is **equal in lines and cheaper at runtime** (it saves one `fsync` of a few-kilobyte document
+  per regeneration) and installs byte-identical bytes either way. So it cannot be decided on size,
+  and the requirement-level answer (T-13 defines "install a credential document safely" as the
+  *combination* of `mkstemp` + `fchmod` + `os.replace`, and a bare `os.replace` is a second partial
+  spelling of it) is a restatement rather than an argument. **The argument that settles it is about
+  coverage:** `config.json`'s exact-0600, hostile-umask and symlinked-target guarantees are pinned by
+  the committed suite **only where `_write_private` is pinned**
+  (`write_private_exact_0600_under_hostile_umask`, `write_private_replaces_wider_and_symlinked_target`).
+  Under the declined shape the final arrival of `config.json` happens at an `os.replace` no assertion
+  covers, and nothing would notice the day the candidate stopped being produced by the writer. The
+  extra call buys **inherited coverage**, not just an invariant sentence.
+- **Measured, and it is why this record matters more than most:** T-30 stage 6 built the declined
+  shape as a mutant and found **0 observable differences across 13 cases** — a 9-case behavioural
+  sweep plus a symlinked target, a `0666` target, `umask 000` and the real `sing-box` — with the
+  committed suite reporting `18 defined, 18 run, 18 passed`. **A byte-comparison assertion would not
+  kill it.** Only a *structural* control (an `ast` clause or a grep that `generate_config()` installs
+  through `_write_private()` and contains no `os.replace`) can, and adding one needs a ruling,
+  because K-11 declined `ast` shape checks for statement **order** — this is a different subject
+  (which code owns the write). Until then this record **is** the enforcement, which is exactly the
+  situation this file exists for.
+- **Origin:** T-30 `validate-before-baseline` — priced as S-2 at stage 2, re-priced independently and
+  upheld at stage 3 on the coverage ground above, and measured at stage 6 (QA DEF-3).
+
+## second-guarded-region-around-the-candidates-creation
+- **Decision:** declined (one `try` statement covers the whole tail; the candidate's creation is its
+  **first statement**, and a sentinel `name = None` above it is the only thing outside).
+- **Why:** the alternative — a second `try` / `except OSError` wrapped around `tempfile.mkstemp()`
+  alone, +3 executable lines — was the obvious repair when a code review found that `mkstemp` outside
+  the guard let an `OSError` escape `generate_config()` uncaught. It was declined on two grounds.
+  (1) *One judgement, one home*: "the filesystem refused to put this document on disk" is already the
+  existing handler's judgement, and a candidate whose name cannot be created is that same fact one
+  syscall earlier; a second guarded region gives it a second home and a second copy of the message
+  expression. (2) **More important:** two guarded regions leave *"is this statement guarded?"* a
+  per-statement question — **the exact question whose wrong answer produced the defect** — whereas one
+  region makes the invariant structural, and anything added later is covered by default.
+- **What it costs, recorded because a decline that only lists benefits is half a record:** the
+  `finally` gains a precondition (it can run with `name is None` when no candidate exists), so it
+  carries an `if name is not None:` guard whose deletion yields `os.unlink(None)` -> `TypeError` past
+  the inner `except OSError` — the same class of defect, rarer. Three things answer that for less
+  than three lines: the invariant is stated at the site, a comment says why, and a **fourth arm** on
+  the contract suite reddens for both mutations (guard deleted -> `TypeError`; creation moved back
+  above the `try:` -> uncaught `OSError`) at **zero executable lines** in `bin/sc`. The guarded-
+  `finally` shape is also not an invention: `_write_private()` itself ends in exactly it
+  (`if fd >= 0:` / `if tmp is not None:` around a guarded `unlink`), thirty lines away.
+- **Also declined, same task:** a `+0`-line variant dropping the sentinel and widening the guard to
+  `except (OSError, NameError)`, exploiting `UnboundLocalError` being a `NameError`. It is genuinely
+  two lines cheaper and equally controlled in one direction, and it loses on a ground worth keeping:
+  its failure mode — a typo or a later rename inside the unlink block — is **caught and passed**,
+  leaving a `0600` credential file under `/etc/sing-box` on every run, and **no arm can redden it**.
+  The sentinel's failure mode is caught by a test; the variant's is not. This project also prefers a
+  *value* over an exception family as a signal (`_drift_state()`'s three-valued return;
+  `stored_delays()`'s isinstance checks with no `try`/`except`).
+- **Origin:** T-30 `validate-before-baseline` — stage 5 CR-1 (MAJOR, a real behavioural regression),
+  routed to the architect because the repair was a statement its own constraint forbade the developer
+  to add; shape chosen at stage 2 round 2, tested and upheld at stage 3 round 2, both mutation
+  directions measured red at stage 4 round 2.

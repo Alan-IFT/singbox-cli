@@ -124,6 +124,15 @@ i.e. someone hand-edited a generated artifact. `sc` states drift before replacin
 the user override as the durable place for the change; it does not block and does not back up.
 _Avoid_: dirty config, manual change, out-of-sync
 
+**checker verdict**:
+The three-valued result of consulting `sing-box check` about one document: **accepted**, **rejected**,
+or **cannot-validate** (no binary on `PATH`, or a binary that will not execute). Cannot-validate is
+not rejected — `sc doctor` has always reported a missing binary as *unknown*, never *invalid*, and no
+second site forms the opposite opinion. Output the caller cannot decode is **not** a third
+cannot-validate case: the one decode is `utf-8`/`replace`, which is total over every byte string, so
+undecodable words from a rejecting checker are a *rejection* carrying U+FFFD.
+_Avoid_: config valid, check failed, validation result
+
 **drift record**:
 The sha256 digest of `config.json` as `sc` last installed it, kept at `/etc/sing-box/.config.sha256`
 and rewritten only after a successful install. It is a digest, never a copy — a second copy of the

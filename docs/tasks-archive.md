@@ -514,3 +514,50 @@ Each row below was **already closed** on `docs/tasks.md`; only its verbatim text
 | R-62 | **CLOSED 2026-08-15 by T-23** on the population it named. All three writers it anchored now encode UTF-8 explicitly, and both write-failure renderers survive a non-encodable argument via `getattr(e, "strerror", None) or str(e)` — a bare `e.strerror` would have raised `AttributeError` **inside the error handler**, since `UnicodeEncodeError` carries none. Verified end to end: under a *proved* non-UTF-8 process the `p%C3%A9q` password lands on disk decoding to exactly `péq`. **R-62's own recipe was the correct one and the criteria that inherited it were not** — `PYTHONUTF8=0` is required, and dropping it (as T-23's round-1 criteria did) yields a fully UTF-8 process on Python 3.7+ in which HEAD passes unchanged. | **closed** — T-23 |
 | R-76 | **`cmd_config`'s `CFG_PATH.read_text()` is T-23's locale-decode defect in a third reader — and repairing it falsifies two published README sentences unless they are read at the same time.** `bin/sc:3113` has no `encoding=`, so under a non-UTF-8 locale `sc config` ends at the read with exit 1. That defect is currently the *only* thing keeping `sc config`'s escape path unreachable without an env var: with T-23's explicit UTF-8 decode applied, a CJK-tagged document decodes and then escapes on the way out at **exit 0**, measured. Both READMEs' `:297` sentences are already written for that post-repair world (T-25's CR-10 disposition, taken deliberately), so **the repair's duty is to verify them, not to change them**. Reviewer CR-1/CR-10 / RES-6. | next task touching `cmd_config`, or whoever completes T-23's reader family |
 | R-77 | **The mandated fixture-loader recipe cannot load `bin/sc` under the one environment every locale criterion needs.** `docs/dev-map.md:136`'s bare `open("bin/sc").read()` decodes with the **locale** codec while CPython reads a script as UTF-8 (PEP 263), so `LC_ALL=C PYTHONUTF8=0` gives `UnicodeDecodeError: 'ascii' codec can't decode byte 0xe2 in position 29`. T-25's QA added `encoding="utf-8"` in its own harness; the recipe should carry it, or the next locale test reads the failure as a harness bug. One keyword. QA-1. | next task touching the dev-map loader recipe, or T-28 |
+
+## Rotated 2026-08-16 (during `validate-before-baseline` / T-30 delivery)
+
+Rotated to keep `docs/tasks.md` under F.5's 300-line cap. **Nothing here was closed by moving it**;
+each block moved for space only, completed and fully-closed material first. `docs/tasks.md` keeps a
+one-line pointer at each site.
+
+### T-14's block (R-15 … R-18) — fully closed before rotation
+
+All four closed: R-15/R-16 by T-24, R-17 by T-23 (limit by T-25), **R-18 by T-27** after sixteen
+confirmations — and R-18's closure was proved by T-27's own archive run. Detail in the earlier
+sections of this file.
+
+### Unnumbered items under T-06 (R-42 … R-47) — all pre-existing or accepted
+
+`sc config >&-` gives `AttributeError` + exit 1 where `sc status >&-` exits 0 silently (`print()`
+returns quietly on a `None` stream; **T-25 confirmed this is unchanged** — its stream statement is
+guarded on the stream having a binary buffer, QA-3); `NaN`/`Infinity` is re-emitted verbatim, so a
+strict parse fails while `jq` accepts it (QA-5); an empty-string credential still renders the mask,
+so unset and set are indistinguishable (RES-5); the provenance line may describe a newer inode than
+the document printed (RES-1); duplicate keys keep the last (RES-2). The unnamed-encoding item
+(RS-6/GC-7/RES-3) is **CLOSED for the state documents by T-23**; `cmd_config`'s own reader kept its
+locale decode — deliberate at T-23, filed as R-76, and **R-76 is closed by T-29**, wider than filed
+(six sites, not one).
+
+### Unnumbered items under T-24 (R-70 … R-74) — accepted or already-owned
+
+The `CHANGELOG.md` write-failure clause has an elided subject though two internal markers scope it
+correctly (CR-8/RES-8, NIT); on the `[]` fixture HEAD produces **two** silent accidents rather than
+the one C-2 predicted, since `"x" not in []` is `True` for both accessors (QA DEF-4); and
+`docs/dev-map.md:52`'s three citations were **already stale at HEAD**.
+
+### Unnumbered items under T-25 (R-75 … R-79) — folded rather than numbered
+
+**QA-2** — `04_DEVELOPMENT.md`'s K-6 resolution records "16 static labels (9 ∪ 7)" where an
+independent enumeration finds **15** (9 sections ∪ **6** probe labels), 18 with `DOCTOR_MARK`; all 18
+are in the `zh` table, so AC-4's verdict is unaffected and only the number is wrong. **QA-3** — a 28th
+`bin/sc` hunk (an `_age_text` docstring line) is named by no `L-` row and no drift block; correct,
+non-executable, measured to change nothing.
+
+### Unnumbered item under T-27 (R-86 … R-92)
+
+`02_SOLUTION_DESIGN.md:31` and RS-5 archive carried a false claim — that `set -e` plus
+`[[ … ]] && cmd` aborts `archive-task.sh:82`. Measured **false** on HEAD (exit 0); the edit landed
+anyway as K-4 conformance, and **the false form was deliberately kept out of the insight index**.
+Correction at `04_DEVELOPMENT.md:94`. Also noted there: `baseline.json`'s `test_count` was still 0 at
+the time — **closed by T-28** (0 → 14), and raised to 17 by T-29 and to **18 by T-30**.

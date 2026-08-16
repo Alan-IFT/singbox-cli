@@ -57,9 +57,17 @@ nodes.json + settings.json
    generate_config()
          │
          ↓
-   config.json  ──>  sing-box check
-         │              │
-         │              └─ 失败则不重启，错误打到 stderr
+   候选文档 (config.json.check.*, 0600, 与 config.json 同目录)
+         │
+         ↓
+   sing-box check
+         │
+         ├─ 拒绝 ──> config.json 与漂移记录都不动，错误打到 stderr，不重启
+         ├─ 无法运行 ──> 照常写入并记录，stderr 说明「未经检查」，继续
+         └─ 通过
+                ↓
+   config.json  ──>  .config.sha256（漂移记录，写在验证之后）
+         │
          ↓
    systemctl restart sing-box
          │

@@ -133,7 +133,10 @@ TRANSLATIONS = {
     "zh": {
         # errors
         "Unsupported share-link protocol: {url}": "不支持的链接协议：{url}",
-        "Config check failed:\n{stderr}": "配置检查失败：\n{stderr}",
+        "{path} was installed without being checked — `sing-box check` could not be run: {err}":
+            "{path} 已写入，但未经检查 —— 无法运行 `sing-box check`：{err}",
+        "{path} was left unchanged — `sing-box check` rejected the new configuration:\n{checker}":
+            "{path} 未被改动 —— `sing-box check` 拒绝了新的配置：\n{checker}",
         "Error: no nodes added yet — use `sc add <link>` first": "错误：尚未添加任何节点 —— 先用 `sc add <分享链接>` 添加",
         "Error: '{spec}' matches multiple nodes:\n  {names}": "错误：'{spec}' 匹配多个节点：\n  {names}",
         "Error: no node matches '{spec}' (try `sc ls`)": "错误：未找到匹配 '{spec}' 的节点（请运行 `sc ls`）",
@@ -2144,20 +2147,78 @@ def generate_config():
                         t("no configuration could be produced from it ({fault})",
                           fault=type(e).__name__)) from None
 
-    # Ordering versus `sing-box check` is unchanged: the config is written first.
+    # Candidate -> verdict -> install -> record. The composed document goes to a fresh
+    # exclusive name in config.json's OWN directory, the checker is asked about THAT file,
+    # and config.json is replaced only by a verdict that is not "rejected" -- so a document
+    # sing-box refuses never becomes the file the service reads at its next start, nor the
+    # digest recording what sc last generated. Measured on 1.13.15: `check -c` returns the
+    # same status and the same words for identical bytes whether or not the name ends in
+    # .json, which is the assumption this whole ordering rests on.
+    # The candidate's creation is a filesystem operation with _write_private's own failure
+    # set (EROFS, ENOSPC, an absent or non-directory parent), so it is INSIDE the guarded
+    # region below: nothing above this function catches an OSError -- main()'s envelope
+    # takes OverrideError only -- so a mkstemp outside it would end the run in a traceback
+    # with no run-level outcome line. Nothing that can raise may ever go between the
+    # sentinel and the `try:`.
+    name = None                 # the ONE state the finally must do nothing in
     try:
+        fd, name = tempfile.mkstemp(dir=str(CFG_PATH.parent),
+                                    prefix=CFG_PATH.name + ".check.")
+        os.close(fd)                    # _write_private opens its own descriptor
+        # THE writer at one extra name, so the candidate inherits all five of its
+        # guarantees rather than restating any of them here.
+        _write_private(Path(name), text)
+        try:
+            # Exactly ONE `sing-box check` per call, and never against config.json. No
+            # shutil.which() pre-flight: the attempt IS the test, which is what makes an
+            # absent binary and an unexecutable one one arm rather than two.
+            code, out = _doctor_run([SB_BIN, "check", "-c", name])
+        except OSError as e:
+            # Cannot validate is not invalid: a document was produced and only its verdict
+            # is missing. sc doctor already owns the opinion about this host's binary, so
+            # install, record, warn, succeed.
+            sys.stderr.write("⚠️  " + t(
+                "{path} was installed without being checked — `sing-box check` could "
+                "not be run: {err}", path=CFG_PATH, err=_plain(str(e))) + "\n")
+        else:
+            # This arm stays OUTSIDE the inner `try:` -- that is what the `else` is for.
+            # Absorbed into it (a tidy-up: both arms are about the same call), a rejection
+            # whose own stderr write raises OSError is caught by that `except OSError`,
+            # re-reported as cannot-validate, and then falls through to the install: the
+            # rejected document is installed and baselined -- R-73 again, B.4 still green.
+            if code != 0:
+                # sing-box quotes the path it was handed, so the candidate's name is
+                # substituted away before its words reach a user: a path that exists only
+                # for this run may appear in no message. _doctor_run has already dropped
+                # the complete CSI sequences sing-box emits even into a pipe, and an empty
+                # rejecting output falls to the key that states the exit status.
+                sys.stderr.write("⚠️  " + t(
+                    "{path} was left unchanged — `sing-box check` rejected the new "
+                    "configuration:\n{checker}", path=CFG_PATH,
+                    checker=out.replace(name, str(CFG_PATH)) or t(
+                        "the checker reported an error, no message (exit {code})",
+                        code=code)) + "\n")
+                return False
         _write_private(CFG_PATH, text)
     except (OSError, ValueError) as e:
+        # ONE handler for all THREE filesystem operations -- creating the candidate,
+        # writing it, writing config.json -- naming config.json for every one of them: a
+        # candidate that cannot be created or written IS config.json that cannot be
+        # written, and the transient name may appear in no message. The inner `except
+        # OSError` binds first, so a checker that could not be run never renders as this.
         sys.stderr.write("⚠️  " + t("Could not write {path}: {err}", path=CFG_PATH,
                                     err=_plain(getattr(e, "strerror", None) or str(e))) + "\n")
         return False
-    _record_generated()     # only after the document really reached disk
-
-    r = subprocess.run([SB_BIN, "check", "-c", str(CFG_PATH)],
-                       capture_output=True, text=True)
-    if r.returncode != 0:
-        sys.stderr.write("⚠️  " + t("Config check failed:\n{stderr}", stderr=r.stderr) + "\n")
-        return False
+    finally:
+        # `is not None`, never `except NameError`: the sentinel NAMES the one state in
+        # which no candidate exists, and OSError alone stays the swallowed family so a
+        # typo in this block is loud rather than a silent 0600 leftover.
+        if name is not None:
+            try:
+                os.unlink(name)     # EVERY outcome, including the two returns above
+            except OSError:
+                pass                # removing it can never become this call's failure
+    _record_generated()     # only after a document the checker did not reject is on disk
     return True
 
 def restart_service():
@@ -2542,6 +2603,13 @@ def _doctor_run(cmd):
     convenience keywords. Merging stderr keeps a tool's diagnostics inside the report
     instead of leaking around it. OSError (a missing tool) is left to the caller, which is
     how "the tool is not installed" becomes that section's UNKNOWN row, not a traceback.
+
+    A GENERAL runner with callers outside this block: since T-30 generate_config() asks
+    it for `sing-box check`'s verdict on the candidate document, and inherits both of the
+    above -- the utf-8/replace decode that is total over every byte string a checker can
+    emit, and the OSError that lets it treat "could not be run" as its own outcome. It
+    forms no verdict, classifies nothing and truncates nothing; a per-caller parameter
+    here would be the declined shared-singbox-check wrapper arriving by the back door.
     """
     r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     return r.returncode, _plain(r.stdout.decode("utf-8", "replace"))
