@@ -44,6 +44,17 @@ Stage 2 named the smaller alternative for every element and stage 3 **re-priced 
 
 Untouched throughout. `MainPID=2566751`, `NRestarts=0`, `ActiveEnterTimestamp=Tue 2026-08-11 12:13:57 CST` identical at every PM checkpoint and at every stage's start, middle and end; `systemctl show` only, `is-active` **never** invoked. `/etc/sing-box` and `/var/lib/sing-box` unchanged. Every escape probe used a **scratch subject file** and a marker target — `--source` never pointed at `bin/sc` or at the installed `/usr/local/bin/sc`, and no probe could have run anything harmful had it escaped. **`guard-rm.sh` blocked an `rm`-free command a fifteenth time** (an `ls /etc/sing-box` inside a compound); the bypass was **not** set.
 
+## Post-commit verification (RES-1, the reading stage 4 and stage 6 declared OWED)
+
+Taken by the PM in the **real repository** immediately after the delivery commit `179db66`, never
+faked and never pre-exercised in place of the real one: working tree `test_count` **19** against
+`git show HEAD:.harness/scripts/baseline.json` **19** → **`[B.6] Assertion floor never below its last
+committed value ... PASS`**, in a full run reading `PASS 20 / WARN 0 / FAIL 0 / SKIP 1`. Together with
+the **pre-commit** reading recorded at stages 4 and 6 (tree 19 vs `HEAD` 18 → PASS, taken at HEAD
+`2a6b6e8`), both instants of AC-5 are now measured: the raise passes at the discriminating instant and
+the equality passes after it. The `17` vs `19` FAIL and the four unreadable-history SKIPs were taken in
+a scratch clone, never here.
+
 ## Archive
 
 `.harness/scripts/archive-task.sh --task suite-guarantee-boundaries` output is recorded in `PM_LOG.md`,
