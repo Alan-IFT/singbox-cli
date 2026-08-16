@@ -26,7 +26,7 @@ directly; `install.sh` and `uninstall.sh` are Bash scripts run with `sudo bash`.
 
 - Build: **none** — nothing is compiled. `install.sh` copies `bin/sc` to `/usr/local/bin/`
   and downloads the sing-box binary from GitHub Releases.
-- Test: `python3 .harness/scripts/check-sc-contracts.py` — 14 contract assertions over
+- Test: `python3 .harness/scripts/check-sc-contracts.py` — the committed contract assertions over
   `bin/sc`, wired as `verify_all` B.4 against `.harness/scripts/baseline.json`'s floor.
 - Lint / typecheck: `<your linter>` — no lint config is committed. If you add one, wire it
   into `verify_all` section B at the same time.
@@ -44,7 +44,7 @@ permanently SKIPping check proves nothing.
 Do not repeat the claim that "all B.* checks are SKIP" — it was true only before B.1 was
 wired, and it has already propagated into task documents once.
 
-Minimum manual verification for any change, until B.2/B.3 are real:
+Minimum manual verification for any change, until B.3 is real (it is the run's one SKIP):
 
 <!-- source: README.md -->
 

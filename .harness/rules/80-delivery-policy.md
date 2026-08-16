@@ -67,10 +67,14 @@ never force.
 
 `/harness-upgrade` **replaces** each script its `refresh_set` names — `archive-task`, `guard-rm`,
 `harness-sync`, `install-hooks`, `migrate-scripts-layout`, the ambient hook pair, in both shells
-(`.harness/scripts/upgrade-project.sh:186-194`) — with the plugin's current template when the two
-differ, with no marker preservation and no backup (`:195-227`). `verify_all.{sh,ps1}` is **not** in
-that set (`:136-141`): it is spliced, HALTs on unmarked custom `B.*` checks, and gets a timestamped
-`.bak` (`:548-556`). So a note *inside* a `refresh_set` file dies with the fix it describes, and what
+(the `refresh_set` array in `.harness/scripts/upgrade-project.sh`, and the loop over it that follows)
+— with the plugin's current template when the two differ, with no marker preservation and no backup.
+`verify_all.{sh,ps1}` is **not** in that set: the `known` array carries the hand-maintained invariant
+comment stating the difference, and the verify pass instead splices (`VERIFY-SPLICE`), HALTs on
+unmarked custom `B.*` checks (`VERIFY-HALT`) and copies to `"$proj_file.bak-$stamp"` first. Each of
+those five names is a token that greps in the arriving text, so a refresh that keeps a mechanism
+keeps its anchor and one that removes it makes the grep fail loudly instead of pointing at the wrong
+lines. So a note *inside* a `refresh_set` file dies with the fix it describes, and what
 arrives is a text of the plugin's choosing, not a revert of the local hunks. **Keep what arrives.**
 For each fix below, run its check against the arriving text and take the action for the verdict it
 gives, naming the version measured: a verdict is a property of that text, not a standing fact. A check

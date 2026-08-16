@@ -309,8 +309,8 @@ TRANSLATIONS = {
             "自 sc 生成以来已被修改 —— 请把改动写入 {override}，再运行 `sc reload`",
         "no record of what sc last generated": "没有 sc 最近一次生成内容的记录",
         "{decision}; config.json carries this decision": "{decision}；config.json 与该决策一致",
-        "{decision}; config.json does not carry this decision as the first dns.rules entry — run `sc reload` to regenerate it, and check {override} if it prepends a rule of its own":
-            "{decision}；config.json 的 dns.rules 第一条不是该决策对应的规则 —— 运行 `sc reload` 重新生成；若 {override} 自己往前插了规则，请检查它",
+        "{decision}; config.json does not carry that decision at the head of its dns.rules — run `sc reload` to regenerate the document if it is stale or was hand-edited; if {override} puts a rule of its own at the head, regeneration reproduces it, so that document is what to change":
+            "{decision}；config.json 的 dns.rules 开头没有该决策对应的规则 —— 若该文档已过期或被手工改过，运行 `sc reload` 重新生成；若 {override} 自己在开头放了规则，重新生成还会再放一次，要改的是那份文档",
         "cannot determine this host's IPv6 addresses": "无法确定本机的 IPv6 地址",
         "the checker reported an error:": "检查器报告了错误：",
         "the checker reported an error, no message (exit {code})":
@@ -789,6 +789,10 @@ def parse_ss(url):
         body, frag = body.split("#", 1)
         name = urllib.parse.unquote(frag)
     if "@" in body:
+        # NOT a second userinfo reading — _userinfo()'s "no other site" claim rests on it:
+        # this split's product is a BASE64 CANDIDATE whose only consumer is the decode below
+        # (the except arm re-reads `body`); a second consumer of it that treats it as a
+        # userinfo field falsifies that claim in silence.
         userinfo, hostpart = body.rsplit("@", 1)
         try:
             decoded = _b64dec(userinfo)
@@ -2797,9 +2801,11 @@ def _doctor_ipv6():
         return [(DOCTOR_OK, "IPv6 (AAAA)",
                  t("{decision}; config.json carries this decision", decision=sentence))]
     return [(DOCTOR_PROBLEM, "IPv6 (AAAA)",
-             t("{decision}; config.json does not carry this decision as the first dns.rules "
-               "entry — run `sc reload` to regenerate it, and check {override} if it "
-               "prepends a rule of its own", decision=sentence, override=str(OVERRIDE_PATH)))]
+             t("{decision}; config.json does not carry that decision at the head of its "
+               "dns.rules — run `sc reload` to regenerate the document if it is stale or "
+               "was hand-edited; if {override} puts a rule of its own at the head, "
+               "regeneration reproduces it, so that document is what to change",
+               decision=sentence, override=str(OVERRIDE_PATH)))]
 
 
 def _doctor_service():

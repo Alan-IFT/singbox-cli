@@ -775,3 +775,33 @@ stage 5. Filed by the PM at delivery because `.harness/**` is outside the task's
   `subprocess` variants and `ctypes` each left a marker before the change; the three `subprocess`
   variants flipped to `LoadRefused`, no marker, exit 2 after it; `ctypes` and both real-`os`
   attribute-chain variants left theirs **both** times.
+
+## a-mechanism-that-keeps-shipped-prose-true
+- **Decision:** declined — no check, no linter, no template, no doc-lint script and no `verify_all`
+  step is added for prose drift, and no file is created whose purpose is to prevent it. T-32 swept
+  **eleven** filed rows at **zero** executable lines — seven sentences corrected, three rows found
+  already discharged and edited nowhere, R-74 amended in place — and added nothing else.
+- **Why:** counting **rows**, nine of the eleven are **semantic** claims about what code does — "the
+  split's product has one consumer", "`sc reload` repairs this cause and not that one", "the price is
+  prospective" — and no committed check can decide any of them; a check that could would have to
+  re-derive the fact the sentence states, at which point the sentence is the cheaper of the two. The
+  tenth is R-94, the one row about a **copied count**, and that count already has a mechanism:
+  counting **its clauses**, `check-sc-contracts.py`'s assertion total stood in **three** documents
+  outside `baseline.json` — rule 50's Test bullet, `dev-map.md`'s utilities row and one line of
+  `docs/tasks.md` — of which **two were deleted** rather than kept honest by a check (the copy was the
+  defect), while the third, `docs/tasks.md`'s record of what T-31 raised, was **corrected to 19** and
+  still stands over `baseline.json`'s `test_count` floor, B.4's own `N defined` line and B.6's
+  committed-floor ratchet. The eleventh row is R-74 itself, this decision's own subject. What is left
+  is a practice with no closure predicate, which is why R-74 does not close here and is amended in
+  place instead. Two precedents: **T-27** designed a routing table and then
+  **deleted** it once the work proved it unnecessary, and **T-31** closed R-95 and R-96 with a written
+  boundary at **zero** executable lines rather than with the machinery each row invited. A third
+  argument, from this task's own evidence: two of the eleven rows' *filed repairs* were themselves
+  false of the code (R-83's "four directives", R-85's "no exit code gets smaller"), so a mechanism
+  fed by filed text would have shipped both — the reading is what catches these, and a check would
+  have certified them.
+- **What is NOT claimed:** nothing here says a future sentence will be true. B.4's sentence assertions
+  do pin the **English key spelling** of the sentences they name, and B.2 pins `install.sh`'s key
+  parity; what has no owner is the **truth** of a sentence about code, not its spelling.
+- **Origin:** T-32 `record-accuracy-sweep`, FR-11 / Q-6, tested and accepted at stage 3. One entry for
+  the whole sweep, deliberately — one per row would be eleven records of one decision.
