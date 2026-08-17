@@ -43,7 +43,16 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/Alan-IFT/singbox-cl
 
 ### 升级
 
-再跑一次同样的命令即可。`install.sh` 是幂等的，会覆盖 `sc` 二进制和 systemd unit，**不会动 `nodes.json` / `settings.json`**，节点配置不会丢。
+再跑一次同样的一行命令即可。`install.sh` 是幂等的：它会替换 `sc` CLI、服务 unit 和规则集定时器，最后重新生成 `config.json` 并重启服务。`nodes.json` **完全不会被碰**，节点和当前选择都不会丢。`settings.json` 会被重写，但其中已有的键会原样保留 —— 只有 `lang` 会被设成你在提示里选的那个。
+
+**重跑不会升级 sing-box 本身。** 只要 `PATH` 上已经有 `sing-box`，第 2 步就会跳过它的下载，所以已有的二进制会停在原来的版本。要把它换成当前 release，先删掉再重跑 —— 这同时也是已安装的机器让二进制过一遍哈希核对的唯一途径，因为那项检查只对**本次真的下载下来**的二进制生效：
+
+```bash
+sudo rm /usr/local/bin/sing-box
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/Alan-IFT/singbox-cli/main/install.sh)"
+```
+
+这两条命令之间服务是停的，运行结束时会重新起来。节点、设置和规则集都不受影响。
 
 ### 其他安装方式
 

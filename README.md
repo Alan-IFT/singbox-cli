@@ -43,7 +43,16 @@ The installer will:
 
 ### Upgrade
 
-Re-run the same one-liner. `install.sh` is idempotent: it overwrites the `sc` binary and systemd units but **leaves `nodes.json` / `settings.json` untouched**, so your nodes are preserved.
+Re-run the same one-liner. `install.sh` is idempotent: it replaces the `sc` CLI, the service units and the ruleset timer, and finishes by regenerating `config.json` and restarting the service. `nodes.json` is **never touched**, so your nodes and your active selection are preserved. `settings.json` is rewritten but every existing key is carried over — only `lang` is set, to whatever you pick at the prompt.
+
+**Re-running does not upgrade sing-box itself.** Step 2 skips its download whenever a `sing-box` is already on `PATH`, so an existing binary stays at whatever version it is. To move it to the current release, remove it first and re-run — which is also the only way an already-installed host gets the checksum verification, since that runs only on a binary this installer actually downloads:
+
+```bash
+sudo rm /usr/local/bin/sing-box
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/Alan-IFT/singbox-cli/main/install.sh)"
+```
+
+The service is down between those two commands and comes back at the end of the run. Your nodes, settings and rulesets are untouched by this.
 
 ### Other install methods
 
