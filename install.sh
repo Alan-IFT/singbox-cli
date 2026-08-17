@@ -306,8 +306,8 @@ install_report() {
 # Both are referenced ONLY inside sweep_credential_modes(), which is what makes the
 # section verifiable against a temp dir: a harness extracts the function, defines these
 # three variables itself and never runs the installer. Same discipline as bin/sc's path
-# constants — "only ever referenced inside function bodies, so a test harness can repoint
-# them" (docs/dev-map.md, "Paths" row).
+# constants: only ever referenced inside function bodies, so a test harness can repoint
+# them.
 CRED_DIR="/etc/sing-box"
 # settings.json is deliberately absent: it carries no credential, and narrowing it is a
 # user-visible change nobody asked for. rules/*.srs and the directory itself are out by

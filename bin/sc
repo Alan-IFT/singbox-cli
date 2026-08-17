@@ -59,7 +59,7 @@ RESERVED_TAGS = frozenset(("proxy", "direct", AUTO_TAG))
 # THE one source of the host's IPv6 address state. Kernel-owned, read-only, and cheap:
 # one small read answers "does this host hold a global IPv6 address" without a second
 # system query or a second failure mode. Referenced only INSIDE function bodies, so it
-# joins the seven repointable path constants as the eighth (docs/dev-map.md) — without
+# joins the seven repointable path constants as the eighth — without
 # that, the auto decision cannot be driven from a fixture without root.
 IF_INET6_PATH = Path("/proc/net/if_inet6")
 # The Clash API only ever talks to `sc` itself over loopback, so the exact port
@@ -967,7 +967,7 @@ def ruleset_status(path):
     Has no in-tree caller today: both remaining questions (the report and update-rules'
     before/after snapshots) need the digest as well and go through ruleset_states().
     Retained deliberately as the named per-file adapter of the single usability judgment
-    (docs/dev-map.md) — the thing to call instead of forming a second opinion with
+    (`srs_reject_reason`) — the thing to call instead of forming a second opinion with
     path.exists() when only the status of one file is wanted.
     """
     return ruleset_state(path)[0]
@@ -1300,7 +1300,7 @@ def _directive_list():
 # TUN_IFACE is captured here at IMPORT time because it is a compile-time constant (never
 # reassigned anywhere in this file). CLASH_PORT and RULES_DIR are not — main() assigns the
 # first after import and a test harness repoints the second — which is why exactly those
-# two are read at call time, by _runtime_overlay(). See docs/dev-map.md.
+# two are read at call time, by _runtime_overlay().
 CONFIG_BASE = {
     "log": {"level": "warn", "timestamp": True},
     "dns": {
@@ -3123,7 +3123,7 @@ def cmd_doctor(args):
 # reachable exactly one way: reading the file as root.
 
 MASK = "******"
-# Six U+002A, and deliberately fewer than eight: verify_all A.1 flags a credential-looking
+# Six U+002A, and deliberately fewer than eight: secret scanners flag a credential-looking
 # key followed by a quoted literal of 8 or more characters, and this literal is written next
 # to such key names by construction. Never translated (it lives inside a JSON document, not
 # in UI text), identical for every masked value, and carrying nothing derived from the value
@@ -3245,8 +3245,7 @@ def cmd_config(args):
         # which is what would otherwise print "Exception ignored in: <_io.TextIOWrapper
         # ...>" after the last line. Since main()'s re-wrap landed, that message would
         # come TWICE: fd 1's BufferedWriter carries two wrappers, the re-wrap and the
-        # original that sys.__stdout__ keeps alive (docs/dev-map.md, "What makes a
-        # printed line ordered and encodable?", records why that is safe everywhere else).
+        # original that sys.__stdout__ keeps alive.
         os._exit(1)
 
 
@@ -3796,11 +3795,10 @@ def main():
     # THE stdout configuration — one statement, one place, before anything can print
     # (argparse's own -h included): line buffering, backslashreplace, an explicit newline,
     # the stream's own encoding preserved rather than forced, io.TextIOWrapper rather than
-    # 3.7's reconfigure(), and the guard for `sc config >&-`. What each argument buys, what
-    # backslashreplace costs, and why an io.StringIO harness certifies nothing about either
-    # guarantee are stated ONCE, and not here: docs/dev-map.md, "Reusable utilities",
-    # "What makes a printed line ordered and encodable?". That row is the home; this is
-    # only the site.
+    # 3.7's reconfigure(), and the guard for `sc config >&-`. backslashreplace buys an
+    # unkillable stdout at the price of mangling a character the terminal's encoding cannot
+    # carry; an io.StringIO stand-in certifies neither guarantee, since it shares no
+    # buffering or encoding path with the real fd 1.
     if getattr(sys.stdout, "buffer", None) is not None:
         sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding=sys.stdout.encoding,
                                       errors="backslashreplace", newline="\n",

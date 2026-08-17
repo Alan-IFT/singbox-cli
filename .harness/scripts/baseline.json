@@ -1,8 +1,0 @@
-{
-  "version": 1,
-  "created": "2026-07-31",
-  "test_count": 19,
-  "passing_count": 19,
-  "warnings_baseline": 0,
-  "notes": "test_count is the assertion floor read by verify_all.sh B.4: B.4 runs .harness/scripts/check-sc-contracts.py and FAILs when fewer assertions PASS than this number, when the suite exits non-zero, or when this file is missing or its test_count is not one readable number. It is a ratchet — adding assertions never breaks it, removing one costs an edit here in the same commit. verify_all.sh B.6 makes that ratchet enforced rather than conventional: it compares this test_count against the value in `git show HEAD:` of this same file and FAILs the run when this one is LOWER, naming both numbers and this path. B.6's ONE declared blind spot: a lowering that is already in the last commit is invisible to it, because the comparison binds at the instant before a commit — B.6 answers 'was the floor lowered by the change about to be committed', never 'is this floor honest'. test_count's only reader is verify_all.sh's floor_of(), at B.4 for this file and at B.6 for both this file and its HEAD copy — named by function and step rather than by line, because a line citation here decays on the next edit to that file and did. Every other number in this file is written and read by nothing: no committed step reads passing_count or warnings_baseline, so passing_count equalling test_count is a statement about the delivered suite — it passes every assertion it defines — enforced by no program, and warnings_baseline is a record, not a floor."
-}
