@@ -193,6 +193,61 @@ gh_fetch() {
 # checked answers this URL with 200 and does NOT follow the redirect, so a prefix that
 # "worked" can still yield no tag. Prints the version and returns 0 on the first prefix
 # that yields one; prints nothing and returns 1 when none does.
+# ----------------- sing-box tarball verification -----------------
+# THE digest source — and it is deliberately NOT fetched through GH_PREFIXES.
+# api.github.com is the one GitHub host no github.com reverse proxy carries (which is
+# also why gh_latest_tag() below exists at all). That is precisely what makes this a
+# check rather than a formality: the tarball may come from a mirror, the digest never
+# does, so no single party can supply both. Routing this through the same prefix list
+# would turn an authenticity check into a self-consistency check.
+#
+# GitHub's own per-asset `digest` field is the only published value there is to compare
+# against: SagerNet ships no checksums.txt, no signature and no attestation asset — 154
+# assets on the current release, not one of them a digest.
+#
+# `releases/tags/v<ver>` rather than `releases/latest`, so a version that came from
+# SB_VERSION or from the redirect is covered by the same one request.
+# Prints the hex half of "sha256:<hex>", or nothing when it cannot be had. Never fails:
+# "no digest" is a state the caller renders, not an error that ends the install.
+sb_published_sha256() {
+    local repo="$1" ver="$2" asset="$3" body=""
+    if ! body=$(curl "${CURL_OPTS_QUIET[@]}" \
+                     "https://api.github.com/repos/${repo}/releases/tags/v${ver}" \
+                     2>/dev/null); then
+        return 0
+    fi
+    python3 -c '
+import json, sys
+try:
+    doc = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(0)
+for asset in (doc.get("assets") or []):
+    if asset.get("name") == sys.argv[1]:
+        digest = asset.get("digest") or ""
+        # "sha256:" + 64 hex characters, and nothing else is accepted: a shape this
+        # narrow cannot be satisfied by an error page or a future digest algorithm.
+        if digest.startswith("sha256:") and len(digest) == 71:
+            sys.stdout.write(digest[7:])
+        break
+' "$asset" <<< "$body" || true
+    return 0
+}
+
+# sha256 of a file, streamed. python3 rather than sha256sum: it is a hard dependency this
+# installer has already installed by the time this runs (step 1) and already uses (step
+# 3), so one guaranteed path beats a probe plus a fallback.
+sha256_of() {
+    python3 -c '
+import hashlib, sys
+digest = hashlib.sha256()
+with open(sys.argv[1], "rb") as fh:
+    for chunk in iter(lambda: fh.read(65536), b""):
+        digest.update(chunk)
+sys.stdout.write(digest.hexdigest())
+' "$1"
+}
+
 gh_latest_tag() {
     local repo="$1" prefix final ver
     for prefix in "${GH_PREFIXES[@]}"; do
@@ -238,6 +293,10 @@ t() {
             step2_already)       fmt="▶ [2/7] sing-box 已安装：%s" ;;
             step2_installing)    fmt="▶ [2/7] 从 GitHub Releases 下载 sing-box 二进制 ..." ;;
             step2_done)          fmt="  已安装：%s" ;;
+            verifying)           fmt="  · 核对二进制包的 sha256 ..." ;;
+            verify_ok)           fmt="  ✔ 核对通过：与 api.github.com 公布的摘要一致（%s）" ;;
+            verify_skip)         fmt="  ⚠️ 未核对：取不到 api.github.com 公布的摘要（GitHub 反代不承载该主机）—— 二进制已照常安装，本次下载的 sha256 是 %s；若要强制核对，请带 SB_SHA256=<摘要> 重跑" ;;
+            verify_fail)         fmt="  ❌ 核对失败：公布的是 %s，下载到的是 %s —— 文件已删除，未安装任何东西" ;;
             step3)               fmt="▶ [3/7] 安装 sc CLI ..." ;;
             step4)               fmt="▶ [4/7] 安装服务 ..." ;;
             step5)               fmt="▶ [5/7] 配置免密 sudo（仅针对 /usr/local/bin/sc）..." ;;
@@ -289,6 +348,10 @@ t() {
             step2_already)       fmt="▶ [2/7] sing-box already installed: %s" ;;
             step2_installing)    fmt="▶ [2/7] Downloading sing-box binary from GitHub Releases ..." ;;
             step2_done)          fmt="  Installed: %s" ;;
+            verifying)           fmt="  · Checking the tarball's sha256 ..." ;;
+            verify_ok)           fmt="  ✔ Verified: matches the digest published by api.github.com (%s)" ;;
+            verify_skip)         fmt="  ⚠️ Not verified: no digest could be fetched from api.github.com (no GitHub reverse proxy carries that host) — the binary was installed anyway; this download's sha256 is %s. To require a match, re-run with SB_SHA256=<digest>" ;;
+            verify_fail)         fmt="  ❌ Verification failed: published %s, downloaded %s — the file was removed and nothing was installed" ;;
             step3)               fmt="▶ [3/7] Installing the sc CLI ..." ;;
             step4)               fmt="▶ [4/7] Installing service ..." ;;
             step5)               fmt="▶ [5/7] Configuring NOPASSWD sudo (scoped to /usr/local/bin/sc) ..." ;;
@@ -570,6 +633,36 @@ else
     if ! gh_fetch "$SB_URL" "$SB_TMPDIR/sing-box.tar.gz" "${CURL_OPTS_PROGRESS[@]}"; then
         t download_failed "$SB_URL"
         t check_network
+        exit 1
+    fi
+    # VERIFY BEFORE INSTALL, never after — the ordering bin/sc already applies to
+    # config.json. A mismatch removes the file and ends the run before anything is
+    # unpacked or installed.
+    #
+    # A digest that cannot be HAD is a different outcome from one that does not match,
+    # and it is loud but not fatal — the same distinction bin/sc draws when
+    # `sing-box check` cannot be run: cannot validate is not invalid. Aborting here would
+    # lock out every host that can reach a mirror but not api.github.com, i.e. exactly
+    # the hosts the mirror list exists for, and would do it over a check that has never
+    # run on any previous version of this installer.
+    #
+    # SB_SHA256 takes precedence over the API and is how a restricted-network host gets
+    # a real check anyway: obtain the digest out of band, pass it in.
+    t verifying
+    SB_ASSET="sing-box-${SB_VER}-linux-${ARCH}.tar.gz"
+    SB_WANT="${SB_SHA256:-}"
+    if [ -z "$SB_WANT" ]; then
+        SB_WANT=$(sb_published_sha256 "$SB_REPO" "$SB_VER" "$SB_ASSET")
+    fi
+    SB_GOT=""
+    if ! SB_GOT=$(sha256_of "$SB_TMPDIR/sing-box.tar.gz"); then SB_GOT=""; fi
+    if [ -z "$SB_WANT" ] || [ -z "$SB_GOT" ]; then
+        t verify_skip "$SB_GOT"
+    elif [ "$SB_WANT" = "$SB_GOT" ]; then
+        t verify_ok "$SB_GOT"
+    else
+        rm -f "$SB_TMPDIR/sing-box.tar.gz"
+        t verify_fail "$SB_WANT" "$SB_GOT"
         exit 1
     fi
     mkdir -p "$SB_TMPDIR/extract"

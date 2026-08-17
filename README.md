@@ -67,7 +67,15 @@ sudo ./install.sh
 
 Everything this tool does **after** it is installed works without reaching GitHub: `sc add` parses the share link, generates the config, asks `sing-box check` and restarts the service, all locally — no request leaves the machine. The problem is the bootstrap, because two things must come from GitHub first: the installer's own files and the sing-box binary.
 
-**Mirrors are built in.** Every `github.com` / `raw.githubusercontent.com` URL the installer fetches is tried against the canonical host first and then against two public GitHub reverse proxies. The canonical host is first on purpose — nothing here verifies a checksum, so a host that *can* reach GitHub never routes its bytes through a third party. A host that cannot pays one 10-second connect timeout per endpoint and then proceeds. The version lookup has three independent sources, so `api.github.com` — the one host no mirror carries — is no longer a single point of failure.
+**Mirrors are built in.** Every `github.com` / `raw.githubusercontent.com` URL the installer fetches is tried against the canonical host first and then against two public GitHub reverse proxies. The canonical host is first on purpose: a host that *can* reach GitHub never routes its bytes through a third party. A host that cannot pays one 10-second connect timeout per endpoint and then proceeds. The version lookup has three independent sources, so `api.github.com` — the one host no mirror carries — is no longer a single point of failure.
+
+**The sing-box binary is checksum-verified before it is installed.** Its sha256 is compared against the digest GitHub publishes for that exact release asset, and the digest is fetched from `api.github.com` **only** — never through the mirror list. That is what makes it a check rather than a formality: the tarball may come from a mirror, the digest never does, so no single party supplies both. A mismatch deletes the file and ends the run; nothing is unpacked and nothing is installed.
+
+If the digest cannot be fetched at all — the case on a host that can reach a mirror but not `api.github.com` — the installer says so plainly, prints the sha256 it actually downloaded, and continues. Refusing there would lock out exactly the hosts the mirror list exists for, over a check no previous version performed at all. To require a match on such a host, obtain the digest out of band and pass it in:
+
+```bash
+sudo SB_SHA256=d34d987e...c495 bash install.sh
+```
 
 That leaves fetching `install.sh` itself, which happens before any of this code runs. Use a mirror for that one URL:
 
