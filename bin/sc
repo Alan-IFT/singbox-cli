@@ -111,10 +111,23 @@ RULESET_FILES = (
     ("geosite-private.srs", "geosite/private.srs"),
 )
 # Tried in order until one yields a body that passes validation.
+#
+# ORDERED BY REACHABILITY, NOT BY TRUST — and that is only sound because every body is
+# validated identically whatever served it: _fetch_to_temp() checks the SRS magic, the
+# byte floor and equality with a declared Content-Length before anything is installed, so
+# a source cannot smuggle in a rule-set by being early in this list. What the order
+# decides is therefore only how long a host waits, and each dead source here costs a
+# 30 s connect timeout (once per run — _ruleset_bases()'s caller marks a failed base dead
+# and skips it for the remaining files).
+#
+# The two most reachable from inside mainland China come first, where the canonical
+# GitHub host is not reliably reachable; raw.githubusercontent.com stays LAST as the
+# always-correct source of record. Overridable per run with `--mirror`, or with
+# SB_RULES_BASE when sc already runs as root.
 RULESET_BASES = (
-    "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo",
     "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo",
     "https://ghfast.top/https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo",
+    "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo",
     "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo",
 )
 # Keys of a routing rule that answer rather than match. A rule whose only matcher

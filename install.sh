@@ -124,12 +124,93 @@ fi
 # -s and --progress-bar are not additive: -s wins and shows nothing. So the
 # progress variant DROPS -s rather than adding a flag. -S is kept in both: with
 # -s it is what keeps curl's error text on stderr, without -s it is a no-op.
+#
+# --connect-timeout bounds the ONE failure this installer could not previously
+# survive in reasonable time: a host that neither answers nor refuses. Without it
+# a blocked endpoint hangs on the kernel's own connect timeout (~130 s), and the
+# mirror fallback below would be unreachable in practice for the very users it
+# exists for. It bounds the CONNECT only, never the transfer, so the sing-box
+# tarball may still take as long as it takes on a slow link.
 # Every option here exists in curl 7.29 (the oldest supported distro, RHEL 7).
-CURL_OPTS_QUIET=(-f -s -S -L)
+CURL_OPTS_QUIET=(-f -s -S -L --connect-timeout 10)
 CURL_OPTS_PROGRESS=("${CURL_OPTS_QUIET[@]}")
 if [ -t 2 ]; then
-    CURL_OPTS_PROGRESS=(-f -S -L --progress-bar)
+    CURL_OPTS_PROGRESS=(-f -S -L --connect-timeout 10 --progress-bar)
 fi
+
+# ----------------- GitHub mirror policy -----------------
+# THE list of prefixes put in front of every github.com / raw.githubusercontent.com URL
+# this installer fetches, tried in order until one answers. One list, three consumers:
+# the artifact files, the sing-box version lookup and the sing-box tarball.
+#
+# "" — the canonical source — is FIRST and stays first. The others are third-party
+# reverse proxies, and nothing here verifies a checksum of what it installs, so no
+# default-path user's bytes are routed through one; a host that can reach GitHub never
+# contacts them at all. A host that cannot (a common condition inside mainland China,
+# where the canonical hosts are not reliably reachable) pays one 10 s connect timeout and
+# then proceeds. Both proxies were checked to serve byte-correct content for raw files
+# and release assets.
+#
+# SB_GH_MIRROR replaces the WHOLE list, whitespace-separated, for a host with its own
+# internal mirror: `SB_GH_MIRROR="https://mirror.corp/" sudo -E bash install.sh`. Include
+# an explicit "" in it to keep the canonical source as one of the candidates.
+GH_PREFIXES=("" "https://ghfast.top/" "https://gh-proxy.com/")
+if [ -n "${SB_GH_MIRROR:-}" ]; then
+    read -r -a GH_PREFIXES <<< "$SB_GH_MIRROR" || true
+fi
+
+# Fetch one canonical URL into a path, trying each prefix until one succeeds.
+# Usage: gh_fetch <canonical-url> <output-path> [curl option ...]
+# Returns 0 on the first prefix that yields the file, 1 when every prefix failed.
+#
+# curl's own error text is suppressed on every attempt EXCEPT the last: an attempt that
+# the next prefix recovered from is not a failure, and printing "could not resolve host"
+# and then succeeding is how a working install reads as a broken one — which is exactly
+# what every run on a host that cannot reach the canonical source would have looked like.
+# The last attempt keeps its stderr, so a run that really failed still names its cause
+# (DNS, refused, timeout, 404) underneath the caller's own message.
+gh_fetch() {
+    local url="$1" out="$2"
+    shift 2
+    local i last
+    last=$(( ${#GH_PREFIXES[@]} - 1 ))
+    for i in "${!GH_PREFIXES[@]}"; do
+        if [ "$i" -eq "$last" ]; then
+            curl "$@" "${GH_PREFIXES[$i]}${url}" -o "$out" && return 0
+        else
+            curl "$@" "${GH_PREFIXES[$i]}${url}" -o "$out" 2>/dev/null && return 0
+        fi
+    done
+    return 1
+}
+
+# The latest release tag of a repo, without api.github.com — which is an API host that a
+# github.com reverse proxy does not carry, and the single point of failure the version
+# lookup used to have. `releases/latest` is a redirect to `releases/tag/vX.Y.Z`, so the
+# tag is in curl's final URL; -I transfers no body.
+#
+# The loop advances on a failed PARSE, not merely on a failed request: one of the proxies
+# checked answers this URL with 200 and does NOT follow the redirect, so a prefix that
+# "worked" can still yield no tag. Prints the version and returns 0 on the first prefix
+# that yields one; prints nothing and returns 1 when none does.
+gh_latest_tag() {
+    local repo="$1" prefix final ver
+    for prefix in "${GH_PREFIXES[@]}"; do
+        final=""
+        if ! final=$(curl -f -s -S -L -I --connect-timeout 10 -o /dev/null \
+                          -w '%{url_effective}' \
+                          "${prefix}https://github.com/${repo}/releases/latest" 2>/dev/null)
+        then
+            continue
+        fi
+        ver=$(printf '%s\n' "$final" | sed -n '1s#.*/tag/v\([0-9][^/]*\)$#\1#p')
+        if [ -n "$ver" ]; then
+            printf '%s\n' "$ver"
+            return 0
+        fi
+    done
+    return 1
+}
 
 # ----------------- i18n -----------------
 # Initial guess from $LANG; user confirms or overrides at the prompt below.
@@ -417,7 +498,7 @@ else
         systemd/sing-box-rules-update.timer
     do
         t fetching_item "$rel"
-        if ! curl "${CURL_OPTS_QUIET[@]}" "$RAW_BASE/$rel" -o "$ARTIFACT_DIR/$rel"; then
+        if ! gh_fetch "$RAW_BASE/$rel" "$ARTIFACT_DIR/$rel" "${CURL_OPTS_QUIET[@]}"; then
             t download_failed "$RAW_BASE/$rel"
             t check_network
             exit 1
@@ -455,14 +536,30 @@ else
     # sed q) can kill an upstream element with SIGPIPE, and `pipefail` would then
     # report a SUCCESSFUL fetch as a failed one. `sed -n '1s…p'` reads to EOF and
     # still yields only the first matching line, as `head -1` did.
-    SB_VER=""
-    if ! SB_VER=$(curl "${CURL_OPTS_QUIET[@]}" "https://api.github.com/repos/${SB_REPO}/releases/latest" \
-        | grep '"tag_name"' \
-        | sed -n '1s/.*"v\([^"]*\)".*/\1/p'); then
-        SB_VER=""
+    # THREE independent ways to learn the version, in order, because the JSON API host
+    # is the one endpoint no github.com mirror carries — it used to be a single point of
+    # failure for the whole install. SB_VERSION is checked first and skips the network
+    # entirely (a pinned or air-gapped host); then the API; then the `releases/latest`
+    # redirect through every prefix in GH_PREFIXES, which is what a host that cannot
+    # reach the canonical endpoints ends up using.
+    SB_VER="${SB_VERSION:-}"
+    if [ -z "$SB_VER" ]; then
+        if ! SB_VER=$(curl "${CURL_OPTS_QUIET[@]}" "https://api.github.com/repos/${SB_REPO}/releases/latest" \
+            | grep '"tag_name"' \
+            | sed -n '1s/.*"v\([^"]*\)".*/\1/p'); then
+            SB_VER=""
+        fi
+    fi
+    if [ -z "$SB_VER" ]; then
+        # Same `if !` guard as above, and for the same reason: a bare VAR=$(pipeline)
+        # carries the pipeline's status and would terminate the installer here, before
+        # the validation below can say what went wrong.
+        if ! SB_VER=$(gh_latest_tag "$SB_REPO"); then
+            SB_VER=""
+        fi
     fi
     # Validate that we got a semver-like string (e.g. "1.10.0"). This is the ONLY
-    # judge of whether the version is usable; the pipeline's status never decides.
+    # judge of whether the version is usable; no pipeline's status ever decides.
     if [ -z "$SB_VER" ] || ! echo "$SB_VER" | grep -qE '^[0-9]+\.[0-9]+'; then
         t download_failed "GitHub API (sing-box version)"
         t check_network
@@ -470,7 +567,7 @@ else
     fi
     SB_URL="https://github.com/${SB_REPO}/releases/download/v${SB_VER}/sing-box-${SB_VER}-linux-${ARCH}.tar.gz"
     t fetching_item "sing-box v$SB_VER ($ARCH)"
-    if ! curl "${CURL_OPTS_PROGRESS[@]}" "$SB_URL" -o "$SB_TMPDIR/sing-box.tar.gz"; then
+    if ! gh_fetch "$SB_URL" "$SB_TMPDIR/sing-box.tar.gz" "${CURL_OPTS_PROGRESS[@]}"; then
         t download_failed "$SB_URL"
         t check_network
         exit 1

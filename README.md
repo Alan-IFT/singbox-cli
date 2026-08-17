@@ -63,6 +63,35 @@ cd singbox-cli
 sudo ./install.sh
 ```
 
+### Installing on a restricted network
+
+Everything this tool does **after** it is installed works without reaching GitHub: `sc add` parses the share link, generates the config, asks `sing-box check` and restarts the service, all locally — no request leaves the machine. The problem is the bootstrap, because two things must come from GitHub first: the installer's own files and the sing-box binary.
+
+**Mirrors are built in.** Every `github.com` / `raw.githubusercontent.com` URL the installer fetches is tried against the canonical host first and then against two public GitHub reverse proxies. The canonical host is first on purpose — nothing here verifies a checksum, so a host that *can* reach GitHub never routes its bytes through a third party. A host that cannot pays one 10-second connect timeout per endpoint and then proceeds. The version lookup has three independent sources, so `api.github.com` — the one host no mirror carries — is no longer a single point of failure.
+
+That leaves fetching `install.sh` itself, which happens before any of this code runs. Use a mirror for that one URL:
+
+```bash
+sudo bash -c "$(curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/Alan-IFT/singbox-cli/main/install.sh)"
+```
+
+**Your own mirror**, replacing the built-in list entirely (whitespace-separated; include an explicit `""` to keep the canonical host as a candidate):
+
+```bash
+sudo SB_GH_MIRROR="https://mirror.example.internal/" bash install.sh
+```
+
+**Fully offline / air-gapped.** The installer skips its only large download when a sing-box binary is already on `PATH`, so place one yourself and the GitHub dependency is limited to the five small artifact files (which `git clone`, a tarball copy or a USB stick can supply just as well):
+
+```bash
+sudo install -m 755 ./sing-box /usr/local/bin/sing-box   # from any trusted source
+sudo ./install.sh                                        # step 2 reports "already installed"
+```
+
+`SB_VERSION=1.13.15` pins the version and skips the lookup entirely.
+
+**If the rulesets fail to download**, the install still completes and the service still starts: `sc` degrades to "no splitting" — every rule referencing a missing `.srs` is dropped and all traffic takes the default outbound, i.e. the proxy. Add a node, confirm traffic works, then run `sc update-rules`; it now downloads *through* your own proxy and rule-based splitting comes back on the next regeneration. The ruleset mirror list is ordered by reachability for the same reason as above, and `sc update-rules --mirror URL` overrides it.
+
 ## 📖 Usage
 
 ### Add a node

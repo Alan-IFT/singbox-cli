@@ -63,6 +63,35 @@ cd singbox-cli
 sudo ./install.sh
 ```
 
+### 受限网络下的安装
+
+**装好之后的一切都不需要连 GitHub**：`sc add` 解析分享链接、生成配置、调用 `sing-box check`、重启服务，全部在本机完成，不发出任何请求。问题只出在引导阶段——有两样东西必须先从 GitHub 拿到：安装脚本自己的文件，以及 sing-box 二进制。
+
+**镜像回退已内置。** 安装脚本抓取的每一个 `github.com` / `raw.githubusercontent.com` 地址，都会先试官方源，再依次试两个公共 GitHub 反代。官方源排在第一位是刻意的：这里没有任何环节校验安装物的哈希，所以**能连上 GitHub 的机器绝不会把自己的字节交给第三方**；连不上的机器每个端点多花一次 10 秒连接超时，然后继续。版本号有三条独立的获取途径，所以 `api.github.com`（唯一一个反代不承载的主机）不再是单点故障。
+
+剩下的只有「抓取 `install.sh` 本身」这一步——它发生在上面这些代码运行之前。这一个地址用镜像即可：
+
+```bash
+sudo bash -c "$(curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/Alan-IFT/singbox-cli/main/install.sh)"
+```
+
+**使用自己的镜像**，整份替换内置列表（空格分隔；想把官方源也保留为候选，就在里面显式写一个 `""`）：
+
+```bash
+sudo SB_GH_MIRROR="https://mirror.example.internal/" bash install.sh
+```
+
+**完全离线 / 内网隔离。** 只要 `PATH` 上已经有 sing-box，安装脚本就会跳过它唯一的大文件下载。所以自己先放一个进去，对 GitHub 的依赖就只剩五个很小的文件（`git clone`、打包拷贝、U 盘都能提供）：
+
+```bash
+sudo install -m 755 ./sing-box /usr/local/bin/sing-box   # 来源自选，只要可信
+sudo ./install.sh                                        # 第 2 步会报「已安装」
+```
+
+`SB_VERSION=1.13.15` 可以钉死版本号并跳过版本探测。
+
+**如果规则集没下下来**，安装照样完成、服务照样启动：`sc` 会降级为「无分流」——所有引用缺失 `.srs` 的规则被丢弃，全部流量走默认出站，也就是代理。此时先加节点、确认能上网，再执行 `sc update-rules`——这一次它是**经由你自己的代理**下载的，下次重新生成配置时分流就恢复了。规则集的镜像顺序出于同样的理由按可达性排列，也可以用 `sc update-rules --mirror URL` 覆盖。
+
 ## 📖 使用
 
 ### 添加节点
