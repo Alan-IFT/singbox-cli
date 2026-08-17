@@ -495,7 +495,9 @@ from pathlib import Path
 lang = sys.argv[1]
 p = Path("/etc/sing-box/settings.json")
 p.parent.mkdir(parents=True, exist_ok=True)
-data = {"default_tun": True, "mode": "rule", "lang": "en"}
+# Mirrors bin/sc's _init_files() seed. No "mode" key: the route mode lives in the
+# running sing-box, and nothing reads one from this document.
+data = {"default_tun": True, "lang": "en"}
 if p.exists():
     try:
         data.update(json.loads(p.read_text()))

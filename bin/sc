@@ -122,8 +122,25 @@ RULESET_BASES = (
 RULE_ANSWER_KEYS = frozenset(("outbound", "server", "action", "rcode"))
 
 # ============ Auto-elevate ============
+# Re-exec THIS file under sudo, never a path spelled here: a hard-coded
+# /usr/local/bin/sc means a source copy run as a normal user silently executes the
+# INSTALLED build instead — an edit that appears to have no effect, which is the one
+# failure a developer cannot debug.
+#
+# The re-exec keeps the form `sudo <absolute path to sc> <args>`, because that is exactly
+# the command /etc/sudoers.d/sc grants NOPASSWD. Interposing an interpreter
+# (`sudo python3 <path>`) would not match that rule and would put a password prompt in
+# front of every invocation on every installed host.
+#
+# argv[0] has no directory component when the shell resolved it through PATH (`sc ls`), so
+# abspath() would name the CWD; shutil.which repeats the shell's own lookup. Falling back
+# to argv[0] unchanged leaves the resolution to sudo, which searches its secure_path and
+# arrives at the same file.
 if os.geteuid() != 0:
-    os.execvp("sudo", ["sudo", "/usr/local/bin/sc"] + sys.argv[1:])
+    _self = sys.argv[0]
+    _self = (os.path.abspath(_self) if os.sep in _self
+             else (shutil.which(_self) or _self))
+    os.execvp("sudo", ["sudo", _self] + sys.argv[1:])
 
 
 # ============ i18n ============
@@ -143,8 +160,17 @@ TRANSLATIONS = {
         "Error: {e}": "错误：{e}",
         "Could not write {path}: {err}": "无法写入 {path}：{err}",
         "Error: mode must be one of rule / global / direct": "错误：模式必须是 rule / global / direct 之一",
+        # The two states in which `sc mode` cannot do what its success line used to claim.
+        # The mode lives in the running sing-box (its cache_file carries it across
+        # restarts); nothing sc writes to disk can carry it, so with nothing running there
+        # is no setting to record — only a sentence saying so.
+        "Error: route mode is a live setting — sing-box is not running, so there is "
+        "nothing to switch; start it with `sc on` and set the mode again":
+            "错误：路由模式是即时生效的设置 —— sing-box 未在运行，没有可切换的对象；"
+            "请先用 `sc on` 启动，再重新设置模式",
+        "Error: the Clash API did not accept the mode change":
+            "错误：Clash API 未接受本次路由模式切换",
         "Error: argument must be on or off": "错误：参数必须为 on 或 off",
-        "Error: cannot determine target user": "错误：无法确定目标用户",
         "Error: applying timer failed: {err}": "错误：应用 timer 失败：{err}",
         "Error: language must be 'en' or 'zh'": "错误：语言必须是 'en' 或 'zh'",
         "Reload failed": "重新加载失败",
@@ -158,7 +184,12 @@ TRANSLATIONS = {
         "Switched to: {tag} (service restarted)": "已切换到：{tag}（服务已重启）",
         "Usage: sc add '<vless://...|vmess://...|trojan://...|ss://...|hysteria2://...|tuic://...>'\nHint: wrap the share link in single quotes": "用法：sc add '<vless://...|vmess://...|trojan://...|ss://...|hysteria2://...|tuic://...>'\n提示：分享链接必须用单引号包起来",
         "Added: {tag} ({type} → {server}:{port})": "已添加：{tag}（{type} → {server}:{port}）",
-        "Added: {tag} (⚠️ config check failed — see `sc log`)": "已添加：{tag}（⚠️ 配置检查失败 —— 用 `sc log` 查看详情）",
+        # Says what IS, not what was attempted: the node is gone from nodes.json again by
+        # the time this prints, so "added, but ..." would be false. The cause is already on
+        # stderr above it — generate_config() quoted the checker there — so this line
+        # states the outcome and names nothing it did not do.
+        "Not added: {tag} — no usable configuration could be produced from it; nodes.json "
+        "is unchanged": "未添加：{tag} —— 无法据此生成可用的配置；nodes.json 未改动",
         "Removed: {tag}": "已删除：{tag}",
         "sing-box started + boot autostart enabled": "sing-box 已启动 + 已设置开机自启",
         "sing-box stopped + boot autostart disabled": "sing-box 已停止 + 已取消开机自启",
@@ -172,7 +203,6 @@ TRANSLATIONS = {
         "=== Next run ===": "=== 下次执行 ===",
         "Route mode → {mode}": "路由模式 → {mode}",
         "Boot autostart → {val}": "开机自启 → {val}",
-        "GNOME system proxy → {val}": "GNOME 系统代理 → {val}",
         "Ruleset auto-update cadence → {val} (OnCalendar={oc})": "规则集自动更新频率 → {val}（OnCalendar={oc}）",
         "Language → {val}": "语言 → {val}",
         # IPv6 name resolution. The setting line, the four evidence sentences (one per
@@ -552,7 +582,10 @@ def _init_files():
         save_nodes({"active": None, "nodes": []})
     if not SETTINGS_PATH.exists():
         # Through save_settings(), like the nodes seed above: it was the SECOND writer.
-        save_settings({"default_tun": True, "mode": "rule", "lang": "en"})
+        # No "mode" key: the route mode lives in the running sing-box (see cmd_mode), so
+        # seeding one here would put a value in this document that nothing ever reads.
+        # A key left over in an existing host's settings.json is simply ignored.
+        save_settings({"default_tun": True, "lang": "en"})
 
 
 def _unusable(path, problem):
@@ -2432,8 +2465,13 @@ def cmd_use(args):
         if r is not None:
             print(t("Switched to: {tag}", tag=tag))
             return
-    if reload_or_restart():
-        print(t("Switched to: {tag} (service restarted)", tag=tag))
+    # The slow path owes the same one outcome line as the fast one. It used to fall off
+    # the end in silence on a failed regeneration — no output at all and exit 0, which
+    # reads as success while the selection reached nodes.json and nothing else. The
+    # existing key is reused: `sc reload`'s failure and this one are the same event.
+    if not reload_or_restart():
+        sys.exit(t("Reload failed"))
+    print(t("Switched to: {tag} (service restarted)", tag=tag))
 
 
 def cmd_add(args):
@@ -2444,6 +2482,11 @@ def cmd_add(args):
     except Exception as e:
         sys.exit(t("Error: {e}", e=e))
     nodes_data = load_nodes()
+    # The node store as it was BEFORE this link — the state to return to when no usable
+    # configuration can be produced from it. A deep copy, not a reference: every mutation
+    # below is in place, and generate_config() may rewrite `active` again through its own
+    # stale-selection repair.
+    previous = copy.deepcopy(nodes_data)
     existing = {n["tag"] for n in nodes_data["nodes"]}
     outbound["tag"] = _unique_tag(outbound["tag"], existing)
     nodes_data["nodes"].append(outbound)
@@ -2454,12 +2497,28 @@ def cmd_add(args):
         nodes_data["active"] = _valid_selection(
             nodes_data.get("active"), [n["tag"] for n in nodes_data["nodes"]])
     save_nodes(nodes_data)
-    if reload_or_restart():
-        print(t("Added: {tag} ({type} → {server}:{port})",
-                tag=outbound["tag"], type=outbound["type"],
-                server=outbound["server"], port=outbound["server_port"]))
-    else:
-        print(t("Added: {tag} (⚠️ config check failed — see `sc log`)", tag=outbound["tag"]))
+    # VALIDATE BEFORE THE NODE IS KEPT, never after — the ordering config.json already
+    # has. A share link that yields no usable configuration (a missing host, an absent
+    # port, a field `sing-box check` rejects) used to stay in nodes.json, where it then
+    # failed EVERY later regeneration — `sc reload`, `sc use`, `sc rm` of some other node,
+    # the unattended rule-set timer — until someone read the message and ran `sc rm`.
+    # reload_or_restart() is false only when generate_config() is, and that leaves
+    # config.json byte-identical, so restoring nodes.json is exactly what puts the two
+    # documents back in step. An unusable override.json arrives as OverrideError and is
+    # the same outcome: no configuration was produced, so no node is kept.
+    try:
+        ok = reload_or_restart()
+    except OverrideError:
+        save_nodes(previous)
+        raise
+    if not ok:
+        save_nodes(previous)
+        print(t("Not added: {tag} — no usable configuration could be produced from it; "
+                "nodes.json is unchanged", tag=outbound["tag"]))
+        sys.exit(1)
+    print(t("Added: {tag} ({type} → {server}:{port})",
+            tag=outbound["tag"], type=outbound["type"],
+            server=outbound["server"], port=outbound["server_port"]))
 
 
 def cmd_rm(args):
@@ -2505,7 +2564,13 @@ def cmd_status(args):
     elif OPENRC:
         subprocess.run(["rc-service", SERVICE, "status"])
     print("\n" + t("=== TUN interface ==="))
-    subprocess.run(["ip", "-br", "addr", "show", TUN_IFACE])
+    # Guarded like `sc doctor`'s own reading of this device: a host without iproute2 is a
+    # missing tool, not a reason for `sc status` to end in a traceback with every section
+    # below it unprinted. The existing key renders the cause.
+    try:
+        subprocess.run(["ip", "-br", "addr", "show", TUN_IFACE])
+    except OSError as e:
+        print(t("(error: {e})", e=_plain(str(e))))
     # Above is_running(): a stopped service is exactly where a stale rule-set matters.
     print("\n" + t("=== Rule-sets ==="))
     for _tag, fname, status, _digest, _size, mtime in ruleset_states():
@@ -3250,14 +3315,32 @@ def cmd_config(args):
 
 
 def cmd_mode(args):
+    """`sc mode rule|global|direct` — the route mode of the RUNNING sing-box.
+
+    The mode has exactly one home, and it is not a file sc writes: sing-box holds it, and
+    its own cache_file (enabled in CONFIG_BASE) carries it across restarts — measured on
+    1.13.15, where a mode set through the API is still in force after a restart, and where
+    a cached mode beats `experimental.clash_api.default_mode` in the document besides. So
+    the emitted document cannot carry this decision and sc does not pretend otherwise:
+    settings["mode"] was written by this command and read by NOTHING, which is what let a
+    mode set while the service was down be reported as applied and then silently lost.
+
+    Both failure states now say so and exit non-zero. Nothing is recorded on either — a
+    setting sc cannot apply is not a setting sc may claim to remember.
+    """
     mode = args.mode.lower()
     if mode not in ("rule", "global", "direct"):
         sys.exit(t("Error: mode must be one of rule / global / direct"))
-    settings = load_settings()
-    settings["mode"] = mode
-    save_settings(settings)
-    if is_running():
-        clash_api("PATCH", "/configs", {"mode": mode})
+    if not is_running():
+        sys.exit(t("Error: route mode is a live setting — sing-box is not running, so "
+                   "there is nothing to switch; start it with `sc on` and set the mode "
+                   "again"))
+    # An empty 2xx body is {} and only a real failure is None, so `is None` is the test —
+    # the same one `sc doctor`'s Clash API row makes of the same total function. The mode
+    # is sent in the user's own lower case: measured on 1.13.15, the API normalises it
+    # (`{"mode":"global"}` → 204, and /configs then reads "Global").
+    if clash_api("PATCH", "/configs", {"mode": mode}) is None:
+        sys.exit(t("Error: the Clash API did not accept the mode change"))
     print(t("Route mode → {mode}", mode=mode))
 
 
@@ -3388,28 +3471,13 @@ def cmd_default_tun(args):
     print(t("Boot autostart → {val}", val=val))
 
 
-def cmd_sysproxy(args):
-    val = args.value.lower()
-    if val not in ("on", "off"):
-        sys.exit(t("Error: argument must be on or off"))
-    user = os.environ.get("SUDO_USER") or os.environ.get("USER")
-    if not user:
-        sys.exit(t("Error: cannot determine target user"))
-    if val == "on":
-        cmds = [
-            ["gsettings", "set", "org.gnome.system.proxy", "mode", "manual"],
-            ["gsettings", "set", "org.gnome.system.proxy.http", "host", "127.0.0.1"],
-            ["gsettings", "set", "org.gnome.system.proxy.http", "port", "7890"],
-            ["gsettings", "set", "org.gnome.system.proxy.https", "host", "127.0.0.1"],
-            ["gsettings", "set", "org.gnome.system.proxy.https", "port", "7890"],
-            ["gsettings", "set", "org.gnome.system.proxy.socks", "host", "127.0.0.1"],
-            ["gsettings", "set", "org.gnome.system.proxy.socks", "port", "7890"],
-        ]
-    else:
-        cmds = [["gsettings", "set", "org.gnome.system.proxy", "mode", "none"]]
-    for c in cmds:
-        subprocess.run(["sudo", "-u", user] + c, check=False)
-    print(t("GNOME system proxy → {val}", val=val))
+# `sc sysproxy` used to live here. It pointed GNOME's HTTP / HTTPS / SOCKS proxy at
+# 127.0.0.1:7890 — a port NOTHING in this project has ever listened on: the emitted
+# document's only inbound is the TUN device (see CONFIG_BASE), so turning it on took every
+# proxy-aware desktop application offline until the user thought to turn it back off. It
+# was in no README either. Restoring it would mean emitting a `mixed` inbound on every
+# host, i.e. opening a local proxy port on machines whose whole design is a headless TUN
+# that already carries all traffic. Removed rather than fixed; nothing here replaces it.
 
 
 def cmd_update_rules(args):
@@ -3663,7 +3731,7 @@ COMMANDS
   off                         Stop sing-box and disable on boot
   status                      Show service status, TUN interface, rule-set status + age,
                               active node, egress IP
-  doctor                      Diagnose the install: seven read-only checks, causal order
+  doctor                      Diagnose the install: nine read-only checks, causal order
                                 changes nothing — no config, no download, no restart
                                 exit 0 = every section OK
                                 exit 1 = at least one PROBLEM
@@ -3684,7 +3752,6 @@ COMMANDS
                                 block = reject them locally, asking no resolver (default)
                                 show  = print the setting and every name on the list
   default-tun <on|off>        Toggle boot autostart of sing-box independently
-  sysproxy <on|off>           Toggle GNOME system proxy (HTTP/SOCKS 7890; usually unneeded with TUN)
   update-rules [--mirror URL] Update .srs rulesets now (several mirrors are tried in
                               order and every download is validated before install)
                                 --mirror URL  use this base URL instead of the built-in
@@ -3733,9 +3800,9 @@ HELP_ZH = """sc —— sing-box 命令行管理工具
   on                          启动 sing-box 并设置开机自启
   off                         停止 sing-box 并取消开机自启
   status                      查看服务状态、TUN 接口、规则集状态与更新时间、当前节点、出口 IP
-  doctor                      一键体检：按因果顺序执行七项只读检查
+  doctor                      一键体检：按因果顺序执行九项只读检查
                                 全程只读 —— 不生成配置、不下载、不重启、不修复
-                                退出码 0 = 七项全部正常
+                                退出码 0 = 九项全部正常
                                 退出码 1 = 至少一项异常
                                 退出码 2 = 没有异常，但至少一项未知
   config                      打印 /etc/sing-box/config.json，节点凭据已隐去
@@ -3754,7 +3821,6 @@ HELP_ZH = """sc —— sing-box 命令行管理工具
                                 block = 本地拦截，不向任何解析器查询（默认）
                                 show  = 显示当前设置以及清单中的每个域名
   default-tun <on|off>        单独控制开机是否自启 sing-box
-  sysproxy <on|off>           开关 GNOME 系统代理（HTTP/SOCKS 7890，TUN 模式下一般不用）
   update-rules [--mirror URL] 立即更新 .srs 规则集文件（按顺序尝试多个镜像，
                               每次下载都先校验再安装）
                                 --mirror URL  用该基地址替代内置镜像列表；可重复出现，
@@ -3816,7 +3882,6 @@ def main():
     p = sub.add_parser("ipv6"); p.add_argument("value")
     p = sub.add_parser("telemetry"); p.add_argument("value")
     p = sub.add_parser("default-tun"); p.add_argument("value")
-    p = sub.add_parser("sysproxy"); p.add_argument("value")
     p = sub.add_parser("update-rules")
     p.add_argument("--mirror", action="append", default=None)
     p = sub.add_parser("update-interval"); p.add_argument("value")
@@ -3849,7 +3914,7 @@ def main():
         "on": cmd_on, "off": cmd_off, "status": cmd_status, "doctor": cmd_doctor,
         "config": cmd_config,
         "mode": cmd_mode, "ipv6": cmd_ipv6, "telemetry": cmd_telemetry,
-        "default-tun": cmd_default_tun, "sysproxy": cmd_sysproxy,
+        "default-tun": cmd_default_tun,
         "update-rules": cmd_update_rules, "update-interval": cmd_update_interval,
         "log": cmd_log, "reload": cmd_reload, "uninstall": cmd_uninstall,
         "lang": cmd_lang,

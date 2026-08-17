@@ -73,6 +73,8 @@ sc add 'vless://uuid@host:443?security=reality&pbk=...&fp=chrome&flow=xtls-rprx-
 
 > ⚠️ Share links contain `?` `&` `#` and other shell-special characters. **Wrap the link in single quotes.**
 
+A node is kept only if a configuration carrying it was **accepted**. If `sing-box check` rejects the document the link produces — an unsupported cipher, a field this sing-box build does not know — `sc` quotes the checker, restores `nodes.json` byte for byte and exits non-zero, leaving `config.json` untouched. The link is not stored, so it cannot fail every later `sc reload` / `sc use` / unattended ruleset-timer regeneration until someone finds it and runs `sc rm`.
+
 ### Switch node
 
 ```bash
@@ -109,6 +111,8 @@ sc mode rule           # rule-based routing (default)
 sc mode global         # everything via proxy
 sc mode direct         # everything direct
 ```
+
+The mode lives in the **running** sing-box: its cache file carries the mode across restarts, and nothing `sc` writes to disk can carry it — a mode in `config.json` loses to the cached one anyway. So `sc mode` needs the service up. With sing-box stopped it changes nothing and says so, instead of recording a preference that would never take effect; start it with `sc on` and set the mode again.
 
 ### IPv6 name resolution
 

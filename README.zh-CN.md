@@ -73,6 +73,8 @@ sc add 'vless://uuid@host:443?security=reality&pbk=...&fp=chrome&flow=xtls-rprx-
 
 > ⚠️ 分享链接含 `?` `&` `#` 等 shell 特殊字符，**必须用单引号**包起来。
 
+只有当**带着这个节点的配置通过了校验**，它才会被保留。如果 `sing-box check` 拒绝了由该链接生成的文档（不支持的加密方式、当前 sing-box 版本不认识的字段等），`sc` 会原样引用检查器的说法，把 `nodes.json` 逐字节还原，并以非 0 退出，`config.json` 不受任何影响。这个链接不会被存下来，所以它不会让此后每一次 `sc reload` / `sc use` / 无人值守的规则集定时重新生成统统失败、直到有人发现它并执行 `sc rm`。
+
 ### 切节点
 
 ```bash
@@ -109,6 +111,8 @@ sc mode rule           # 按规则分流（默认）
 sc mode global         # 全部走代理
 sc mode direct         # 全部直连
 ```
+
+路由模式住在**正在运行的** sing-box 里：是它自己的缓存文件带着这个模式跨越重启，`sc` 写到磁盘上的任何文件都承载不了它 —— 就算把模式写进 `config.json`，也会被缓存里的那个盖掉。所以 `sc mode` 需要服务处于运行状态。sing-box 停着时，它什么都不改并直说，而不是记下一个永远不会生效的偏好；请先用 `sc on` 启动，再重新设置模式。
 
 ### IPv6 域名解析
 
