@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
 """sc — sing-box CLI manager. Run `sc help` for usage."""
+# THE version of this build, and the only place it is written. Three readers: `sc
+# version`, `sc doctor`'s first section and `sc help`'s heading — none of them spells a
+# literal. This file is installed by copying it, so the constant travels with the code
+# and cannot disagree with it; the release tag is what must be kept in step with THIS
+# line, never the other way round.
+SC_VERSION = "0.2.0"
 import argparse
 import base64
 import copy
@@ -312,6 +318,7 @@ TRANSLATIONS = {
         "OK": "正常",
         "PROBLEM": "异常",
         "UNKNOWN": "未知",
+        "sc version": "sc 版本",
         "sing-box binary": "sing-box 可执行文件",
         "sing-box version": "sing-box 版本",
         "rule-sets": "规则集",
@@ -2706,12 +2713,22 @@ def _first_line(text):
 
 
 def _doctor_binary():
-    """S1 — where the sing-box binary is, and what version it reports."""
+    """S1 — which build of sc this is, where the sing-box binary is, and what version it
+    reports.
+
+    sc's own version leads the whole report, and it is the one row that can never be
+    UNKNOWN: it is a constant compiled into the file being executed, so it needs no
+    lookup and has no failure mode. It is first because a bug report that does not say
+    which build produced the rows below it is a report about an unknown program — the
+    same reason the section it joins already leads the causal order.
+    """
+    rows = [(DOCTOR_OK, "sc version", SC_VERSION)]
     path = shutil.which(SB_BIN)
     if not path:
-        return [(DOCTOR_PROBLEM, "sing-box binary", t("not found on PATH")),
-                (DOCTOR_UNKNOWN, "sing-box version", t("no sing-box binary on PATH"))]
-    rows = [(DOCTOR_OK, "sing-box binary", path)]
+        return rows + [(DOCTOR_PROBLEM, "sing-box binary", t("not found on PATH")),
+                       (DOCTOR_UNKNOWN, "sing-box version",
+                        t("no sing-box binary on PATH"))]
+    rows.append((DOCTOR_OK, "sing-box binary", path))
     try:
         code, out = _doctor_run([SB_BIN, "version"])
     except OSError as e:
@@ -3780,6 +3797,7 @@ COMMANDS
   log [-f]                    Show logs (-f to follow, Ctrl+C to exit)
   reload                      Regenerate config and restart the service
   lang <en|zh>                Switch CLI language
+  version                     Print this build's version (reads nothing, writes nothing)
   uninstall                   Uninstall singbox-cli (optionally remove the sing-box binary)
   help                        Show this help
 
@@ -3848,6 +3866,7 @@ HELP_ZH = """sc —— sing-box 命令行管理工具
   log [-f]                    查看日志（-f 实时跟随，Ctrl+C 退出）
   reload                      重新生成配置并重启服务
   lang <en|zh>                切换 CLI 语言
+  version                     打印本次构建的版本号（不读文件、不写文件）
   uninstall                   卸载 singbox-cli（可选移除 sing-box 二进制）
   help                        显示本帮助
 
@@ -3863,6 +3882,16 @@ HELP_ZH = """sc —— sing-box 命令行管理工具
 
 提示：分享链接中含有 ? & # 等字符，整个链接必须用单引号包起来
 """
+
+
+def cmd_version(args):
+    """`sc version` — which build this is, as one bare line.
+
+    Untranslated and unadorned on purpose: the output is meant to be pasted into a bug
+    report and read by a script, so it carries no label a language could move. Reads no
+    file, opens no socket, and main() keeps it off the writing start-up path.
+    """
+    print("sc " + SC_VERSION)
 
 
 def cmd_help(args):
@@ -3901,7 +3930,7 @@ def main():
     p = sub.add_parser("log"); p.add_argument("-f", "--follow", action="store_true")
     sub.add_parser("reload"); sub.add_parser("uninstall")
     p = sub.add_parser("lang"); p.add_argument("value")
-    sub.add_parser("help")
+    sub.add_parser("version"); sub.add_parser("help")
 
     args = parser.parse_args()
     # The start-up path WRITES: _init_files() creates /etc/sing-box, /etc/sing-box/rules
@@ -3912,11 +3941,15 @@ def main():
     # collect. `config`: it shows the document on disk and writes nothing anywhere, on any
     # host state — including a host where /etc/sing-box does not exist, where creating the
     # directory would answer "no file at ..." by fabricating its container.
-    # This is a positive opt-out naming those TWO commands: every other command — including
-    # every command added later — takes the else arm with no action by anyone, so the
-    # failure mode of forgetting this mechanism is "a new read-only command wrote files",
-    # never "an existing command lost its initialisation".
-    if args.cmd in ("doctor", "config"):
+    # `version`: it prints a constant compiled into this file. There is no host state it
+    # could need, so creating /etc/sing-box and probing for a free port to answer it would
+    # be pure side effect — and it is the one command a user runs to find out what they
+    # have BEFORE deciding to install or upgrade anything.
+    # This is a positive opt-out naming those THREE commands: every other command —
+    # including every command added later — takes the else arm with no action by anyone,
+    # so the failure mode of forgetting this mechanism is "a new read-only command wrote
+    # files", never "an existing command lost its initialisation".
+    if args.cmd in ("doctor", "config", "version"):
         LANG = _load_lang()     # reads settings.json, tolerates its absence, writes nothing
     else:
         _init_files()
@@ -3930,7 +3963,7 @@ def main():
         "default-tun": cmd_default_tun,
         "update-rules": cmd_update_rules, "update-interval": cmd_update_interval,
         "log": cmd_log, "reload": cmd_reload, "uninstall": cmd_uninstall,
-        "lang": cmd_lang,
+        "lang": cmd_lang, "version": cmd_version,
         "help": cmd_help, None: cmd_help,
     }
     try:

@@ -125,6 +125,7 @@ A node is kept only if a configuration carrying it was **accepted**. If `sing-bo
 
 ```bash
 sc ls                  # list all nodes, with their delay
+sc now                 # print just the active node's tag
 sc use 1               # by index
 sc use US              # by name fragment
 sc use auto            # the auto-select group (see below)
@@ -292,9 +293,11 @@ Except one of ours — this one resolves `hm.baidu.com` normally while the other
 ```bash
 sc on                  # start + enable on boot
 sc off                 # stop + disable on boot
+sc default-tun on|off  # boot autostart only — leaves the running service alone
 sc status              # service status, TUN interface, rule-set status + age, current node, egress IP
 sc doctor              # one-pass read-only health report (see below)
 sc log -f              # follow logs in real time
+sc version             # which build this is — reads nothing, writes nothing
 ```
 
 ### Diagnose the install
@@ -307,7 +310,7 @@ One pass, one screen, nine facts — printed in **causal order**, so every cause
 
 | # | Section | What it reports |
 |---|---|---|
-| 1 | sing-box binary | the resolved path of the binary and its version |
+| 1 | sing-box binary | which build of `sc` this is, plus the resolved path of the sing-box binary and its version |
 | 2 | Rule-sets | one row per `.srs`: usable / missing / not a rule-set file / too small / unreadable, the byte count from that same read, and how long ago the file was written — a usable rule-set older than 60 days is reported as a problem naming `sc update-rules` |
 | 3 | Configuration | whether `config.json` exists, whether it is still what `sc` last generated, and what `sing-box check` says about it |
 | 4 | IPv6 (AAAA) | this host's effective AAAA decision, and whether the `config.json` on disk carries that decision as the first `dns.rules` entry |

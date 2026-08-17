@@ -125,6 +125,7 @@ sc add 'vless://uuid@host:443?security=reality&pbk=...&fp=chrome&flow=xtls-rprx-
 
 ```bash
 sc ls                  # 看所有节点，带延迟
+sc now                 # 只打印当前激活节点的标签
 sc use 1               # 按序号切
 sc use 美国            # 按名字片段切
 sc use auto            # 切到自动选择组（见下）
@@ -292,9 +293,11 @@ sc telemetry show      # 显示当前设置以及名单中的每个域名
 ```bash
 sc on                  # 启动 + 开机自启
 sc off                 # 停止 + 取消开机自启
+sc default-tun on|off  # 只改开机自启，不动正在运行的服务
 sc status              # 查看服务状态、TUN 接口、规则集状态与更新时间、当前节点、出口 IP
 sc doctor              # 一次跑完的只读体检报告（见下）
 sc log -f              # 实时日志
+sc version             # 查看当前是哪个版本 —— 不读文件、不写文件
 ```
 
 ### 诊断安装
@@ -307,7 +310,7 @@ sc doctor
 
 | # | 检查项 | 报告内容 |
 |---|---|---|
-| 1 | sing-box 可执行文件 | 解析到的可执行文件路径及其版本 |
+| 1 | sing-box 可执行文件 | 当前是哪个版本的 `sc`，以及解析到的 sing-box 可执行文件路径及其版本 |
 | 2 | 规则集 | 每个 `.srs` 一行：可用 / 缺失 / 不是规则集文件 / 文件过小 / 无法读取，同一次读取得到的字节数，以及文件写入至今有多久 —— 可用但超过 60 天的规则集会被报为异常，并给出 `sc update-rules` |
 | 3 | 配置文件 | `config.json` 是否存在、是否仍是 `sc` 最近一次生成的那份，以及 `sing-box check` 的结论 |
 | 4 | IPv6（AAAA） | 本机实际生效的 AAAA 决策，以及磁盘上的 `config.json` 是否把该决策对应的规则放在 `dns.rules` 第一条 |
