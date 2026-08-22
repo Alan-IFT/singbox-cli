@@ -63,7 +63,9 @@ sudo ip route add <节点IP>/32 dev <你的物理网卡>
 
 ## Q: 流量统计、节点测速？
 
-命令行里已经有一部分：`sc ls` 的「延迟」列是自动选择组探测出来的历史值（不是实时测量），`sc doctor` 会告诉你有多少个节点拿到了延迟值、自动选择组当前走哪个。
+测速用 `sc ping`：它让正在运行的 sing-box 现测一次（`sc ls` 的「延迟」列是自动选择组探测留下的历史值，不是实时测量；`sc ping` 测完之后那一列显示的就是这次的结果）。`sc doctor` 会告诉你有多少个节点拿到了延迟值、自动选择组当前走哪个。
+
+流量统计没做。
 
 要图形界面，装一个 Web Dashboard 挂到 Clash API 上：
 
@@ -98,7 +100,11 @@ TUN 默认会代理所有 UDP，BT 大量 UDP 包会占满代理流量。建议�
 
 ## Q: 多机共享一份配置？
 
-`/etc/sing-box/nodes.json` 复制过去就行。如果想云端同步：
+`sc export /root/nodes.json` 导出，挪到另一台机器上 `sc import /root/nodes.json` 合并进去。
+
+不建议直接 `cp /etc/sing-box/nodes.json`：那份文件里有全部密码和 UUID，手工复制出来的副本经常是 0644，而 `sc export` 是原子写入、权限 600、root 所有；`sc import` 还会在保留之前先校验一遍配置，生成不出可用配置就一字节不差地还原。它是合并而不是覆盖，所以目标机器上已有的节点不会丢，重复导入也是空操作。
+
+如果想云端同步：
 
 - 简单方案：放进 git private repo，写 systemd timer 定期 pull
 - 或者用 Syncthing 同步 `/etc/sing-box/`
