@@ -5,7 +5,7 @@
 # literal. This file is installed by copying it, so the constant travels with the code
 # and cannot disagree with it; the release tag is what must be kept in step with THIS
 # line, never the other way round.
-SC_VERSION = "0.5.0"
+SC_VERSION = "0.5.1"
 import argparse
 import base64
 import copy
@@ -702,6 +702,9 @@ def load_nodes(path=None):
     One reader for both, so an imported document is judged by exactly the rules the
     tool's own store is judged by, and a fault names the file it came from — the path is
     carried by _unusable(), not by the caller.
+
+    The requirement itself is established by _unique_tag(), the one minter every stored
+    node's tag passes through — this reader states it, and that writer guarantees it.
 
     The element check is not import-specific. generate_config() forms `[n["tag"] for n in
     nodes]` OUTSIDE its guarded region, so a nodes.json whose array holds a scalar, or an
@@ -2408,6 +2411,40 @@ def _resolve_node(spec):
 
 
 def _unique_tag(tag, existing):
+    """THE minter of a stored node's tag, and its postcondition is exactly load_nodes()'s
+    precondition: a non-empty string, unique among `existing`, and never a reserved tag.
+
+    Every node that enters nodes.json passes through here — `sc add`, `sc import` and a
+    subscription refresh — which is why the three properties are established here and not
+    at any call site.
+
+    TEXT, because a tag is not always one to begin with: a vmess link's `ps` is an
+    arbitrary JSON value, so `"ps": 5` used to store an integer tag, and the store's own
+    reader then rejected the whole document with a sentence naming nodes.json rather than
+    the link that caused it.
+
+    CONTROL CHARACTERS REMOVED, because since `sc sub` a tag is text a REMOTE PROVIDER
+    supplies and `sc ls` prints straight to a terminal. A name carrying `ESC [ 2K ESC [ 1A`
+    erases the row above it as it is drawn: a subscription could hide a node from the list
+    or make one node's row read as another's. Stripped where tags are MADE rather than
+    neutralised at each of the eight places one is printed, so nodes.json can never hold
+    one and `sc export`, a hand-inspected file and every future screen inherit it.
+
+    Through _plain(), THE neutraliser this file already owns, so no second CSI grammar is
+    written here — and it is what makes the result legible rather than merely inert:
+    dropping the ESC alone would leave the residue `[2K[1A` sitting in the node's name,
+    exactly the failure _plain() was given its sequence-aware scan for. What remains after
+    it is then filtered for stray C0, DEL and C1 characters — a bell or a NUL is not part
+    of any sequence, and some terminals still act on U+0080-U+009F.
+
+    The empty result has to become something — a name of nothing but control characters
+    is still a node — and the fallback is deliberately generic, since the minter has no
+    access to the address the parsers would have used.
+    """
+    tag = _plain(tag if isinstance(tag, str) else str(tag))
+    tag = "".join(c for c in tag
+                  if not ("\x00" <= c <= "\x1f" or "\x7f" <= c <= "\x9f")).strip()
+    tag = tag or "node"
     # The reserved tags are rejected by the minter itself rather than by its caller, so
     # "no node ever carries a tag sc emits" is a property of the one place tags are made
     # and a future second caller inherits it. A share link whose fragment is `auto`
@@ -2451,7 +2488,10 @@ def cmd_ls(args):
               f"  {_delay_cell(AUTO_TAG):>9}")
     for i, n in enumerate(nodes, 1):
         marker = "●" if n["tag"] == active else " "
-        addr = f"{n['server']}:{n['server_port']}"
+        # The tag is safe by construction (see _unique_tag), but the address is not: it
+        # has to stay byte-exact for sing-box, so a provider's escape sequence in a
+        # hostname is neutralised HERE — the one place an address is printed.
+        addr = _plain(f"{n['server']}:{n['server_port']}")
         print(f"{i:>4}  {marker:2}  {n['type']:10}  {n['tag'][:30]:30}  {addr[:25]:25}"
               f"  {_delay_cell(n['tag']):>9}")
 
@@ -2496,7 +2536,9 @@ def cmd_add(args):
     try:
         outbound = parse_share_url(args.url)
     except Exception as e:
-        sys.exit(t("Error: {e}", e=e))
+        # Through the one neutraliser like every other foreign fragment: the message
+        # quotes the link that was handed in, and a link is text from outside.
+        sys.exit(t("Error: {e}", e=_plain(str(e))))
     nodes_data = load_nodes()
     # The node store as it was BEFORE this link — the state to return to when no usable
     # configuration can be produced from it. A deep copy, not a reference: every mutation
@@ -2692,7 +2734,7 @@ def _apply_subscription(nodes_data, previous, summary):
 
 def _sub_report(url, nodes, unparsable):
     """One line per subscription that was read, and the one place that line is shaped."""
-    line = t("{url} — {n} node(s)", url=url, n=len(nodes))
+    line = t("{url} — {n} node(s)", url=_plain(url), n=len(nodes))
     if unparsable:
         line += " " + t("({n} line(s) not recognised)", n=unparsable)
     return line
@@ -2719,6 +2761,13 @@ def cmd_sub(args):
     if action in ("add", "rm") and not args.url:
         sys.exit(t("Error: `sc sub {action}` needs a subscription URL", action=action))
     urls = _subscriptions()
+    # `add` and `rm` rewrite settings.json as well as nodes.json, and this is the read
+    # that can refuse. Taken BEFORE either file is touched — not because a late read would
+    # be unsafe (it would not: generate_config() refuses on an unusable settings.json of
+    # its own accord, and _apply_subscription() restores nodes.json when it does), but
+    # because a command that is going to refuse should refuse before it fetches a URL and
+    # writes nodes.json twice on its way to the same answer.
+    settings = load_settings() if action in ("add", "rm") else None
 
     if action == "show":
         if not urls:
@@ -2728,26 +2777,27 @@ def cmd_sub(args):
         for node in load_nodes()["nodes"]:
             counts[node.get("source")] = counts.get(node.get("source"), 0) + 1
         for url in urls:
-            print(t("{url} — {n} node(s)", url=url, n=counts.get(url, 0)))
+            print(t("{url} — {n} node(s)", url=_plain(url), n=counts.get(url, 0)))
         return
 
     if action == "add":
         if args.url in urls:
-            print(t("Already a subscription of this host: {url}", url=args.url))
+            print(t("Already a subscription of this host: {url}",
+                    url=_plain(args.url)))
             return
         try:
             nodes, unparsable = _fetch_subscription(args.url)
         except Exception as e:
-            sys.exit(t("Error: {url}: {e}", url=args.url, e=_plain(str(e))))
+            sys.exit(t("Error: {url}: {e}", url=_plain(args.url),
+                       e=_plain(str(e))))
         if not nodes:
-            sys.exit(t("Error: no share link found at {url}", url=args.url))
+            sys.exit(t("Error: no share link found at {url}", url=_plain(args.url)))
         nodes_data = load_nodes()
         previous = copy.deepcopy(nodes_data)
         nodes_data["nodes"] = _rebuild_nodes(nodes_data, {args.url: nodes})
         if _apply_subscription(nodes_data, previous,
                                t("Subscription added: {line}",
                                  line=_sub_report(args.url, nodes, unparsable))):
-            settings = load_settings()
             settings["subscriptions"] = urls + [args.url]
             save_settings(settings)
         else:
@@ -2756,7 +2806,8 @@ def cmd_sub(args):
 
     if action == "rm":
         if args.url not in urls:
-            sys.exit(t("Error: not a subscription of this host: {url}", url=args.url))
+            sys.exit(t("Error: not a subscription of this host: {url}",
+                       url=_plain(args.url)))
         nodes_data = load_nodes()
         previous = copy.deepcopy(nodes_data)
         # An empty fetch for this URL: the same apply, expressing "it now owns nothing".
@@ -2764,8 +2815,7 @@ def cmd_sub(args):
         gone = len(previous["nodes"]) - len(nodes_data["nodes"])
         if _apply_subscription(nodes_data, previous,
                                t("Subscription removed: {url} — {n} node(s) removed",
-                                 url=args.url, n=gone)):
-            settings = load_settings()
+                                 url=_plain(args.url), n=gone)):
             settings["subscriptions"] = [u for u in urls if u != args.url]
             save_settings(settings)
         else:
@@ -2782,7 +2832,7 @@ def cmd_sub(args):
             nodes, unparsable = _fetch_subscription(url)
         except Exception as e:
             failed.append(url)
-            sys.stderr.write("⚠️  " + _plain(t("Error: {url}: {e}", url=url,
+            sys.stderr.write("⚠️  " + _plain(t("Error: {url}: {e}", url=_plain(url),
                                                e=_plain(str(e)))) + "\n")
             continue
         fetched[url] = nodes

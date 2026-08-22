@@ -1143,6 +1143,73 @@ def t_readme_parity(tmp):
                              % (fact, en[fact], zh[fact]))
 
 
+def t_tag_minter(tmp):
+    """A stored tag is text, control-free, non-empty and unique — by construction.
+
+    The minter's postcondition IS load_nodes()'s precondition, so these two must be
+    tested against each other: whatever _unique_tag() returns, the reader must accept.
+    """
+    # A provider's escape sequence: `ESC [ 2K ESC [ 1A` erases the row above it as the
+    # list is drawn, which is how a subscription would hide a node or forge another's row.
+    evil = "\x1b[2K\x1b[1A forged"
+    assert SC._unique_tag(evil, set()) == "forged", repr(SC._unique_tag(evil, set()))
+    assert SC._unique_tag("a\x00b\x7fc\x9fd", set()) == "abcd"
+    assert SC._unique_tag(5, set()) == "5"              # a vmess `ps` need not be a string
+    assert SC._unique_tag("\x1b\x1b", set()) == "node"  # nothing legible left
+    assert SC._unique_tag("  padded  ", set()) == "padded"
+    assert SC._unique_tag("auto", set()) == "auto #2"   # reserved, still
+    assert SC._unique_tag("x", {"x"}) == "x #2"
+    assert SC._unique_tag(evil, {"forged"}) == "forged #2"
+
+    # Whatever it mints, the reader accepts — the two contracts are one contract.
+    sandbox(tmp)
+    minted = [SC._unique_tag(t, set()) for t in (evil, 5, "\x1b", "auto", "ok")]
+    SC.save_nodes({"active": None, "nodes": [{"tag": m, "type": "direct"} for m in minted]})
+    assert [n["tag"] for n in SC.load_nodes()["nodes"]] == minted
+
+    # And nothing an escape sequence could do survives to the screen.
+    SC.save_nodes({"active": None, "nodes": [
+        {"tag": SC._unique_tag(evil, set()), "type": "vless",
+         "server": "h\x1b[31m.example", "server_port": 443}]})
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        SC.cmd_ls(None)
+    assert "\x1b" not in out.getvalue(), repr(out.getvalue())
+
+
+def t_sub_refuses_before_working(tmp):
+    """`sc sub add` refuses an unusable settings.json before it does any work.
+
+    Not a safety property — generate_config() refuses on that document anyway and
+    _apply_subscription() restores nodes.json when it does, so a late read reaches the
+    same outcome. What the early read buys is that the outcome costs nothing: NO request
+    is issued, which is what `seen` asserts here. A test that only checked nodes.json
+    would pass either way, and did.
+    """
+    import base64
+    seed(tmp, links=())
+    SC.save_nodes({"active": None, "nodes": []})
+    real_restart = SC.restart_service
+    SC.restart_service = lambda: True
+    try:
+        body = base64.b64encode(VLESS.encode()).decode().encode()
+        seen = []
+        with local_source({"/sub": body}, seen) as base:
+            SC.SETTINGS_PATH.write_text("{ this is not json")
+            before = SC.NODES_PATH.read_bytes()
+            try:
+                with contextlib.redirect_stdout(io.StringIO()), \
+                        contextlib.redirect_stderr(io.StringIO()):
+                    SC.cmd_sub(type("A", (), {"action": "add", "url": base + "/sub"})())
+                raise AssertionError("added a subscription over an unusable settings.json")
+            except SC.OverrideError as e:
+                assert e.path == SC.SETTINGS_PATH, e.path
+            assert SC.NODES_PATH.read_bytes() == before, "nodes were stored anyway"
+            assert seen == [], "the URL was fetched before the refusal: %r" % seen
+    finally:
+        SC.restart_service = real_restart
+
+
 # ---------------------------------------------------------------- the runner
 
 def main():
