@@ -5,7 +5,7 @@
 # literal. This file is installed by copying it, so the constant travels with the code
 # and cannot disagree with it; the release tag is what must be kept in step with THIS
 # line, never the other way round.
-SC_VERSION = "0.4.0"
+SC_VERSION = "0.5.0"
 import argparse
 import base64
 import copy
@@ -73,6 +73,12 @@ PING_TIMEOUT_MS = 5000
 # the same tag is a config sing-box rejects, and an ambiguous `sc use` besides. Built FROM
 # AUTO_TAG so that constant stays the single definition.
 RESERVED_TAGS = frozenset(("proxy", "direct", AUTO_TAG))
+# Keys sc keeps ON a node for its own bookkeeping and sing-box must never see. `source`
+# is the subscription a node came from — provenance is a property OF the node, so that is
+# where it lives; sing-box rejects an outbound carrying an unknown field (measured on
+# 1.13.18: `outbounds[0].source: json: unknown field "source"`), so the filtering belongs
+# to the emitted document and happens at the ONE site that puts nodes into it.
+SC_NODE_KEYS = frozenset(("source",))
 # The Clash API only ever talks to `sc` itself over loopback, so the exact port
 # is irrelevant — we auto-probe a free one in a high range to avoid clashing
 # with other local services (xray / clash / cockpit all default to 9090). Once
@@ -252,6 +258,34 @@ TRANSLATIONS = {
             "未导入 —— 无法据这些节点生成可用的配置；nodes.json 未改动",
         "Imported {n} node(s): {names}": "已导入 {n} 个节点：{names}",
         "{n} node(s) were already present and were skipped": "另有 {n} 个节点已存在，已跳过",
+        # Subscriptions. `Reload failed` and the node-count phrase are reused; nothing
+        # here re-spells a sentence another command already owns.
+        "{path}: subscriptions must be a list of URLs — ignoring the ones that are not":
+            "{path}：subscriptions 必须是一组 URL —— 其中不是 URL 的项已被忽略",
+        "only http:// and https:// subscription URLs are supported":
+            "订阅 URL 只支持 http:// 和 https://",
+        "Error: argument must be one of show / add / rm / update":
+            "错误：参数必须是 show / add / rm / update 之一",
+        "Error: `sc sub {action}` needs a subscription URL":
+            "错误：`sc sub {action}` 需要一个订阅 URL",
+        "(no subscriptions — use `sc sub add <url>` to add one)":
+            "（暂无订阅 —— 使用 `sc sub add <url>` 添加）",
+        "{url} — {n} node(s)": "{url} —— {n} 个节点",
+        "({n} line(s) not recognised)": "（{n} 行无法识别）",
+        "Already a subscription of this host: {url}": "该订阅已存在：{url}",
+        "Error: not a subscription of this host: {url}": "错误：本机没有这个订阅：{url}",
+        "Error: {url}: {e}": "错误：{url}：{e}",
+        "Error: no share link found at {url}": "错误：{url} 中没有找到任何分享链接",
+        "Subscription added: {line}": "已添加订阅：{line}",
+        "Subscription removed: {url} — {n} node(s) removed":
+            "已删除订阅：{url} —— 已移除 {n} 个节点",
+        "Subscriptions updated: {n} node(s) from {total} subscription(s)":
+            "订阅已更新：来自 {total} 个订阅的 {n} 个节点",
+        "No subscription changed — the sing-box service was not touched":
+            "订阅内容无变化 —— 未改动 sing-box 服务",
+        "Not applied — no usable configuration could be produced from those nodes; "
+        "nodes.json is unchanged":
+            "未应用 —— 无法据这些节点生成可用的配置；nodes.json 未改动",
         "sing-box started + boot autostart enabled": "sing-box 已启动 + 已设置开机自启",
         "sing-box stopped + boot autostart disabled": "sing-box 已停止 + 已取消开机自启",
         "=== Service status ===": "=== 服务状态 ===",
@@ -742,6 +776,11 @@ def _q(qs, key, default=None):
 
 
 def _b64dec(s):
+    # urlsafe_b64decode maps `-_` onto `+/` and passes `+/` through untouched, so it
+    # already accepts BOTH alphabets — which is what lets one function decode vmess links
+    # and subscription bodies, written about as often in one as in the other. Nothing here
+    # translates anything: a version of this that did was a line of code and a paragraph of
+    # reasoning buying a no-op. Padding is restored because producers routinely drop it.
     s = s + "=" * ((4 - len(s) % 4) % 4)
     return base64.urlsafe_b64decode(s).decode("utf-8", errors="replace")
 
@@ -1370,10 +1409,12 @@ class OverrideError(Exception):
 # earlier overlay inserts, which is precisely the case two future overlays into dns.rules
 # would hit.
 DIRECTIVES = ("$prepend", "$append", "$replace", "$before", "$after")
-# An override is hand-written; a megabyte is already three orders of magnitude more than
-# the document it patches. Enforced on the READ, never on st_size, so a file that grows
+# THE size of the largest document sc will read from outside itself, and its two
+# consumers are override.json and a subscription body. An override is hand-written and a
+# subscription of 500 nodes is about 100 KB, so a megabyte is already orders of magnitude
+# more than either. Enforced on the READ, never on st_size, so a document that grows
 # between the stat and the read cannot get past it.
-OVERRIDE_MAX_BYTES = 1024 * 1024
+DOC_MAX_BYTES = 1024 * 1024
 
 
 def _directive_list():
@@ -1649,11 +1690,11 @@ def _load_override():
         raise OverrideError(t("not a regular file"))
     try:
         with open(str(OVERRIDE_PATH), "rb") as fh:
-            raw = fh.read(OVERRIDE_MAX_BYTES + 1)       # cap the READ, not st_size
+            raw = fh.read(DOC_MAX_BYTES + 1)       # cap the READ, not st_size
     except OSError as e:
         raise OverrideError(t("cannot be read ({err})", err=e.strerror or str(e)))
-    if len(raw) > OVERRIDE_MAX_BYTES:
-        raise OverrideError(t("larger than {n} byte(s)", n=OVERRIDE_MAX_BYTES))
+    if len(raw) > DOC_MAX_BYTES:
+        raise OverrideError(t("larger than {n} byte(s)", n=DOC_MAX_BYTES))
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
@@ -1870,6 +1911,16 @@ def _telemetry_overlay():
     }}}}
 
 
+def _emitted_node(node):
+    """A node as the DOCUMENT sees it: sc's own bookkeeping keys (SC_NODE_KEYS) removed.
+
+    THE one filter, at the one site that puts node objects into the emitted outbounds.
+    Nowhere else needs it: `sc config` reads config.json, which is already filtered, and
+    nodes.json keeps the keys because that is what they are for.
+    """
+    return dict((k, v) for k, v in node.items() if k not in SC_NODE_KEYS)
+
+
 def _runtime_overlay(nodes, active, report):
     """The one carrier of run-time content, expressed as an overlay so that the shipped
     path exercises _merge() on every single run rather than only when a user has written
@@ -1919,7 +1970,8 @@ def _runtime_overlay(nodes, active, report):
         # nodes this expression collapses to exactly what it was before this feature
         # existed — the fresh-install document is byte-identical by construction.
         "outbounds": {"$replace":
-                      [selector] + ([group] if auto else []) + nodes
+                      [selector] + ([group] if auto else [])
+                      + [_emitted_node(n) for n in nodes]
                       + [{"type": "direct", "tag": "direct"}]},
         "route": {"rule_set": {"$replace": [
             {"tag": tag, "type": "local", "format": "binary",
@@ -2498,6 +2550,259 @@ def cmd_rm(args):
     # run's outcome — not something to print "Removed" over.
     _apply_or_exit()
     print(t("Removed: {tag}", tag=node["tag"]))
+
+
+# ============ Subscriptions ============
+# A subscription is a URL whose body is a list of share links. THE model, and everything
+# below follows from it: a node REMEMBERS which subscription it came from (`source`, see
+# SC_NODE_KEYS), so a refresh is "replace the set that carries this URL", and nothing else
+# in nodes.json can be touched by it. A node added by hand carries no source and is
+# therefore invisible to every subscription operation — that, and not a flag or a second
+# file, is what keeps hand-added nodes safe.
+
+def _subscriptions():
+    """THE reader of settings["subscriptions"]: the URLs, in order, as a list of strings.
+
+    Shaped like every other setting reader: an absent key is the empty list, an unreadable
+    or malformed settings.json degrades quietly to it, and a key that is PRESENT but not a
+    list of strings earns one stderr line naming the file — a hand-edit that did not take
+    effect is not the same event as no subscriptions at all.
+    """
+    value = _settings_or_empty().get("subscriptions", [])
+    urls = ([u for u in value if isinstance(u, str) and u.strip()]
+            if isinstance(value, list) else [])
+    if not isinstance(value, list) or len(urls) != len(value):
+        sys.stderr.write("⚠️  " + t("{path}: subscriptions must be a list of URLs — "
+                                    "ignoring the ones that are not",
+                                    path=SETTINGS_PATH) + "\n")
+    return urls
+
+
+def _fetch_text(url):
+    """A subscription body as text. Raises ValueError / OSError; the caller renders it.
+
+    http and https only. sc runs as root, and a `file://` URL here would make a
+    subscription a way to read any path on the host into a parser — no privilege is gained
+    (the caller already has root) but nothing about this feature asks for it either.
+
+    Capped on the READ at DOC_MAX_BYTES, the same cap override.json has, and decoded with
+    errors="replace": a body that is not UTF-8 is a body with no share links in it, which
+    the parser below already reports as such.
+    """
+    if urllib.parse.urlparse(url).scheme not in ("http", "https"):
+        raise ValueError(t("only http:// and https:// subscription URLs are supported"))
+    with urllib.request.urlopen(url, timeout=30) as response:
+        raw = response.read(DOC_MAX_BYTES + 1)
+    if len(raw) > DOC_MAX_BYTES:
+        raise ValueError(t("larger than {n} byte(s)", n=DOC_MAX_BYTES))
+    return raw.decode("utf-8", "replace")
+
+
+def _parse_subscription(text):
+    """(nodes, unparsable_line_count) from a subscription body.
+
+    Both shapes real providers serve: base64 of the whole document, and plain lines. The
+    test is the body itself — a document that already contains "://" is plain text, and
+    anything else is tried through _b64dec(), which accepts either base64 alphabet. A
+    decode that yields nothing usable simply produces no nodes, which the caller reports.
+
+    Blank lines and `#` comments are skipped. A line that no parser recognises is COUNTED,
+    never fatal: one unsupported protocol in a list of forty must not cost the other
+    thirty-nine, and the count is what stops that from being silent.
+    """
+    body = text.strip()
+    if "://" not in body:
+        try:
+            body = _b64dec(body)
+        except Exception:
+            pass
+    nodes, unparsable = [], 0
+    for line in body.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        try:
+            nodes.append(parse_share_url(line))
+        except Exception:
+            unparsable += 1
+    return nodes, unparsable
+
+
+def _fetch_subscription(url):
+    """(nodes, unparsable) for one URL, every node stamped with its source. Raises."""
+    nodes, unparsable = _parse_subscription(_fetch_text(url))
+    for node in nodes:
+        node["source"] = url
+    return nodes, unparsable
+
+
+def _rebuild_nodes(nodes_data, fetched):
+    """The node list after `fetched` (url -> nodes) replaces the sets carrying those URLs.
+
+    THE apply, and the only place a subscription may change nodes.json. Three rules, and
+    the second and third are the ones that make this safe to run unattended:
+
+      * a node whose source is a key of `fetched` is REPLACED by what was just fetched —
+        so a node the provider dropped disappears, which merging could never express;
+      * every other node is KEPT, whatever it is: hand-added nodes (no source), nodes of
+        a subscription whose fetch FAILED this run, and nodes whose source is no longer
+        configured at all. A network failure must not be able to empty this file;
+      * tags are minted against the survivors in order, through the one minter, so a
+        subscription can neither collide with a hand-added node nor with another
+        subscription, and the same inputs always produce the same names.
+
+    Pure apart from _unique_tag()'s vocabulary: takes state, returns the new list.
+    """
+    kept = [n for n in nodes_data["nodes"] if n.get("source") not in fetched]
+    existing = set(n["tag"] for n in kept)
+    rebuilt = list(kept)
+    for url in fetched:
+        for node in fetched[url]:
+            node = copy.deepcopy(node)
+            node["tag"] = _unique_tag(node["tag"], existing)
+            existing.add(node["tag"])
+            rebuilt.append(node)
+    return rebuilt
+
+
+def _apply_subscription(nodes_data, previous, summary):
+    """Persist a rebuilt node list, validate it, and restore on refusal. True when kept.
+
+    The `sc add` / `sc import` contract, stated once for all three subscription verbs:
+    the document is composed and checked BEFORE the change is kept, and a refusal puts
+    nodes.json back byte-for-byte. `summary` is printed only on success — a line saying
+    what a run did may not be printed by a run that did nothing.
+    """
+    nodes_data["active"] = _valid_selection(nodes_data.get("active"),
+                                            [n["tag"] for n in nodes_data["nodes"]])
+    save_nodes(nodes_data)
+    try:
+        ok = reload_or_restart()
+    except OverrideError:
+        save_nodes(previous)
+        raise
+    if not ok:
+        save_nodes(previous)
+        print(t("Not applied — no usable configuration could be produced from those "
+                "nodes; nodes.json is unchanged"))
+        return False
+    print(summary)
+    return True
+
+
+def _sub_report(url, nodes, unparsable):
+    """One line per subscription that was read, and the one place that line is shaped."""
+    line = t("{url} — {n} node(s)", url=url, n=len(nodes))
+    if unparsable:
+        line += " " + t("({n} line(s) not recognised)", n=unparsable)
+    return line
+
+
+def cmd_sub(args):
+    """`sc sub [show|add <url>|rm <url>|update]` — subscriptions, and the nodes they own.
+
+    `show` (the default) lists what is configured and how many nodes each URL currently
+    accounts for. `add` fetches immediately, because a subscription that takes effect only
+    at the next timer run is a command that appears to have done nothing. `rm` forgets the
+    URL and removes the nodes it brought — the symmetric act, and the reason the source is
+    recorded at all. `update` refreshes every subscription now, and is the second
+    ExecStart of the unit the rule-set timer already runs, so this feature adds no timer,
+    no unit and no installer step.
+
+    settings.json is written LAST in both `add` and `rm`, after the configuration built
+    from the new node list has been accepted. So a refused document leaves BOTH files as
+    they were, and no rollback of two documents has to be got right.
+    """
+    action = args.action
+    if action not in ("show", "add", "rm", "update"):
+        sys.exit(t("Error: argument must be one of show / add / rm / update"))
+    if action in ("add", "rm") and not args.url:
+        sys.exit(t("Error: `sc sub {action}` needs a subscription URL", action=action))
+    urls = _subscriptions()
+
+    if action == "show":
+        if not urls:
+            print(t("(no subscriptions — use `sc sub add <url>` to add one)"))
+            return
+        counts = {}
+        for node in load_nodes()["nodes"]:
+            counts[node.get("source")] = counts.get(node.get("source"), 0) + 1
+        for url in urls:
+            print(t("{url} — {n} node(s)", url=url, n=counts.get(url, 0)))
+        return
+
+    if action == "add":
+        if args.url in urls:
+            print(t("Already a subscription of this host: {url}", url=args.url))
+            return
+        try:
+            nodes, unparsable = _fetch_subscription(args.url)
+        except Exception as e:
+            sys.exit(t("Error: {url}: {e}", url=args.url, e=_plain(str(e))))
+        if not nodes:
+            sys.exit(t("Error: no share link found at {url}", url=args.url))
+        nodes_data = load_nodes()
+        previous = copy.deepcopy(nodes_data)
+        nodes_data["nodes"] = _rebuild_nodes(nodes_data, {args.url: nodes})
+        if _apply_subscription(nodes_data, previous,
+                               t("Subscription added: {line}",
+                                 line=_sub_report(args.url, nodes, unparsable))):
+            settings = load_settings()
+            settings["subscriptions"] = urls + [args.url]
+            save_settings(settings)
+        else:
+            sys.exit(1)
+        return
+
+    if action == "rm":
+        if args.url not in urls:
+            sys.exit(t("Error: not a subscription of this host: {url}", url=args.url))
+        nodes_data = load_nodes()
+        previous = copy.deepcopy(nodes_data)
+        # An empty fetch for this URL: the same apply, expressing "it now owns nothing".
+        nodes_data["nodes"] = _rebuild_nodes(nodes_data, {args.url: []})
+        gone = len(previous["nodes"]) - len(nodes_data["nodes"])
+        if _apply_subscription(nodes_data, previous,
+                               t("Subscription removed: {url} — {n} node(s) removed",
+                                 url=args.url, n=gone)):
+            settings = load_settings()
+            settings["subscriptions"] = [u for u in urls if u != args.url]
+            save_settings(settings)
+        else:
+            sys.exit(1)
+        return
+
+    # update
+    if not urls:
+        print(t("(no subscriptions — use `sc sub add <url>` to add one)"))
+        return
+    fetched, failed = {}, []
+    for url in urls:
+        try:
+            nodes, unparsable = _fetch_subscription(url)
+        except Exception as e:
+            failed.append(url)
+            sys.stderr.write("⚠️  " + _plain(t("Error: {url}: {e}", url=url,
+                                               e=_plain(str(e)))) + "\n")
+            continue
+        fetched[url] = nodes
+        print(_sub_report(url, nodes, unparsable))
+    if fetched:
+        nodes_data = load_nodes()
+        previous = copy.deepcopy(nodes_data)
+        nodes_data["nodes"] = _rebuild_nodes(nodes_data, fetched)
+        if previous["nodes"] == nodes_data["nodes"]:
+            # Byte-identical node list: the same decision `sc update-rules` makes about
+            # unchanged rule-sets, and for the same reason — an unattended run may not
+            # drop every live connection to rewrite what is already there.
+            print(t("No subscription changed — the sing-box service was not touched"))
+        elif not _apply_subscription(
+                nodes_data, previous,
+                t("Subscriptions updated: {n} node(s) from {total} subscription(s)",
+                  n=sum(len(v) for v in fetched.values()), total=len(fetched))):
+            sys.exit(1)
+    if failed:
+        sys.exit(1)
 
 
 def cmd_ping(args):
@@ -3701,7 +4006,10 @@ def cmd_update_interval(args):
         target_dir = PERIODIC_DIRS[val.lower()]
         target_dir.mkdir(parents=True, exist_ok=True)
         script = target_dir / PERIODIC_SCRIPT
-        script.write_text("#!/bin/sh\n/usr/local/bin/sc update-rules\n", encoding="utf-8")
+        # The OpenRC counterpart of the unit's two ExecStart lines: one schedule, both
+        # jobs, and `|| true` so a failed rule-set run still lets subscriptions refresh.
+        script.write_text("#!/bin/sh\n/usr/local/bin/sc update-rules || true\n"
+                          "/usr/local/bin/sc sub update\n", encoding="utf-8")
         script.chmod(0o755)
 
         settings = load_settings()
@@ -3783,6 +4091,17 @@ COMMANDS
   import <path>               Merge a node document into this host's list
                                 never removes anything; a node already present is
                                 skipped; validated before it is kept
+  sub [show|add <url>|rm <url>|update]
+                              Subscriptions — a URL whose body lists share links
+                                add    fetch it now and keep its nodes
+                                rm     forget it and remove the nodes it brought
+                                update refresh every subscription now
+                                show   list them (the default)
+                              A refresh REPLACES the nodes carrying that URL, so one the
+                              provider dropped disappears; nodes you added by hand are
+                              never touched, and a fetch that fails changes nothing.
+                              Refreshed automatically on the ruleset timer's schedule
+                              (`sc update-interval`).
   on                          Start sing-box and enable on boot
   off                         Stop sing-box and disable on boot
   status                      Show service status, TUN interface, rule-set status + age,
@@ -3830,6 +4149,7 @@ EXAMPLES
   sc ping                     # measure every node now
   sc export /root/nodes-backup.json
   sc import /root/nodes-backup.json
+  sc sub add 'https://example.com/sub?token=...'   # wrap it in single quotes
   sc mode global
   sc update-interval daily             # update rulesets every day
   sc update-interval 'Mon *-*-* 04:00:00'   # every Monday at 04:00
@@ -3861,6 +4181,15 @@ HELP_ZH = """sc —— sing-box 命令行管理工具
                                 其中包含全部凭据，因此绝不写到标准输出
   import <路径>               把一份节点文档合并进本机的列表
                                 只增不删；已存在的节点会被跳过；先校验再保留
+  sub [show|add <url>|rm <url>|update]
+                              订阅 —— 一个 URL，内容是一串分享链接
+                                add    立即取回并保留其中的节点
+                                rm     删除该订阅，并移除它带来的节点
+                                update 立即刷新所有订阅
+                                show   列出所有订阅（默认）
+                              刷新是**整组替换**该 URL 名下的节点：上游下线的节点会消失；
+                              手工添加的节点不受任何影响；取回失败则什么都不改。
+                              自动刷新搭在规则集定时器上（用 `sc update-interval` 调频率）。
   on                          启动 sing-box 并设置开机自启
   off                         停止 sing-box 并取消开机自启
   status                      查看服务状态、TUN 接口、规则集状态与更新时间、当前节点、出口 IP
@@ -3906,6 +4235,7 @@ HELP_ZH = """sc —— sing-box 命令行管理工具
   sc ping                     # 立即测量所有节点
   sc export /root/nodes-backup.json
   sc import /root/nodes-backup.json
+  sc sub add 'https://example.com/sub?token=...'   # wrap it in single quotes
   sc mode global
   sc update-interval daily             # 改为每天更新规则集
   sc update-interval 'Mon *-*-* 04:00:00'   # 每周一凌晨 4 点
@@ -3956,6 +4286,9 @@ def main():
     p = sub.add_parser("ping"); p.add_argument("spec", nargs="?")
     p = sub.add_parser("export"); p.add_argument("path")
     p = sub.add_parser("import"); p.add_argument("path")
+    p = sub.add_parser("sub")
+    p.add_argument("action", nargs="?", default="show")
+    p.add_argument("url", nargs="?")
     sub.add_parser("on"); sub.add_parser("off"); sub.add_parser("status")
     sub.add_parser("doctor")
     sub.add_parser("config")
@@ -3995,7 +4328,7 @@ def main():
         CLASH_PORT = _resolve_clash_port()
     handlers = {
         "ls": cmd_ls, "now": cmd_now, "use": cmd_use, "add": cmd_add, "rm": cmd_rm,
-        "ping": cmd_ping, "export": cmd_export, "import": cmd_import,
+        "ping": cmd_ping, "export": cmd_export, "import": cmd_import, "sub": cmd_sub,
         "on": cmd_on, "off": cmd_off, "status": cmd_status, "doctor": cmd_doctor,
         "config": cmd_config,
         "mode": cmd_mode, "telemetry": cmd_telemetry,

@@ -1,5 +1,5 @@
 [Unit]
-Description=Weekly sing-box rule set update
+Description=Scheduled sing-box rule set and subscription update
 
 [Timer]
 OnCalendar=weekly

@@ -1,7 +1,18 @@
 [Unit]
-Description=Update sing-box rule sets
+Description=Update sing-box rule sets and subscriptions
 After=network-online.target sing-box.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/sc update-rules
+# Two jobs, one schedule. Type=oneshot runs ExecStart lines in order, so subscriptions
+# ride the timer the rule sets already have: no second unit, no second timer, and one
+# cadence to configure (`sc update-interval`).
+#
+# The `-` is on the FIRST line, not the second, and that is the whole ordering decision:
+# systemd stops a oneshot at the first ExecStart that fails, and `sc update-rules` exits
+# non-zero for something as ordinary as one unreachable mirror. Without the `-`, a mirror
+# that stays unreachable would silently stop subscriptions from ever refreshing again.
+# Its failure is still visible — in the journal, and in `sc doctor`'s rule-set section —
+# while the unit's own status reports the subscription refresh, which nothing else shows.
+ExecStart=-/usr/local/bin/sc update-rules
+ExecStart=/usr/local/bin/sc sub update

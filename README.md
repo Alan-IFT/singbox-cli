@@ -11,7 +11,8 @@
 - **One-shot share-link import**: supports `vless://` `vmess://` `trojan://` `ss://` `hysteria2://` `tuic://`
 - **Hot node switch**: applied instantly via sing-box's Clash API, no service restart.
 - **Live route mode switch**: `rule` / `global` / `direct` with one command.
-- **Auto ruleset update**: systemd timer pulls `.srs` rulesets at a configurable cadence.
+- **Subscriptions**: `sc sub add <url>` — a refresh replaces the nodes that URL owns, so nodes the provider dropped disappear while nodes you added by hand are never touched.
+- **Auto ruleset update**: a systemd timer pulls `.srs` rulesets *and* refreshes subscriptions at a configurable cadence.
 - **Bilingual**: English (default) and Simplified Chinese; pick at install time, switch any time with `sc lang en|zh`.
 
 ## 🛠 Requirements
@@ -173,6 +174,29 @@ sc import /root/nodes-backup.json     # merge a node list into this host
 `sc export` writes what `nodes.json` holds to the path you name, at **mode 600**, atomically. It never prints to stdout, and no flag changes that: the document carries every password and UUID, while `/etc/sudoers.d/sc` lets the install user run `sc` without a password — printing it to a stream that user controls would hand over the whole credential set, which is exactly what `sc config`'s unconditional masking exists to prevent. Moving the backup to another machine is your job, and it is a file full of credentials: treat it like one.
 
 `sc import` **merges**. Nothing already on this host is removed, so an import cannot lose a node. A node that is already present — identical in everything but its name — is skipped, so importing the same backup twice is a no-op rather than a second copy of everything. A name that collides with a *different* node gets a `#2` suffix, exactly as `sc add` does. The configuration is then regenerated and checked **before** the import is kept: if no usable configuration comes out of it, `nodes.json` goes back byte-for-byte and the command exits non-zero.
+
+### Subscriptions
+
+```bash
+sc sub add 'https://example.com/sub?token=...'   # fetch it now and keep its nodes
+sc sub                                           # list them (same as `sc sub show`)
+sc sub update                                    # refresh every subscription now
+sc sub rm 'https://example.com/sub?token=...'    # forget it, and remove its nodes
+```
+
+A subscription is a URL whose body is a list of share links — plain text, or the base64 of one, which is what most providers serve. `sc` reads both, skips blank lines and `#` comments, and **counts** the lines no parser recognises rather than failing on them: one unsupported protocol in a list of forty must not cost you the other thirty-nine.
+
+**A node remembers which subscription it came from.** That single fact is what makes everything below true, and it is why a refresh is a *replacement* rather than a merge:
+
+- a node the provider has dropped **disappears** on the next refresh — merging could never express that;
+- a node **you** added with `sc add` carries no subscription, so no subscription operation can see it, let alone remove it;
+- a subscription whose fetch **fails** keeps the nodes it last gave you. A network outage can never empty `nodes.json`, and a run in which every fetch failed exits non-zero;
+- a name that collides — with your own node, or with another subscription's — gets a `#2` suffix, exactly as `sc add` does;
+- the new node list is composed and **checked before it is kept**: if no usable configuration comes out of it, `nodes.json` goes back byte-for-byte. `settings.json` is written last, so a refusal leaves both files untouched.
+
+Subscriptions refresh **automatically**, on the schedule the ruleset timer already runs — `sc update-interval` sets the cadence for both, and there is no second timer to configure. A refresh that finds nothing changed does not touch the service.
+
+`sc sub` stores only the URL, in `settings.json`. If yours carries a token, that file is the one holding it — it is mode 600, root-only, like everything else `sc` writes.
 
 ### Switch route mode
 
@@ -498,7 +522,7 @@ Before opening a PR, run `python3 selftest.py` from the repo root. One file, sta
 
 PRs welcome. Top priorities:
 
-- [ ] Subscription link auto-update
+- [x] Subscription link auto-update
 - [x] urltest support beyond selector (auto-pick the fastest node)
 - [x] RHEL / Fedora / Arch family support
 - [x] `sc ping` for node latency testing

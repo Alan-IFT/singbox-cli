@@ -937,6 +937,146 @@ def t_export_import(tmp):
     assert not empty.exists()
 
 
+def t_subscription(tmp):
+    """A subscription owns its own nodes: it replaces them, and it touches nothing else.
+
+    Every property asserted here is one an unattended weekly run can get wrong — dropping
+    a node the user added by hand, emptying the list because the network failed, or
+    accumulating a second copy of everything on each refresh.
+
+    One server and one URL throughout: `bodies` is read on each request, so changing what
+    the provider serves is a dict assignment rather than a second server on a second port
+    (which would change the URL, and the URL is the identity being tested).
+    """
+    import base64
+    seed(tmp, links=())
+    hand = SC.parse_share_url(VLESS.replace("#JP-1", "#hand-made"))
+    SC.save_nodes({"active": None, "nodes": [hand]})
+    real_restart, real_regen = SC.restart_service, SC.generate_config
+    SC.restart_service = lambda: True
+
+    def body(*tags):                    # what real providers serve: base64 of the links
+        links = "\n".join(VLESS.replace("#JP-1", "#" + tag) for tag in tags)
+        return base64.b64encode(links.encode()).decode().encode()
+
+    def args(action, url=None):
+        return type("A", (), {"action": action, "url": url})()
+
+    bodies = {"/sub": body("A", "B")}
+    try:
+        with local_source(bodies) as base:
+            url = base + "/sub"
+
+            SC.cmd_sub(args("add", url))
+            assert [n["tag"] for n in SC.load_nodes()["nodes"]] == ["hand-made", "A", "B"]
+            assert SC._subscriptions() == [url]
+            assert all(n["source"] == url for n in SC.load_nodes()["nodes"][1:])
+            assert "source" not in SC.load_nodes()["nodes"][0]
+            # sc's own bookkeeping key never reaches the document sing-box loads.
+            doc = json.loads(SC.CFG_PATH.read_text())
+            assert all("source" not in o for o in doc["outbounds"]), doc["outbounds"]
+
+            # The same body again: nothing changed, so nothing is touched.
+            before = SC.NODES_PATH.read_bytes()
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                SC.cmd_sub(args("update"))
+            assert "No subscription changed" in out.getvalue(), out.getvalue()
+            assert SC.NODES_PATH.read_bytes() == before
+
+            # Adding it twice is a refused duplicate, not a second fetch.
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                SC.cmd_sub(args("add", url))
+            assert "Already a subscription" in out.getvalue(), out.getvalue()
+            assert SC.NODES_PATH.read_bytes() == before
+
+            # The provider drops B and adds C. B goes; the hand-made node stays.
+            bodies["/sub"] = body("A", "C")
+            with contextlib.redirect_stdout(io.StringIO()):
+                SC.cmd_sub(args("update"))
+            tags = [n["tag"] for n in SC.load_nodes()["nodes"]]
+            assert tags == ["hand-made", "A", "C"], tags
+
+            # THE safety property: an unreachable provider keeps what it last gave us.
+            del bodies["/sub"]
+            before = SC.NODES_PATH.read_bytes()
+            try:
+                with contextlib.redirect_stdout(io.StringIO()), \
+                        contextlib.redirect_stderr(io.StringIO()):
+                    SC.cmd_sub(args("update"))
+                raise AssertionError("a run in which every fetch failed exited 0")
+            except SystemExit as e:
+                assert e.code == 1, e.code
+            assert SC.NODES_PATH.read_bytes() == before, "a failed fetch changed nodes.json"
+
+            # rm takes its nodes with it, and nothing else.
+            with contextlib.redirect_stdout(io.StringIO()):
+                SC.cmd_sub(args("rm", url))
+            assert [n["tag"] for n in SC.load_nodes()["nodes"]] == ["hand-made"]
+            assert SC._subscriptions() == []
+
+            # A body with no share link in it is refused, and nothing is recorded.
+            bodies["/sub"] = b"nonsense\n"
+            try:
+                SC.cmd_sub(args("add", url))
+                raise AssertionError("accepted a body with no share link")
+            except SystemExit as e:
+                assert "no share link" in str(e.code), e.code
+            assert SC._subscriptions() == []
+
+            # Refused by the checker: NEITHER document moves — and settings.json is the
+            # one written last, which is what makes that true without a two-file rollback.
+            bodies["/sub"] = body("Z")
+            SC.generate_config = lambda: False
+            before = SC.NODES_PATH.read_bytes()
+            try:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    SC.cmd_sub(args("add", url))
+                raise AssertionError("kept a subscription whose config was refused")
+            except SystemExit as e:
+                assert e.code == 1, e.code
+            assert SC.NODES_PATH.read_bytes() == before
+            assert SC._subscriptions() == [], "settings.json was written on a refusal"
+    finally:
+        SC.restart_service, SC.generate_config = real_restart, real_regen
+
+    # http(s) only, both base64 alphabets, and an unreadable line is counted not fatal.
+    try:
+        SC._fetch_text("file:///etc/shadow")
+        raise AssertionError("read a file:// subscription")
+    except ValueError as e:
+        assert "http" in str(e)
+    # Both base64 alphabets decode. Providers use either, and _b64dec relies on
+    # urlsafe_b64decode passing `+` and `/` through untouched; swapped for the strict
+    # standard-alphabet decoder it would stop accepting `-_`, and this is what says so.
+    raw = bytes(range(250, 256))
+    standard = base64.b64encode(raw).decode().rstrip("=")
+    urlsafe = base64.urlsafe_b64encode(raw).decode().rstrip("=")
+    assert standard != urlsafe, "this payload does not exercise the difference"
+    assert SC._b64dec(standard) == SC._b64dec(urlsafe)
+    nodes, bad = SC._parse_subscription(
+        base64.b64encode((VLESS + "\n").encode()).decode())
+    assert len(nodes) == 1 and bad == 0, (nodes, bad)
+    nodes, bad = SC._parse_subscription("nonsense\n" + VLESS + "\n# a comment\n")
+    assert len(nodes) == 1 and bad == 1, (nodes, bad)
+
+
+def t_scheduled_run_covers_both_jobs(tmp):
+    """The timer's unit runs the rule-set job AND the subscription job, in that order.
+
+    Asserted against the shipped unit rather than described in prose: the `-` belongs on
+    the FIRST line, because systemd stops a oneshot at the first failing ExecStart and
+    `sc update-rules` exits non-zero for one unreachable mirror — without it, a mirror
+    that stayed down would silently stop subscriptions from ever refreshing.
+    """
+    unit = (HERE / "systemd" / "sing-box-rules-update.service").read_text(encoding="utf-8")
+    execs = [l.strip() for l in unit.splitlines() if l.startswith("ExecStart=")]
+    assert execs == ["ExecStart=-/usr/local/bin/sc update-rules",
+                     "ExecStart=/usr/local/bin/sc sub update"], execs
+    assert "Type=oneshot" in unit
+
+
 # ---------------------------------------------------------------- the runner
 
 def main():
