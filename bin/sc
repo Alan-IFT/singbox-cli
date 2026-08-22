@@ -2842,6 +2842,10 @@ def cmd_ping(args):
         print(f"{index:>4}  {tag[:30]:30}  ", end="", flush=True)
         # The transport is given room ABOVE the probe budget, so the number this prints is
         # the API's verdict on the node and never the socket's verdict on the API.
+        # Measured against a running 1.13.18: a reachable outbound answers 200 with
+        # exactly {"delay": <int>}, and an outbound the document does not define answers
+        # 404 — which clash_api() turns into None, so an unknown tag renders as no answer
+        # rather than as a traceback. Both arms below are those two observations.
         reply = clash_api("GET", "/proxies/%s/delay?timeout=%d&url=%s"
                           % (urllib.parse.quote(tag, safe=""), PING_TIMEOUT_MS,
                              urllib.parse.quote(PROBE_URL, safe="")),
