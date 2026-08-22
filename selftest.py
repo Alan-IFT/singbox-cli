@@ -279,6 +279,16 @@ def t_generate_config(tmp):
     # AAAA is suppressed unconditionally in this build — no setting, no host probe.
     assert doc["dns"]["rules"][0] == {"action": "predefined", "rcode": "NOERROR",
                                       "query_type": [28, 64, 65]}
+    # The connection-layer half of the same stance: v6 is captured (the ULA address is
+    # what makes auto_route install v6 routes) and reset — the fast failure that makes
+    # an application's own dual-stack fallback retry over v4. Position is the contract:
+    # after hijack-dns, so v6 plaintext DNS is answered rather than reset; before both
+    # clash_mode rules, so no mode switch lifts it.
+    assert "fdfe:dcba:9876::1/126" in doc["inbounds"][0]["address"]
+    rules = doc["route"]["rules"]
+    v6 = rules.index({"ip_version": 6, "action": "reject"})
+    assert v6 > rules.index({"protocol": ["dns"], "action": "hijack-dns"})
+    assert v6 < min(i for i, r in enumerate(rules) if "clash_mode" in r)
     assert doc["experimental"]["clash_api"]["external_controller"].startswith("127.0.0.1:")
     assert stat.S_IMODE(SC.CFG_PATH.stat().st_mode) == SC.CRED_MODE
     assert SC._drift_state() is False

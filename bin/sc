@@ -5,7 +5,7 @@
 # literal. This file is installed by copying it, so the constant travels with the code
 # and cannot disagree with it; the release tag is what must be kept in step with THIS
 # line, never the other way round.
-SC_VERSION = "0.5.2"
+SC_VERSION = "0.5.3"
 import argparse
 import base64
 import copy
@@ -1476,8 +1476,13 @@ CONFIG_BASE = {
         "independent_cache": True,
     },
     "inbounds": [
+        # The ULA v6 address provides no connectivity — it exists so auto_route installs
+        # IPv6 routes and v6 traffic ENTERS the tun on a dual-stack host instead of
+        # bypassing the proxy; the ip_version rule in route.rules then answers it. Each
+        # is half of one decision: the address without the rule is a stall, the rule
+        # without the address matches nothing.
         {"type": "tun", "tag": "tun-in", "interface_name": TUN_IFACE,
-         "address": ["172.19.0.1/30"], "mtu": 9000,
+         "address": ["172.19.0.1/30", "fdfe:dcba:9876::1/126"], "mtu": 9000,
          "auto_route": True, "strict_route": True, "stack": "gvisor"},
     ],
     "outbounds": [],        # placeholder — _runtime_overlay() $replaces it
@@ -1488,6 +1493,18 @@ CONFIG_BASE = {
             {"outbound": "direct", "process_name": ["sing-box"]},
             {"action": "sniff"},
             {"protocol": ["dns"], "action": "hijack-dns"},
+            # The connection-layer half of "this build does not do IPv6" (the DNS half
+            # is _dns_overlay's AAAA rule; the tun's ULA address above is what brings
+            # this traffic here at all): a v6 address obtained around our DNS — an
+            # app's own DoH, a hardcoded literal, a peer exchange — is answered with an
+            # immediate reset, and the application's own dual-stack fallback retries
+            # over v4 in milliseconds. `reject`, never `drop`: a silent drop is the
+            # stall this rule exists to prevent. AFTER hijack-dns, so plaintext DNS to
+            # a v6 resolver is still answered (AAAA suppressed) rather than reset into
+            # retries; BEFORE both clash_mode rules for _dns_overlay's stated reason —
+            # a user switching modes because something is broken must not get the leak
+            # back.
+            {"ip_version": 6, "action": "reject"},
             {"outbound": "direct", "clash_mode": "Direct"},
             {"outbound": "proxy",  "clash_mode": "Global"},
             {"network": ["udp"], "port": [443], "action": "reject"},
@@ -1796,8 +1813,11 @@ def _dns_overlay():
     the whole name, its A record included.
 
     THE CONSEQUENCE, stated once and documented in both READMEs: a node whose address
-    resolves only over AAAA becomes unreachable. Nothing in `sc` can lift that; a host
-    that needs it must $replace dns.rules from override.json, or use a different tool.
+    resolves only over AAAA becomes unreachable. This rule is the DNS half of the
+    stance; the connection half — v6 addresses obtained AROUND this DNS — is
+    CONFIG_BASE's ip_version rule plus the tun's ULA address, each commented at its
+    site. Nothing in `sc` can lift any of it; a host that needs IPv6 must $replace
+    dns.rules, route.rules and inbounds from override.json, or use a different tool.
     """
     return {"dns": {"rules": {"$prepend": [
         {"action": "predefined", "rcode": "NOERROR", "query_type": [28, 64, 65]},
@@ -3073,13 +3093,12 @@ def cmd_status(args):
 
 
 # ============ doctor ============
-# One pass, one screen, nine facts, in CAUSAL order: no section is printed before a
+# One pass, one screen, eight sections, in CAUSAL order: no section is printed before a
 # section whose failure would explain it (binary and rule-sets above the config check,
-# the config check above the AAAA decision it is judged against, both above the service,
-# the service above TUN / Clash API, the Clash rows above the node delays and the lookup,
-# and all of them above egress; file permissions last, because a wrong mode explains no
-# other row). Nothing here forms a second opinion — every fact comes from the function
-# that already owns that judgment.
+# all three above the service, the service above TUN / Clash API, the Clash rows above
+# the node delays and the lookup, and all of them above egress; file permissions last,
+# because a wrong mode explains no other row). Nothing here forms a second opinion —
+# every fact comes from the function that already owns that judgment.
 #
 # READ-ONLY, absolutely. `doctor` runs when the machine is already broken, so it must not
 # destroy the evidence: it writes no file, touches no service, and main() keeps it off
@@ -3309,7 +3328,7 @@ def _doctor_config():
 
 
 def _doctor_service():
-    """S5 — running now, and registered to start at boot: two separate facts.
+    """S4 — running now, and registered to start at boot: two separate facts.
 
     The init-system check runs FIRST, so is_running()'s hard False on a host with neither
     systemd nor OpenRC is never rendered as "not running".
@@ -3350,7 +3369,7 @@ def _doctor_service():
 
 
 def _doctor_tun():
-    """S6 — does this project's TUN device exist, and what addresses does it carry?
+    """S5 — does this project's TUN device exist, and what addresses does it carry?
 
     `ip`'s operstate is deliberately not printed: for a TUN device it reads literally
     UNKNOWN and would collide with the outcome-class vocabulary.
@@ -3376,7 +3395,7 @@ def _doctor_tun():
 
 
 def _doctor_clash():
-    """S7 — the persisted Clash API port, whether it answers, how many nodes carry a
+    """S6 — the persisted Clash API port, whether it answers, how many nodes carry a
     stored delay, and one measured name lookup through the running install.
 
     The port comes from settings only. doctor never probes for a free port (that would
@@ -3468,7 +3487,7 @@ def _doctor_clash():
 
 
 def _doctor_egress():
-    """S8 — the observed public egress address.
+    """S7 — the observed public egress address.
 
     Unconditional, unlike `sc status`: "the service is down and my egress IP is my ISP
     address" is a confirmation, not noise. Makes no claim about whether it is proxied.
@@ -3480,7 +3499,7 @@ def _doctor_egress():
 
 
 def _doctor_permissions():
-    """S9 — does anything in the configuration directory grant access to group or other?
+    """S8 — does anything in the configuration directory grant access to group or other?
 
     LAST, because a wrong mode explains no other row on the screen; the ordering rule puts
     a row above another only when its failure would explain it.
@@ -4166,7 +4185,7 @@ COMMANDS
   off                         Stop sing-box and disable on boot
   status                      Show service status, TUN interface, rule-set status + age,
                               active node, egress IP
-  doctor                      Diagnose the install: nine read-only checks, causal order
+  doctor                      Diagnose the install: eight read-only checks, causal order
                                 changes nothing — no config, no download, no restart
                                 exit 0 = every section OK
                                 exit 1 = at least one PROBLEM
@@ -4253,9 +4272,9 @@ HELP_ZH = """sc —— sing-box 命令行管理工具
   on                          启动 sing-box 并设置开机自启
   off                         停止 sing-box 并取消开机自启
   status                      查看服务状态、TUN 接口、规则集状态与更新时间、当前节点、出口 IP
-  doctor                      一键体检：按因果顺序执行九项只读检查
+  doctor                      一键体检：按因果顺序执行八项只读检查
                                 全程只读 —— 不生成配置、不下载、不重启、不修复
-                                退出码 0 = 九项全部正常
+                                退出码 0 = 八项全部正常
                                 退出码 1 = 至少一项异常
                                 退出码 2 = 没有异常，但至少一项未知
   config                      打印 /etc/sing-box/config.json，节点凭据已隐去
