@@ -5,7 +5,7 @@
 # literal. This file is installed by copying it, so the constant travels with the code
 # and cannot disagree with it; the release tag is what must be kept in step with THIS
 # line, never the other way round.
-SC_VERSION = "0.2.0"
+SC_VERSION = "0.3.0"
 import argparse
 import base64
 import copy

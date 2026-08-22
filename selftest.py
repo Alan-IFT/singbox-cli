@@ -18,10 +18,13 @@ Two capabilities are used when the host has them and reported as skipped when it
 not: the `sing-box` binary (used to prove the emitted document is one sing-box accepts)
 and a real set of `.srs` rule-sets under /etc/sing-box/rules. Nothing is faked in their
 place — a synthesized rule-set body is not one sing-box can load, and a test that
-asserted otherwise would be asserting the fake.
+asserted otherwise would be asserting the fake. (The DOWNLOADER is a different question:
+its validator is srs_reject_reason, not sing-box, so t_update_rules serves it bytes from
+a throwaway loopback server and never asks sing-box to load them.)
 """
 import ast
 import contextlib
+import http.server
 import importlib.machinery
 import importlib.util
 import io
@@ -32,8 +35,13 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import traceback
 from pathlib import Path
+
+# The suite imports bin/sc and compiles nothing else; without this every run drops a
+# 191 KB .pyc into bin/__pycache__/. A test suite may not leave anything in the tree.
+sys.dont_write_bytecode = True
 
 HERE = Path(__file__).resolve().parent
 SC_SRC = HERE / "bin" / "sc"
@@ -82,6 +90,46 @@ def sandbox(tmp, rulesets=True):
     return tmp
 
 
+@contextlib.contextmanager
+def local_source(bodies):
+    """A throwaway rule-set source on loopback: yields its base URL.
+
+    `bodies` maps a URL path to the bytes served, or to a (declared_length, bytes) pair
+    when the point is a Content-Length that does not match what arrives. A path that is
+    absent is a 404. This is the only thing in the suite that opens a port, and it is
+    bound to 127.0.0.1 on an ephemeral number for the duration of one test.
+    """
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = bodies.get(self.path)
+            if body is None:
+                self.send_error(404)
+                return
+            declared, payload = body if isinstance(body, tuple) else (len(body), body)
+            self.send_response(200)
+            self.send_header("Content-Length", str(declared))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *args):
+            pass                                    # the suite owns its own output
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        yield "http://127.0.0.1:%d" % server.server_address[1]
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def dead_base():
+    """A base URL nothing listens on — refused at once, never a 30 s timeout."""
+    with __import__("socket").socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return "http://127.0.0.1:%d" % probe.getsockname()[1]
+
+
 # A share link whose reality key is real base64: `sing-box check` decodes it, so a
 # placeholder here would fail the very check this suite exists to make.
 VLESS = ("vless://11111111-2222-3333-4444-555555555555@node.example:443"
@@ -100,9 +148,13 @@ def seed(tmp, links=(VLESS,)):
 
 # ---------------------------------------------------------------- the contracts
 
-def t_syntax(tmp):
-    """Every shipped file parses. The floor, and until this file existed, the ceiling."""
-    subprocess.run([sys.executable, "-m", "py_compile", str(SC_SRC)], check=True)
+def t_shell_scripts_parse(tmp):
+    """`bash -n` on both scripts — the only gate they have.
+
+    bin/sc needs none here: importing it at the top of this file is strictly stronger
+    than py_compile, and a syntax error there ends the run with a stated outcome before
+    any test is collected.
+    """
     for script in ("install.sh", "uninstall.sh"):
         subprocess.run(["bash", "-n", str(HERE / script)], check=True)
 
@@ -478,6 +530,253 @@ def t_installer_credential_sweep(tmp):
     rows = [l for l in out.splitlines()
             if l.startswith("perm_") and not l.startswith("perm_header")]
     assert len(rows) == 3, out          # one row per entry, none silently dropped
+
+
+def t_i18n_parity(tmp):
+    """Every user-facing string this file passes to t() has a zh translation.
+
+    Static, and one-directional on purpose. It reads the literal first argument of every
+    t(...) call and asserts the zh table has it — which is exactly the regression a
+    bilingual tool has: a new sentence ships and half the UI turns English. It does NOT
+    assert the reverse, because keys reached through a VARIABLE (`sc doctor`'s row
+    labels, _age_text's unit keys) cannot be seen from here and would read as dead
+    entries. That limit is the price of the check being fifteen lines instead of a
+    runtime walk of every screen.
+    """
+    tree = ast.parse(SC_SRC.read_text(encoding="utf-8"))
+    zh = {}
+    for node in tree.body:
+        if (isinstance(node, ast.Assign)
+                and getattr(node.targets[0], "id", "") == "TRANSLATIONS"):
+            zh = ast.literal_eval(node.value)["zh"]
+    assert zh, "TRANSLATIONS['zh'] not found"
+    missing = []
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "t" and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)
+                and node.args[0].value not in zh):
+            missing.append("line %d: %r" % (node.lineno, node.args[0].value[:60]))
+    assert not missing, "untranslated string(s):\n  " + "\n  ".join(sorted(set(missing)))
+
+
+def t_add_restores_on_rejection(tmp):
+    """`sc add` keeps a node only if a usable document could be made from it.
+
+    The one path in the tool that rolls user data back, and deliberately NOT a caller of
+    _apply_or_exit() — it has to put nodes.json back before it says anything — so the
+    convergence that now protects the other four commands does not cover it.
+    """
+    seed(tmp, links=())
+    SC.restart_service = restart = lambda: True         # never touch this host's service
+    real = SC.generate_config
+    try:
+        SC.cmd_add(type("A", (), {"url": VLESS})())
+        assert [n["tag"] for n in SC.load_nodes()["nodes"]] == ["JP-1"]
+        assert SC.load_nodes()["active"] == "auto"
+        before = SC.NODES_PATH.read_bytes()
+
+        SC.generate_config = lambda: False              # the checker refuses the next one
+        try:
+            SC.cmd_add(type("A", (), {"url": VLESS.replace("#JP-1", "#JP-2")})())
+            raise AssertionError("a node that yields no usable config was kept")
+        except SystemExit as e:
+            assert e.code == 1, e.code
+        assert SC.NODES_PATH.read_bytes() == before, "nodes.json was not restored"
+    finally:
+        SC.generate_config = real
+        del restart
+
+
+def t_update_rules(tmp):
+    """The downloader: validate, install atomically, and restart only for real changes.
+
+    Served from loopback, so this covers the mirror list, the dead-source skip, the
+    byte validation and the change detection without a network or a service. config.json
+    is deliberately absent, which is the fresh-install state in which the command does
+    not regenerate or restart anything — so no sing-box is asked to load these bytes.
+    """
+    sandbox(tmp, rulesets=False)
+    good = dict(("/" + rel, b"SRS" + bytes(200)) for _f, rel in SC.RULESET_FILES)
+    args = type("A", (), {"mirror": None})()
+    real_bases = SC.RULESET_BASES
+    try:
+        with local_source(good) as base:
+            SC.RULESET_BASES = (base,)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                SC.cmd_update_rules(args)               # no SystemExit == every file landed
+            assert "Done" in out.getvalue(), out.getvalue()
+            for fname, _rel in SC.RULESET_FILES:
+                assert (SC.RULES_DIR / fname).read_bytes() == b"SRS" + bytes(200)
+            assert SC.usable_tags(SC.ruleset_report()) == {
+                f[:-4] for f, _r in SC.RULESET_FILES}
+            assert not [p for p in SC.RULES_DIR.iterdir() if ".tmp." in p.name]
+
+            # Same bytes again: nothing changed, so nothing is touched. This is the
+            # regression that used to drop every live connection on the weekly timer.
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                SC.cmd_update_rules(args)
+            assert "No rule-set changed" in out.getvalue(), out.getvalue()
+
+            # A dead source ahead of a live one: the FIRST file pays the failure and
+            # says so, and the remaining three do not — the dead base is not contacted
+            # again in this run, which is why their success lines carry no note. Exactly
+            # one "fell back after" is the whole evidence for that.
+            SC.RULESET_BASES = (dead_base(), base)
+            (SC.RULES_DIR / "geoip-cn.srs").write_bytes(b"SRS" + bytes(300))
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                SC.cmd_update_rules(args)
+            text = out.getvalue()
+            assert text.count("fell back after") == 1, text
+            assert (SC.RULES_DIR / "geoip-cn.srs").read_bytes() == b"SRS" + bytes(200)
+            assert "Rule-sets updated: geoip-cn" in text, text     # only that one changed
+
+        # Every source dead: each file names every base, the skip included, the run ends
+        # non-zero, and nothing on disk is touched.
+        SC.RULESET_BASES = (dead_base(), dead_base())
+        kept = (SC.RULES_DIR / "geosite-cn.srs").read_bytes()
+        out, err = io.StringIO(), io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                SC.cmd_update_rules(args)
+            raise AssertionError("a run in which every source failed exited 0")
+        except SystemExit as e:
+            assert e.code == 1, e.code
+        assert "skipped (this source already failed" in out.getvalue(), out.getvalue()
+        assert "No rule-set changed" in out.getvalue(), out.getvalue()
+        assert "4 ruleset(s) failed" in err.getvalue(), err.getvalue()
+        assert (SC.RULES_DIR / "geosite-cn.srs").read_bytes() == kept
+
+        # Every body a source can return wrongly, judged before anything is installed.
+        target = SC.RULES_DIR / "probe.tmp"
+        with local_source({"/short": b"SRS", "/page": b"<html>404</html>" * 3,
+                           "/cut": (999, b"SRS" + bytes(200))}) as base:
+            for path, fragment in (("/short", "too small"), ("/page", "not a rule-set"),
+                                   ("/cut", "truncated")):
+                try:
+                    SC._fetch_to_temp(base + path, target, "", False)
+                    raise AssertionError("accepted %s" % path)
+                except ValueError as e:
+                    assert fragment in str(e), (path, str(e))
+    finally:
+        SC.RULESET_BASES = real_bases
+
+    # THE apply decision, and the only place it can be observed: with a config.json on
+    # disk. An unconditional restart here is the regression that dropped every live
+    # connection — a remote admin's own SSH included — on every weekly timer run, for
+    # four files whose bytes had not changed.
+    SC.CFG_PATH.write_text("{}")            # only its EXISTENCE is read
+    restarts, regens = [], []
+    real_restart, real_regen, real_running = (SC.restart_service, SC.generate_config,
+                                              SC.is_running)
+    SC.restart_service = lambda: restarts.append(1) or True
+    SC.generate_config = lambda: regens.append(1) or True
+    SC.is_running = lambda: True
+    try:
+        with local_source(good) as base:
+            SC.RULESET_BASES = (base,)
+            with contextlib.redirect_stdout(io.StringIO()):
+                SC.cmd_update_rules(args)               # identical bytes
+            assert (restarts, regens) == ([], []), "unchanged files touched the service"
+
+            # Bytes really differ: reload the data, do NOT regenerate the document —
+            # the paths in it did not move.
+            (SC.RULES_DIR / "geoip-cn.srs").write_bytes(b"SRS" + bytes(300))
+            with contextlib.redirect_stdout(io.StringIO()):
+                SC.cmd_update_rules(args)
+            assert (len(restarts), regens) == (1, []), (restarts, regens)
+
+            # A rule-set that was absent becomes usable: the document must be rebuilt,
+            # because it now has a reference it did not have before.
+            (SC.RULES_DIR / "geosite-cn.srs").unlink()
+            with contextlib.redirect_stdout(io.StringIO()):
+                SC.cmd_update_rules(args)
+            assert (len(restarts), len(regens)) == (2, 1), (restarts, regens)
+    finally:
+        SC.restart_service, SC.generate_config, SC.is_running = (
+            real_restart, real_regen, real_running)
+        SC.CFG_PATH.unlink()
+
+    # The apply set is a pure function and its two edge rules cannot be reached through
+    # the command: a rule-set LOST mid-run is not a change (restarting for it would make
+    # sing-box re-read a file it cannot parse), and a None digest means "never read" —
+    # it differs from every digest AND from another None.
+    was = [("a", "a.srs", "usable", "d1", 1, 1.0), ("b", "b.srs", "usable", "d2", 1, 1.0)]
+    lost = [("a", "a.srs", "absent", None, None, None)] + was[1:]
+    assert SC.changed_usable_tags(was, lost) == [], "a loss was counted as a change"
+    grew = [("a", "a.srs", "usable", "d9", 1, 1.0)] + was[1:]
+    assert SC.changed_usable_tags(was, grew) == ["a"]
+    unread = [("a", "a.srs", "unreadable", None, None, None)]
+    assert SC.changed_usable_tags(unread, was[:1]) == ["a"]
+
+    # --mirror beats the environment, and either replaces the built-in list whole.
+    os.environ["SB_RULES_BASE"] = "http://env.invalid"
+    try:
+        assert SC._ruleset_bases(["http://a  http://b"]) == ["http://a", "http://b"]
+        assert SC._ruleset_bases(["   "]) == ["http://env.invalid"]
+        del os.environ["SB_RULES_BASE"]
+        assert SC._ruleset_bases(None) == list(SC.RULESET_BASES)
+    finally:
+        os.environ.pop("SB_RULES_BASE", None)
+
+
+def t_doctor_smoke(tmp):
+    """Every section prints, no probe raises, and the exit status is one of the three.
+
+    doctor's promise is that it works on a broken machine, so a section that throws must
+    still cost only its own rows — the driver renders the failure as an UNKNOWN row.
+    Here the machine IS bare: an empty sandbox with no config and no service.
+    """
+    sandbox(tmp)
+    real = SC._egress_ip
+    SC._egress_ip = lambda: (_ for _ in ()).throw(OSError("no network in a test"))
+    out = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(out):
+            SC.cmd_doctor(None)
+        raise AssertionError("cmd_doctor returned instead of exiting")
+    except SystemExit as e:
+        assert e.code in (0, 1, 2), e.code
+    finally:
+        SC._egress_ip = real
+    # The nine sections and their ORDER, spelled out here rather than read back from
+    # DOCTOR_SECTIONS: a test that iterates the table it is checking asserts nothing —
+    # delete a section and it dutifully expects one fewer. Both READMEs document nine
+    # checks in this causal order, so this list is the contract, and the table is what
+    # has to match it.
+    expected = ("sing-box binary", "rule-sets", "configuration", "IPv6 (AAAA)", "service",
+                "TUN interface", "Clash API", "egress IP", "file permissions")
+    assert tuple(name for name, _probe in SC.DOCTOR_SECTIONS) == expected
+    text = out.getvalue()
+    for label in expected:
+        assert SC.t(label) in text, label
+    assert "this check could not run" not in text, text      # no probe raised
+    assert "no file at " in text                             # the bare host's diagnosis
+
+
+def t_config_command(tmp):
+    """`sc config`: a JSON document on stdout, everything sc says on stderr."""
+    seed(tmp)
+    SC.generate_config()
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        SC.cmd_config(None)
+    doc = json.loads(out.getvalue())                # stdout alone must parse as JSON
+    assert doc["outbounds"][2]["uuid"] == SC.MASK
+    assert doc["outbounds"][2]["server"] == "node.example"
+    assert SC.MASK not in out.getvalue().split('"server"')[1][:40]
+    assert str(SC.CFG_PATH) in err.getvalue()
+    assert "This is what sc last generated." in err.getvalue()
+
+    SC.CFG_PATH.write_text(json.dumps(json.loads(SC.CFG_PATH.read_text())) + "\n")
+    err = io.StringIO()
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+        SC.cmd_config(None)
+    assert "has drifted" in err.getvalue(), err.getvalue()
 
 
 # ---------------------------------------------------------------- the runner
