@@ -78,10 +78,6 @@ def sandbox(tmp, rulesets=True):
     SC.OVERRIDE_PATH = tmp / "override.json"
     SC.STATE_PATH = tmp / ".config.sha256"
     SC.RULES_DIR = tmp / "rules"
-    # An empty file is a host with no IPv6 address at all, so the emitted document is
-    # the same on every machine this suite runs on.
-    SC.IF_INET6_PATH = tmp / "if_inet6"
-    SC.IF_INET6_PATH.write_text("")
     SC.TIMER_DROPIN_DIR = tmp / "timer.d"
     if rulesets and HAVE_RULES:
         shutil.copytree(str(REAL_RULES), str(SC.RULES_DIR))
@@ -91,16 +87,21 @@ def sandbox(tmp, rulesets=True):
 
 
 @contextlib.contextmanager
-def local_source(bodies):
-    """A throwaway rule-set source on loopback: yields its base URL.
+def local_source(bodies, seen=None):
+    """A throwaway HTTP source on loopback: yields its base URL.
 
-    `bodies` maps a URL path to the bytes served, or to a (declared_length, bytes) pair
-    when the point is a Content-Length that does not match what arrives. A path that is
-    absent is a 404. This is the only thing in the suite that opens a port, and it is
-    bound to 127.0.0.1 on an ephemeral number for the duration of one test.
+    `bodies` maps a URL path (query string included) to the bytes served, or to a
+    (declared_length, bytes) pair when the point is a Content-Length that does not match
+    what arrives. A path that is absent is a 404. `seen`, when given, is a list every
+    requested path is appended to — which is how the Clash API test asserts the REQUEST
+    sc made and not merely what it did with the answer. This is the only thing in the
+    suite that opens a port, and it is bound to 127.0.0.1 on an ephemeral number for the
+    duration of one test.
     """
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
+            if seen is not None:
+                seen.append(self.path)
             body = bodies.get(self.path)
             if body is None:
                 self.send_error(404)
@@ -253,6 +254,17 @@ def t_state_files_are_private(tmp):
         assert e.path == SC.SETTINGS_PATH
     assert SC._settings_or_empty() == {}      # the ONE degrade, and it stays silent
 
+    # A node document's ELEMENTS have a contract too, and the reader is where it is
+    # checked: generate_config() forms [n["tag"] for n in nodes] outside its guarded
+    # region, so without this a hand-edited array ended the run in a traceback.
+    for broken in ([1, 2], [{"server": "x"}], [{"tag": ""}], ["vless://..."]):
+        SC.save_nodes({"active": None, "nodes": broken})
+        try:
+            SC.load_nodes()
+            raise AssertionError("accepted %r" % (broken,))
+        except SC.OverrideError as e:
+            assert e.path == SC.NODES_PATH and "non-empty" in str(e), str(e)
+
 
 def t_generate_config(tmp):
     """The whole composition path, and — where the host has sing-box — its verdict."""
@@ -263,7 +275,9 @@ def t_generate_config(tmp):
     assert [o["tag"] for o in doc["outbounds"]] == ["proxy", "auto", "JP-1", "direct"]
     assert doc["outbounds"][0]["default"] == "auto"     # the judge picked the group
     assert SC.load_nodes()["active"] == "auto"          # and persisted the repair
-    assert doc["dns"]["rules"][0]["query_type"] == [28, 64, 65]   # no IPv6 on this host
+    # AAAA is suppressed unconditionally in this build — no setting, no host probe.
+    assert doc["dns"]["rules"][0] == {"action": "predefined", "rcode": "NOERROR",
+                                      "query_type": [28, 64, 65]}
     assert doc["experimental"]["clash_api"]["external_controller"].startswith("127.0.0.1:")
     assert stat.S_IMODE(SC.CFG_PATH.stat().st_mode) == SC.CRED_MODE
     assert SC._drift_state() is False
@@ -743,12 +757,13 @@ def t_doctor_smoke(tmp):
         assert e.code in (0, 1, 2), e.code
     finally:
         SC._egress_ip = real
-    # The nine sections and their ORDER, spelled out here rather than read back from
+    # The eight sections and their ORDER, spelled out here rather than read back from
     # DOCTOR_SECTIONS: a test that iterates the table it is checking asserts nothing —
-    # delete a section and it dutifully expects one fewer. Both READMEs document nine
-    # checks in this causal order, so this list is the contract, and the table is what
-    # has to match it.
-    expected = ("sing-box binary", "rule-sets", "configuration", "IPv6 (AAAA)", "service",
+    # delete a section and it dutifully expects one fewer. Both READMEs document these
+    # checks in this causal order, so this list is the contract and the table is what has
+    # to match it. (It was nine until IPv6 support was removed, and this line is what
+    # made that removal state itself rather than pass silently.)
+    expected = ("sing-box binary", "rule-sets", "configuration", "service",
                 "TUN interface", "Clash API", "egress IP", "file permissions")
     assert tuple(name for name, _probe in SC.DOCTOR_SECTIONS) == expected
     text = out.getvalue()
@@ -777,6 +792,149 @@ def t_config_command(tmp):
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
         SC.cmd_config(None)
     assert "has drifted" in err.getvalue(), err.getvalue()
+
+
+# The request `sc ping` must make, spelled out rather than rebuilt from the constants it
+# is checking: the probe endpoint, the budget, and a tag percent-encoded whole.
+PING_PATH = ("/proxies/%s/delay?timeout=5000"
+             "&url=https%%3A%%2F%%2Fwww.gstatic.com%%2Fgenerate_204")
+
+
+def t_ping(tmp):
+    """`sc ping` measures now, keeps the index `sc use` takes, and answers honestly.
+
+    Driven against a loopback stand-in for the Clash API, so it asserts the REQUEST as
+    well as the rendering — a tag carrying a space has to reach the API percent-encoded,
+    or the node silently reports as dead.
+    """
+    seed(tmp, links=(VLESS, VLESS.replace("#JP-1", "#HK 2")))
+    real_running, real_port = SC.is_running, SC.CLASH_PORT
+    args = type("A", (), {"spec": None})()
+    try:
+        SC.is_running = lambda: False
+        try:
+            SC.cmd_ping(args)
+            raise AssertionError("measured with nothing running")
+        except SystemExit as e:
+            assert "not running" in str(e.code), e.code
+
+        SC.is_running = lambda: True
+        seen = []
+        answers = {PING_PATH % "JP-1": b'{"delay": 210}',
+                   PING_PATH % "HK%202": b'{"delay": 87}'}
+        with local_source(answers, seen) as base:
+            SC.CLASH_PORT = int(base.rsplit(":", 1)[1])
+            # The transport must be given MORE than the probe budget, or a node answering
+            # just under PING_TIMEOUT_MS would be judged dead by the socket instead. A
+            # server that answers instantly cannot show this, so the contract is asserted
+            # on the argument rather than bought with a four-second sleep.
+            budgets, real_api = [], SC.clash_api
+            SC.clash_api = lambda *a, **kw: (budgets.append(kw.get("timeout")),
+                                             real_api(*a, **kw))[1]
+            out = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(out):
+                    SC.cmd_ping(args)               # no SystemExit == someone answered
+            finally:
+                SC.clash_api = real_api
+            assert budgets and all(b is not None and b > SC.PING_TIMEOUT_MS / 1000.0
+                                   for b in budgets), budgets
+            text = out.getvalue()
+            assert "210 ms" in text and "87 ms" in text, text
+            assert "2/2" in text, text
+            assert sorted(seen) == sorted(answers), seen
+
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                SC.cmd_ping(type("A", (), {"spec": "HK"})())
+            assert "   2  HK 2" in out.getvalue(), out.getvalue()   # nodes.json's own index
+            assert "1/1" in out.getvalue(), out.getvalue()
+
+        with local_source({}) as base:              # nothing answers
+            SC.CLASH_PORT = int(base.rsplit(":", 1)[1])
+            out = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(out):
+                    SC.cmd_ping(args)
+                raise AssertionError("a run in which nothing answered exited 0")
+            except SystemExit as e:
+                assert e.code == 1, e.code
+            assert out.getvalue().count(SC.t("no answer")) == 2, out.getvalue()
+            assert "0/2" in out.getvalue(), out.getvalue()
+    finally:
+        SC.is_running, SC.CLASH_PORT = real_running, real_port
+
+
+def t_export_import(tmp):
+    """A backup that carries credentials safely, and a merge that cannot lose a node."""
+    seed(tmp, links=(VLESS,))
+    backup = tmp / "backup.json"
+    SC.cmd_export(type("A", (), {"path": str(backup)})())
+    assert stat.S_IMODE(backup.stat().st_mode) == SC.CRED_MODE, "a backup at a wide mode"
+    assert json.loads(backup.read_text()) == SC.load_nodes()
+
+    real_restart, real_regen = SC.restart_service, SC.generate_config
+    SC.restart_service = lambda: True
+    try:
+        # A fresh host takes the backup whole and ends up on the auto-select group.
+        sandbox(tmp / "host2")
+        SC.save_settings({"lang": "en"})
+        SC.save_nodes({"active": None, "nodes": []})
+        SC.cmd_import(type("A", (), {"path": str(backup)})())
+        assert [n["tag"] for n in SC.load_nodes()["nodes"]] == ["JP-1"]
+        assert SC.load_nodes()["active"] == "auto"
+
+        # Importing it again is a no-op: the same node, not a second copy under #2.
+        before = SC.NODES_PATH.read_bytes()
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            SC.cmd_import(type("A", (), {"path": str(backup)})())
+        assert "Nothing to import" in out.getvalue(), out.getvalue()
+        assert SC.NODES_PATH.read_bytes() == before
+
+        # A DIFFERENT node wearing a tag already in use is renamed, never merged away.
+        clash = tmp / "clash.json"
+        clash.write_text(json.dumps({"active": None, "nodes": [
+            SC.parse_share_url(VLESS.replace("@node.example", "@other.example"))]}))
+        SC.cmd_import(type("A", (), {"path": str(clash)})())
+        tags = [n["tag"] for n in SC.load_nodes()["nodes"]]
+        assert tags == ["JP-1", "JP-1 #2"], tags
+
+        # Validated before it is kept: a document yielding no usable config changes nothing.
+        before = SC.NODES_PATH.read_bytes()
+        SC.generate_config = lambda: False
+        other = tmp / "third.json"
+        other.write_text(json.dumps({"active": None, "nodes": [
+            SC.parse_share_url(VLESS.replace("@node.example", "@third.example"))]}))
+        try:
+            SC.cmd_import(type("A", (), {"path": str(other)})())
+            raise AssertionError("kept nodes from a document that produced no config")
+        except SystemExit as e:
+            assert e.code == 1, e.code
+        assert SC.NODES_PATH.read_bytes() == before, "nodes.json was not restored"
+    finally:
+        SC.restart_service, SC.generate_config = real_restart, real_regen
+
+    # A malformed document names ITSELF, never the store it was being merged into.
+    bad = tmp / "bad.json"
+    bad.write_text(json.dumps({"nodes": [{"server": "no tag here"}]}))
+    try:
+        SC.cmd_import(type("A", (), {"path": str(bad)})())
+        raise AssertionError("imported a node with no tag")
+    except SC.OverrideError as e:
+        assert e.path == bad, e.path
+        assert "non-empty" in str(e), str(e)
+
+    # Nothing to back up is a refusal, not an empty file left on disk.
+    sandbox(tmp / "host3")
+    SC.save_nodes({"active": None, "nodes": []})
+    empty = tmp / "empty.json"
+    try:
+        SC.cmd_export(type("A", (), {"path": str(empty)})())
+        raise AssertionError("exported an empty node list")
+    except SystemExit as e:
+        assert "no nodes" in str(e.code), e.code
+    assert not empty.exists()
 
 
 # ---------------------------------------------------------------- the runner

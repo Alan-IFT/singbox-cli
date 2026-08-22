@@ -5,7 +5,7 @@
 # literal. This file is installed by copying it, so the constant travels with the code
 # and cannot disagree with it; the release tag is what must be kept in step with THIS
 # line, never the other way round.
-SC_VERSION = "0.3.0"
+SC_VERSION = "0.4.0"
 import argparse
 import base64
 import copy
@@ -58,16 +58,21 @@ TUN_IFACE = "sb-tun"
 # no consumer spells the literal. Deliberately language-neutral: tags live in config.json,
 # so `sc lang` must not be able to move it.
 AUTO_TAG = "auto"
+# THE endpoint every latency probe in this project asks for, and the budget one probe
+# gets. Two consumers: the auto-select group emits this URL into the document, and
+# `sc ping` hands it to the Clash API. A 204 responder rather than a page, and https
+# rather than http on purpose — the failure worth detecting is a TLS handshake that
+# hangs, and a plain-HTTP 204 would score exactly that node as healthy.
+PROBE_URL = "https://www.gstatic.com/generate_204"
+# Milliseconds. The Clash API applies it per node; clash_api()'s own socket timeout is
+# given room above it by cmd_ping, so the answer always arrives before the transport
+# gives up — otherwise a node answering at 2.9 s would be reported as dead by a 3 s
+# socket rather than judged by this number.
+PING_TIMEOUT_MS = 5000
 # The outbound tags `sc` emits itself. No node may carry one of these — two outbounds with
 # the same tag is a config sing-box rejects, and an ambiguous `sc use` besides. Built FROM
 # AUTO_TAG so that constant stays the single definition.
 RESERVED_TAGS = frozenset(("proxy", "direct", AUTO_TAG))
-# THE one source of the host's IPv6 address state. Kernel-owned, read-only, and cheap:
-# one small read answers "does this host hold a global IPv6 address" without a second
-# system query or a second failure mode. Referenced only INSIDE function bodies, so it
-# joins the seven repointable path constants as the eighth — without
-# that, the auto decision cannot be driven from a fixture without root.
-IF_INET6_PATH = Path("/proc/net/if_inet6")
 # The Clash API only ever talks to `sc` itself over loopback, so the exact port
 # is irrelevant — we auto-probe a free one in a high range to avoid clashing
 # with other local services (xray / clash / cockpit all default to 9090). Once
@@ -229,6 +234,24 @@ TRANSLATIONS = {
         "Not added: {tag} — no usable configuration could be produced from it; nodes.json "
         "is unchanged": "未添加：{tag} —— 无法据此生成可用的配置；nodes.json 未改动",
         "Removed: {tag}": "已删除：{tag}",
+        # sc ping. The column headers are the `sc ls` keys, reused verbatim, so the two
+        # screens cannot punctuate or align one fact two ways.
+        "Error: sing-box is not running, so there is nothing to measure through; start "
+        "it with `sc on` and try again":
+            "错误：sing-box 未在运行，没有可用来测量的通道；请先用 `sc on` 启动后重试",
+        "no answer": "无响应",
+        "{n}/{total} node(s) answered": "{n}/{total} 个节点有响应",
+        # sc export / sc import.
+        "Exported {n} node(s) to {path} — it carries every credential, so it is written "
+        "at mode {mode}":
+            "已导出 {n} 个节点到 {path} —— 其中包含全部凭据，因此以 {mode} 权限写入",
+        "Nothing to import — all {n} node(s) in {path} are already present":
+            "无需导入 —— {path} 中的 {n} 个节点都已存在",
+        "Not imported — no usable configuration could be produced from those nodes; "
+        "nodes.json is unchanged":
+            "未导入 —— 无法据这些节点生成可用的配置；nodes.json 未改动",
+        "Imported {n} node(s): {names}": "已导入 {n} 个节点：{names}",
+        "{n} node(s) were already present and were skipped": "另有 {n} 个节点已存在，已跳过",
         "sing-box started + boot autostart enabled": "sing-box 已启动 + 已设置开机自启",
         "sing-box stopped + boot autostart disabled": "sing-box 已停止 + 已取消开机自启",
         "=== Service status ===": "=== 服务状态 ===",
@@ -243,23 +266,6 @@ TRANSLATIONS = {
         "Boot autostart → {val}": "开机自启 → {val}",
         "Ruleset auto-update cadence → {val} (OnCalendar={oc})": "规则集自动更新频率 → {val}（OnCalendar={oc}）",
         "Language → {val}": "语言 → {val}",
-        # IPv6 name resolution. The setting line, the four evidence sentences (one per
-        # effective decision), the detection-failed line, the argument error, the
-        # unrecognised-value line, and the two outcomes of a set. `Reload failed` above is
-        # reused for a failed regeneration — no eleventh string is added here.
-        "IPv6 name resolution → {val}": "IPv6 域名解析 → {val}",
-        "AAAA queries are answered empty (setting: off)": "AAAA 查询直接返回空结果（设置：off）",
-        "AAAA queries are resolved normally (setting: on)": "AAAA 查询正常解析（设置：on）",
-        "AAAA queries are answered empty (setting: auto — this host has no global IPv6 address)":
-            "AAAA 查询直接返回空结果（设置：auto —— 本机没有全局 IPv6 地址）",
-        "AAAA queries are resolved normally (setting: auto — this host has a global IPv6 address on {iface})":
-            "AAAA 查询正常解析（设置：auto —— 本机在 {iface} 上有全局 IPv6 地址）",
-        "Could not read this host's IPv6 addresses ({err}) — assuming it has one, so AAAA queries are resolved normally; set it explicitly with `sc ipv6 on|off`":
-            "无法读取本机的 IPv6 地址（{err}）—— 已按存在处理，AAAA 查询将正常解析；可用 `sc ipv6 on|off` 明确指定",
-        "Error: argument must be one of on / off / auto / show":
-            "错误：参数必须是 on / off / auto / show 之一",
-        "{path}: ipv6 must be one of on / off / auto — using auto":
-            "{path}：ipv6 必须是 on / off / auto 之一 —— 已按 auto 处理",
         "Configuration regenerated; sing-box restarted": "配置已重新生成，sing-box 已重启",
         # Telemetry name rejection. The setting line, the two meaning sentences (one per
         # setting), the argument error, the unrecognised-value line, and the no-op line —
@@ -344,7 +350,6 @@ TRANSLATIONS = {
         "configuration": "配置文件",
         "config drift": "配置改动",
         "sing-box check": "sing-box 配置检查",
-        "IPv6 (AAAA)": "IPv6（AAAA）",
         "service": "服务",
         "boot autostart": "开机自启",
         "TUN interface": "TUN 接口",
@@ -377,10 +382,6 @@ TRANSLATIONS = {
         "changed since sc generated it — keep the change in {override}, then run `sc reload`":
             "自 sc 生成以来已被修改 —— 请把改动写入 {override}，再运行 `sc reload`",
         "no record of what sc last generated": "没有 sc 最近一次生成内容的记录",
-        "{decision}; config.json carries this decision": "{decision}；config.json 与该决策一致",
-        "{decision}; config.json does not carry that decision at the head of its dns.rules — run `sc reload` to regenerate the document if it is stale or was hand-edited; if {override} puts a rule of its own at the head, regeneration reproduces it, so that document is what to change":
-            "{decision}；config.json 的 dns.rules 开头没有该决策对应的规则 —— 若该文档已过期或被手工改过，运行 `sc reload` 重新生成；若 {override} 自己在开头放了规则，重新生成还会再放一次，要改的是那份文档",
-        "cannot determine this host's IPv6 addresses": "无法确定本机的 IPv6 地址",
         "the checker reported an error:": "检查器报告了错误：",
         "the checker reported an error, no message (exit {code})":
             "检查器报告了错误，未输出信息（退出码 {code}）",
@@ -429,6 +430,8 @@ TRANSLATIONS = {
         "not valid JSON ({err})": "不是有效的 JSON（{err}）",
         "the top level must be a JSON object": "顶层必须是一个 JSON 对象",
         "the \"{member}\" member must be a JSON array": "\"{member}\" 成员必须是 JSON 数组",
+        "every node must be an object with a non-empty \"tag\"":
+            "每个节点都必须是带有非空 \"tag\" 的对象",
         "not a regular file": "不是普通文件",
         "a symbolic link whose target {target} does not exist":
             "是一个符号链接，但其目标 {target} 不存在",
@@ -659,8 +662,27 @@ def _read_state(path, default=None, member=None):
     return doc
 
 
-def load_nodes():
-    return _read_state(NODES_PATH, member="nodes")
+def load_nodes(path=None):
+    """THE reader of a node document: nodes.json, or the file `sc import` was handed.
+
+    One reader for both, so an imported document is judged by exactly the rules the
+    tool's own store is judged by, and a fault names the file it came from — the path is
+    carried by _unusable(), not by the caller.
+
+    The element check is not import-specific. generate_config() forms `[n["tag"] for n in
+    nodes]` OUTSIDE its guarded region, so a nodes.json whose array holds a scalar, or an
+    object without a tag, used to end the run in a traceback; every other malformed shape
+    of this file already had a sentence. Stating the requirement HERE gives that shape one
+    too, for hand-edits and imports alike, and it is the minimum every consumer assumes.
+    """
+    path = path or NODES_PATH
+    doc = _read_state(path, member="nodes")
+    for node in doc["nodes"]:
+        if not isinstance(node, dict) or not isinstance(node.get("tag"), str) \
+                or not node["tag"]:
+            raise _unusable(path, t("every node must be an object with a non-empty "
+                                    "\"tag\""))
+    return doc
 
 
 def _write_state(path, doc):
@@ -1704,140 +1726,17 @@ def _valid_selection(active, node_tags):
     return node_tags[0] if node_tags else None
 
 
-def _ipv6_setting():
-    """THE single reader of settings["ipv6"]: exactly one of "on" / "off" / "auto".
 
-    Absence IS "auto" (nothing ever seeds the key), so a host upgrading to this build and
-    a fresh install behave identically and _init_files() needs no change. Shaped like
-    _saved_clash_port(): an unreadable or malformed settings.json degrades to the default
-    quietly (the run's one warning line is _load_lang()'s), because this is not a new
-    way for `sc` to break on a host whose settings.json is already broken.
+def _dns_overlay():
+    """THE one place AAAA suppression reaches the emitted document, at THE one position.
 
-    A value that is PRESENT but not one of the three is different — that is a hand-edit
-    that did not take effect, so it earns one stderr line naming the file, the key and the
-    three accepted values. `sc ipv6 auto` repairs it.
-
-    Reads one file; writes nothing.
-    """
-    settings = _settings_or_empty()
-    if "ipv6" not in settings:
-        return "auto"
-    value = settings["ipv6"]
-    if value in ("on", "off", "auto"):
-        return value
-    sys.stderr.write("⚠️  " + t("{path}: ipv6 must be one of on / off / auto — using "
-                                "auto", path=SETTINGS_PATH) + "\n")
-    return "auto"
-
-
-def _global_ipv6_iface():
-    """(iface, err): the device holding a GLOBAL IPv6 address, and why we could not tell.
-
-    THE predicate behind the `auto` setting and nothing else. "Global" means inside
-    2000::/3 — the first three bits of the address are 001 — on a device that is neither
-    loopback nor this project's own TUN device. Loopback (::1), link-local (fe80::/10) and
-    unique-local (fc00::/7) can never satisfy it arithmetically, and sb-tun is excluded BY
-    NAME because a host running this project always carries a link-local address on it: an
-    "any IPv6 address" test would report every such host as IPv6-capable.
-
-    A default-route test is deliberately not part of this: it would add a second system
-    query and a second failure mode, and `sc ipv6 on|off` already overrides the judgment
-    on the rare host where the two would differ.
-
-    An EMPTY file is a legitimate "no IPv6 at all" — (None, None), not an error. `err` is
-    set only when the source cannot be read (including a source that is not UTF-8 text at
-    all), or when it holds content in which no line at all has the kernel's six-field
-    shape. Never raises; prints nothing; the caller decides what a failure means.
-    """
-    try:
-        text = IF_INET6_PATH.read_text(encoding="utf-8")
-    except OSError as e:
-        return (None, e.strerror or str(e))
-    except UnicodeDecodeError:
-        # A UnicodeDecodeError is a ValueError, NOT an OSError, so it escapes the clause
-        # above and would reach the user as a traceback — the outcome AC-17 forbids and
-        # this function's "never raises" contract denies. Unreachable through the real
-        # kernel file (always ASCII) and reachable through a repointed IF_INET6_PATH,
-        # which is exactly how every fixture drives this function. The codec's own message
-        # is untranslated English, so this reuses the existing "unreadable" key (K-9)
-        # rather than leaking it into a user-facing sentence.
-        return (None, t("unreadable"))
-    parsed = False
-    for line in text.splitlines():
-        # addr(32 hex chars) ifindex prefixlen scope flags device
-        fields = line.split()
-        if len(fields) != 6:
-            continue
-        try:
-            first = int(fields[0][:2], 16)
-        except ValueError:
-            continue
-        parsed = True
-        if (first & 0xE0) != 0x20:          # outside 2000::/3
-            continue
-        if fields[5] == "lo" or fields[5] == TUN_IFACE:
-            continue
-        return (fields[5], None)
-    if text.strip() and not parsed:
-        # Non-empty, and not one line of it is in the shape this kernel file has. Reusing
-        # the existing "unreadable" key rather than adding an eleventh string: the outer
-        # sentence already says what happened and this fills its cause slot.
-        return (None, t("unreadable"))
-    return (None, None)
-
-
-def ipv6_decision():
-    """THE definition of the effective IPv6 decision: (setting, suppress, sentence).
-
-    `setting` is what is persisted, `suppress` is what the emitted document does about
-    AAAA, and `sentence` is the already-translated evidence for it (None only when
-    detection failed, which has already spoken on stderr). Three callers — cmd_ipv6(), `sc
-    doctor`'s AAAA row and generate_config() (which hands it to _dns_overlay()) — and no
-    other code re-derives it, so the document, `sc ipv6` and `sc doctor` can never be
-    three opinions.
-
-    Detection failure means DO NOT suppress: the two errors are not symmetric. Suppressing
-    on a host that can use IPv6 makes IPv6-only destinations unreachable, while not
-    suppressing on a host that cannot costs latency the user already has. The assumption is
-    stated out loud so it is never silent.
-
-    The address source is read ONLY under `auto`, so `on` and `off` cost exactly one file
-    read. Writes no file, issues no request, performs no service-affecting action; its only
-    side effect is at most one stderr line.
-    """
-    setting = _ipv6_setting()
-    if setting == "off":
-        return (setting, True, t("AAAA queries are answered empty (setting: off)"))
-    if setting == "on":
-        return (setting, False, t("AAAA queries are resolved normally (setting: on)"))
-    iface, err = _global_ipv6_iface()
-    if err is not None:
-        sys.stderr.write("⚠️  " + t(
-            "Could not read this host's IPv6 addresses ({err}) — assuming it has one, so "
-            "AAAA queries are resolved normally; set it explicitly with "
-            "`sc ipv6 on|off`", err=_plain(err)) + "\n")
-        return (setting, False, None)
-    if iface is not None:
-        return (setting, False, t(
-            "AAAA queries are resolved normally (setting: auto — this host has a global "
-            "IPv6 address on {iface})", iface=_plain(iface)))
-    return (setting, True, t("AAAA queries are answered empty (setting: auto — this host "
-                             "has no global IPv6 address)"))
-
-
-def _aaaa_rule(suppress):
-    """THE one place the predefined AAAA rule dict is spelled, for one decision.
-
-    Pure: no I/O, no print, never raises, and it does NOT call ipv6_decision() — the caller
-    passes the decision in — which is what lets `sc doctor` ask about this decision with no
-    second ipv6_decision() call, as a POSITION test against _dns_overlay()'s own payload.
-    """
-    return {"action": "predefined", "rcode": "NOERROR",
-            "query_type": ([28, 64, 65] if suppress else [64, 65])}
-
-
-def _dns_overlay(suppress):
-    """THE one place the IPv6 decision reaches the emitted document, at THE one position.
+    This build does not do IPv6: AAAA (query type 28) is answered with an empty NOERROR
+    locally, always, and there is no setting, no host probe and no command that can turn
+    that off. What replaced them is this rule. The reason the switch went rather than
+    defaulting to off: `auto` needed a reader of /proc/net/if_inet6, a three-valued
+    setting, a decision function, a `sc ipv6` command, a `sc doctor` section and ten
+    translated sentences — a whole detection subsystem in service of a configuration the
+    project does not support.
 
     $prepend on dns.rules — an existing directive on an array CONFIG_BASE always defines,
     so this can never raise and needs no anchor a later edit to the base could break.
@@ -1848,15 +1747,17 @@ def _dns_overlay(suppress):
     must not get the stall back) and node-independent. The rule carries no rule_set key, so
     _filter_rules() keeps it on exactly the degraded host that needs it most.
 
-    Types 64 and 65 (SVCB / HTTPS) are answered in BOTH states: that is what the rule this
-    replaces already did, and moving it must not change it. Only 28 (AAAA) is conditional.
-    An empty NOERROR is the answer, never NXDOMAIN — NXDOMAIN would poison the negative
-    cache for the whole name, its A record included.
+    Types 64 and 65 (SVCB / HTTPS) are answered here too, as they always were. An empty
+    NOERROR is the answer, never NXDOMAIN — NXDOMAIN would poison the negative cache for
+    the whole name, its A record included.
 
-    The decision is passed IN, not read here — which keeps this pure and makes the payload
-    below the emitted position's ONE home, read by `sc doctor`'s AAAA row as well as emitted.
+    THE CONSEQUENCE, stated once and documented in both READMEs: a node whose address
+    resolves only over AAAA becomes unreachable. Nothing in `sc` can lift that; a host
+    that needs it must $replace dns.rules from override.json, or use a different tool.
     """
-    return {"dns": {"rules": {"$prepend": [_aaaa_rule(suppress)]}}}
+    return {"dns": {"rules": {"$prepend": [
+        {"action": "predefined", "rcode": "NOERROR", "query_type": [28, 64, 65]},
+    ]}}}
 
 
 # THE definition of the telemetry name list — one tuple, two consumers (_telemetry_overlay()
@@ -1907,18 +1808,17 @@ def _telemetry_setting():
     """THE single reader of settings["telemetry"]: exactly "block" or "allow".
 
     Absence IS "block" (nothing ever seeds the key), so a host upgrading to this build and a
-    fresh install behave identically and _init_files() needs no change. Shaped like
-    _ipv6_setting(), reader included: an absent, unreadable, non-UTF-8, non-JSON or
-    wrong-shaped settings.json degrades to the default — and both holes this docstring
-    once listed are closed, cmd_telemetry()'s SET form now aborting with a sentence.
+    fresh install behave identically and _init_files() needs no change: an absent,
+    unreadable, non-UTF-8, non-JSON or wrong-shaped settings.json degrades to the default,
+    and cmd_telemetry()'s SET form aborts with a sentence rather than clobbering it.
 
     A value that is PRESENT but not one of the two is different — a hand-edit that did not
     take effect, so it earns one stderr line naming the file, the key and the two accepted
     values. `sc telemetry block` repairs it.
 
-    There is deliberately no telemetry_decision() sibling: unlike IPv6 there is no
-    host-derived input, so the setting IS the decision and a second function would be a
-    second name for one value.
+    There is deliberately no telemetry_decision() sibling: there is no host-derived
+    input, so the setting IS the decision and a second function would be a second name for
+    one value.
 
     Reads one file; writes nothing; performs no service-affecting action.
     """
@@ -1988,9 +1888,9 @@ def _runtime_overlay(nodes, active, report):
     auto = _auto_group_emitted(node_tags)
     # The auto-select group. Every key is emitted explicitly, including url: this binary
     # compiles in a generate_204 default, and stating it here is what stops a future
-    # binary's default from silently moving the probe. https (not http) on purpose — the
-    # failure this whole feature exists for is a TLS handshake that hangs, and a
-    # plain-HTTP 204 would score exactly that node as healthy. interval is the upper bound
+    # binary's default from silently moving the probe — and it is PROBE_URL, the same
+    # endpoint `sc ping` measures against, so the group and the command can never score a
+    # node differently. interval is the upper bound
     # on unattended failover latency; tolerance keeps the group from re-selecting on
     # jitter alone. interrupt_exist_connections is deliberately ABSENT: on a group the
     # switch is automatic and can be caused by a 51 ms improvement, so an inbound
@@ -2001,7 +1901,7 @@ def _runtime_overlay(nodes, active, report):
         "type": "urltest",
         "tag": AUTO_TAG,
         "outbounds": list(node_tags),
-        "url": "https://www.gstatic.com/generate_204",
+        "url": PROBE_URL,
         "interval": "3m",
         "tolerance": 50,
         "idle_timeout": "30m",
@@ -2178,7 +2078,7 @@ def generate_config():
     # being a third element of this list rather than a separate call. What the separate
     # call buys is provenance: two failure sources now have two code sites.
     config = _compose([_runtime_overlay(nodes, active, report),
-                       _dns_overlay(ipv6_decision()[1]), _telemetry_overlay()])
+                       _dns_overlay(), _telemetry_overlay()])
     # THE region: from the override document's bytes to the emitted document's bytes.
     # Every step inside it has override-supplied content among its inputs, so a failure
     # at ANY of them is a failure to produce a configuration from this document — one
@@ -2324,7 +2224,7 @@ def _apply_or_exit():
     """Regenerate the document, restart the service — or end the run saying it failed.
 
     THE outcome of a command that has already persisted a change and now has to make it
-    take effect: `rm`, `use`, `ipv6`, `telemetry` and `reload` all owe the same non-zero
+    take effect: `rm`, `use`, `telemetry` and `reload` all owe the same non-zero
     exit and the same single line when no usable document could be produced. The CAUSE is
     already on stderr, written by generate_config() itself, so this states a verdict and
     never a second explanation.
@@ -2345,7 +2245,7 @@ def _apply_or_exit():
 
 # ============ Clash API ============
 
-def clash_api(method, path, data=None, port=None):
+def clash_api(method, path, data=None, port=None, timeout=3):
     """Ask the local Clash API one question. Returns a JSON object or None, never raises one of the
     three exception families its own body raises — OSError, ValueError, http.client.HTTPException.
     Those three are caught rather than their leaves (timeout, refusal, bad status, bad bytes, bad
@@ -2353,14 +2253,17 @@ def clash_api(method, path, data=None, port=None):
     a sibling escapes. An empty 2xx body is {}; a body that is not a JSON object is None; only a
     pathological loopback body can still raise (RecursionError / MemoryError).
     port=None keeps every call site on the port main() resolved; `sc doctor` passes the persisted
-    port explicitly, because it never resolves (and so never persists) one of its own."""
+    port explicitly, because it never resolves (and so never persists) one of its own.
+    timeout is the transport's budget in seconds, and it exists for ONE caller: `sc ping` asks
+    the API to spend up to PING_TIMEOUT_MS on a node, so the socket must be given more than
+    that or it would answer the question itself. Every other call site keeps the 3 s default."""
     url = f"http://127.0.0.1:{port or CLASH_PORT}" + path
     body = json.dumps(data).encode() if data is not None else None
     req = urllib.request.Request(url, data=body, method=method)
     if body:
         req.add_header("Content-Type", "application/json")
     try:
-        with urllib.request.urlopen(req, timeout=3) as r:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             text = r.read().decode()
             answer = json.loads(text) if text else {}
     except (OSError, ValueError, http.client.HTTPException):
@@ -2595,6 +2498,147 @@ def cmd_rm(args):
     # run's outcome — not something to print "Removed" over.
     _apply_or_exit()
     print(t("Removed: {tag}", tag=node["tag"]))
+
+
+def cmd_ping(args):
+    """`sc ping [name|index]` — measure every node NOW, through the running sing-box.
+
+    The one thing `sc ls` cannot do. Its delay column is a HISTORY: a value the auto-select
+    group's own probing left behind, which is why a node nobody has probed shows `-` there.
+    This command asks the Clash API to make a fresh measurement against PROBE_URL — the
+    same endpoint the group emits, so the two can never disagree about what "reachable"
+    means — and the API records the result, so `sc ls` shows these numbers afterwards.
+
+    Sequential and streamed, like `sc update-rules`: one line per node, printed as its
+    answer arrives, so a slow node is visible while it is being waited for rather than
+    after every node has been. Concurrency here would buy wall-clock at the price of a
+    thread pool and out-of-order output, on a list that is typically under ten nodes.
+
+    The index column is nodes.json's own numbering, so a number read here is the number
+    `sc use` takes, and a single-node form still shows that node's real index.
+
+    Exits non-zero only when NO node answered: one dead node is information, a list in
+    which nothing answers is a run that failed. Writes no file and touches no service.
+    """
+    nodes = load_nodes()["nodes"]
+    if not nodes:
+        sys.exit(t("Error: no nodes added yet — use `sc add <link>` first"))
+    targets = list(enumerate(nodes, 1))
+    if args.spec:
+        _data, node = _resolve_node(args.spec)
+        targets = [(i, n) for i, n in targets if n["tag"] == node["tag"]]
+    if not is_running():
+        sys.exit(t("Error: sing-box is not running, so there is nothing to measure "
+                   "through; start it with `sc on` and try again"))
+    print(f"{t('#'):>4}  {t('Name'):30}  {t('Delay'):>9}")
+    answered = 0
+    for index, node in targets:
+        tag = node["tag"]
+        print(f"{index:>4}  {tag[:30]:30}  ", end="", flush=True)
+        # The transport is given room ABOVE the probe budget, so the number this prints is
+        # the API's verdict on the node and never the socket's verdict on the API.
+        reply = clash_api("GET", "/proxies/%s/delay?timeout=%d&url=%s"
+                          % (urllib.parse.quote(tag, safe=""), PING_TIMEOUT_MS,
+                             urllib.parse.quote(PROBE_URL, safe="")),
+                          timeout=PING_TIMEOUT_MS / 1000.0 + 2)
+        ms = reply.get("delay") if isinstance(reply, dict) else None
+        if isinstance(ms, int) and not isinstance(ms, bool) and ms > 0:
+            answered += 1
+            print(f"{str(ms) + ' ms':>9}")
+        else:
+            print(f"{t('no answer'):>9}")
+    print(t("{n}/{total} node(s) answered", n=answered, total=len(targets)))
+    if not answered:
+        sys.exit(1)
+
+
+def cmd_export(args):
+    """`sc export <path>` — the node store, written to a file at CRED_MODE.
+
+    NEVER to stdout, and there is no flag that changes that. nodes.json holds every
+    password and UUID, and /etc/sudoers.d/sc grants the install user NOPASSWD on this
+    binary: a document printed to a stream that user controls would hand them the whole
+    credential set without a password, which is exactly the hole `sc config`'s
+    unconditional redaction exists to close. Written through the one state writer instead,
+    so the backup lands at 0600, owned by root, atomically — the mode a hand-rolled
+    `cp /etc/sing-box/nodes.json ~/backup.json` reliably fails to produce.
+
+    Reads the store through the one reader, so a document sc will not use is a document sc
+    will not hand you a backup of either. Touches no service and no other file.
+    """
+    doc = load_nodes()
+    if not doc["nodes"]:
+        sys.exit(t("Error: no nodes added yet — use `sc add <link>` first"))
+    path = Path(args.path)
+    _write_state(path, doc)
+    print(t("Exported {n} node(s) to {path} — it carries every credential, so it is "
+            "written at mode {mode}",
+            n=len(doc["nodes"]), path=path, mode="%03o" % CRED_MODE))
+
+
+def _node_identity(node):
+    """A node stripped of its tag — THE definition of "these two are the same node".
+
+    The tag is a label a share link's fragment supplied and `_unique_tag()` may already
+    have renamed; everything else is what actually reaches the wire. Comparing on this is
+    what makes importing the same backup twice a no-op instead of a second copy of every
+    node under a `#2` name.
+    """
+    return dict((k, v) for k, v in node.items() if k != "tag")
+
+
+def cmd_import(args):
+    """`sc import <path>` — merge a node document into this host's store.
+
+    MERGES, never replaces: nothing already here is removed, so an import cannot lose a
+    node. A node already present (same everything but the tag) is skipped; a tag that
+    collides with a different node is minted a fresh one by `_unique_tag()`, exactly as
+    `sc add` does.
+
+    Validated BEFORE it is kept, the ordering `sc add` and config.json already have: the
+    document is composed and checked, and if no usable configuration comes out of it,
+    nodes.json goes back byte-for-byte and the run ends non-zero. So a backup carrying a
+    node this build cannot express leaves the host exactly as it was.
+    """
+    incoming = load_nodes(Path(args.path))["nodes"]
+    nodes_data = load_nodes()
+    previous = copy.deepcopy(nodes_data)
+    known = [_node_identity(n) for n in nodes_data["nodes"]]
+    existing = set(n["tag"] for n in nodes_data["nodes"])
+    added, skipped = [], 0
+    for node in incoming:
+        if _node_identity(node) in known:
+            skipped += 1
+            continue
+        node = copy.deepcopy(node)
+        node["tag"] = _unique_tag(node["tag"], existing)
+        existing.add(node["tag"])
+        known.append(_node_identity(node))
+        nodes_data["nodes"].append(node)
+        added.append(node["tag"])
+    if not added:
+        print(t("Nothing to import — all {n} node(s) in {path} are already present",
+                n=skipped, path=args.path))
+        return
+    if not nodes_data.get("active"):
+        # Through the one judge, like `sc add`: a host with no selection yet ends up on
+        # the auto-select group rather than on whichever node sorted first.
+        nodes_data["active"] = _valid_selection(
+            None, [n["tag"] for n in nodes_data["nodes"]])
+    save_nodes(nodes_data)
+    try:
+        ok = reload_or_restart()
+    except OverrideError:
+        save_nodes(previous)
+        raise
+    if not ok:
+        save_nodes(previous)
+        print(t("Not imported — no usable configuration could be produced from those "
+                "nodes; nodes.json is unchanged"))
+        sys.exit(1)
+    print(t("Imported {n} node(s): {names}", n=len(added), names=", ".join(added)))
+    if skipped:
+        print(t("{n} node(s) were already present and were skipped", n=skipped))
 
 
 def cmd_on(args):
@@ -2899,54 +2943,6 @@ def _doctor_config():
     return rows
 
 
-def _doctor_ipv6():
-    """S4 — this host's effective AAAA decision, and whether config.json carries it.
-
-    ONE row, and exactly ONE ipv6_decision() call per doctor run: the decision's own
-    sentence is what the row states, and the same decision is handed to _dns_overlay(),
-    which takes it as an argument and is therefore pure: no second ipv6_decision() call and
-    no second read of the address source in one run.
-
-    The row asks "does dns.rules BEGIN with what this build prepends for this decision?" —
-    a POSITION test read from the emitter's own payload: it re-spells no rule, defines no
-    index, and never a silent PROBLEM. Detection failure (sentence None, on stderr already) is
-    UNKNOWN. The document is read exactly once, guarded by (OSError, ValueError) —
-    UnicodeDecodeError is a ValueError, not an OSError — and every level below the top is
-    guarded by isinstance in stored_delays()' house style, so a `dns` that is a string is
-    the honest PROBLEM "the document does not carry it" rather than a TypeError. A document
-    that is not a JSON object at all is UNKNOWN: the row above already owns "there is no
-    usable document there", and this probe cannot judge what it cannot traverse.
-    """
-    _setting, suppress, sentence = ipv6_decision()
-    if sentence is None:
-        return [(DOCTOR_UNKNOWN, "IPv6 (AAAA)",
-                 t("cannot determine this host's IPv6 addresses"))]
-    try:
-        doc = json.loads(CFG_PATH.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as e:
-        return [(DOCTOR_UNKNOWN, "IPv6 (AAAA)",
-                 t("cannot read {path}: {e}", path=str(CFG_PATH), e=_plain(str(e))))]
-    if not isinstance(doc, dict):
-        # No exception was raised, so the cause slot is filled from the existing sentence
-        # for exactly this shape. It still goes through _plain(): every {e} in this block
-        # does, so no later edit can put foreign text in one that does not.
-        return [(DOCTOR_UNKNOWN, "IPv6 (AAAA)",
-                 t("cannot read {path}: {e}", path=str(CFG_PATH),
-                   e=_plain(t("the top level must be a JSON object"))))]
-    dns = doc.get("dns")
-    rules = dns.get("rules") if isinstance(dns, dict) else None
-    prepend = _dns_overlay(suppress)["dns"]["rules"]["$prepend"]
-    if isinstance(rules, list) and rules[:len(prepend)] == prepend:
-        return [(DOCTOR_OK, "IPv6 (AAAA)",
-                 t("{decision}; config.json carries this decision", decision=sentence))]
-    return [(DOCTOR_PROBLEM, "IPv6 (AAAA)",
-             t("{decision}; config.json does not carry that decision at the head of its "
-               "dns.rules — run `sc reload` to regenerate the document if it is stale or "
-               "was hand-edited; if {override} puts a rule of its own at the head, "
-               "regeneration reproduces it, so that document is what to change",
-               decision=sentence, override=str(OVERRIDE_PATH)))]
-
-
 def _doctor_service():
     """S5 — running now, and registered to start at boot: two separate facts.
 
@@ -3209,7 +3205,6 @@ DOCTOR_SECTIONS = (
     ("sing-box binary", _doctor_binary),
     ("rule-sets", _doctor_rulesets),
     ("configuration", _doctor_config),
-    ("IPv6 (AAAA)", _doctor_ipv6),
     ("service", _doctor_service),
     ("TUN interface", _doctor_tun),
     ("Clash API", _doctor_clash),
@@ -3419,48 +3414,6 @@ def cmd_mode(args):
         sys.exit(t("Error: the Clash API did not accept the mode change"))
     print(t("Route mode → {mode}", mode=mode))
 
-
-def cmd_ipv6(args):
-    """`sc ipv6 on|off|auto|show` — the one surface of the effective IPv6 decision.
-
-    Everything printed comes from ipv6_decision(), including the before/after comparison,
-    so this command cannot form a second opinion about what the document will do.
-
-    A set that leaves the effective decision unchanged touches nothing: `auto` on a host
-    that was already deciding `auto`, or `on` on a host with a global IPv6 address, would
-    otherwise drop every live connection to rewrite the same bytes. The setting is still
-    persisted in that case, which is what makes `sc ipv6 auto` repair a hand-edited
-    unrecognised value.
-
-    NOTE ON SCOPE: "show writes nothing" is a property of THIS function. main()'s start-up
-    path (_init_files() + _resolve_clash_port()) runs for `sc ipv6` exactly as for every
-    other non-doctor command and can create /etc/sing-box and persist a port on a fresh
-    host. `doctor` stays the one positively named read-only command.
-    """
-    val = args.value.lower()
-    if val not in ("on", "off", "auto", "show"):
-        sys.exit(t("Error: argument must be one of on / off / auto / show"))
-    if val == "show":
-        setting, _suppress, sentence = ipv6_decision()
-        print(t("IPv6 name resolution → {val}", val=setting))
-        if sentence is not None:
-            print(sentence)
-        return
-    before = ipv6_decision()[1]
-    settings = load_settings()
-    settings["ipv6"] = val
-    save_settings(settings)
-    setting, after, sentence = ipv6_decision()
-    print(t("IPv6 name resolution → {val}", val=setting))
-    if sentence is not None:
-        print(sentence)
-    if after == before:
-        # `sc telemetry`'s sentence for this exact state; the setting IS persisted here too.
-        print(t("Nothing changed — the sing-box service was not touched; run `sc reload` "
-                "to apply this setting to a configuration generated before it"))
-        return
-    _apply_or_exit()
-    print(t("Configuration regenerated; sing-box restarted"))
 
 
 def _telemetry_meaning(setting):
@@ -3821,6 +3774,15 @@ COMMANDS
   add <share-link>            Add a node from a share link
                               Supports vless / vmess / trojan / ss / hysteria2 / tuic
   rm <name|index>             Remove a node
+  ping [name|index]           Measure every node now, through the running sing-box
+                                a fresh measurement, unlike `sc ls`'s stored history —
+                                and it updates what `sc ls` shows afterwards
+                                exit non-zero only when NO node answered
+  export <path>               Write the node list to <path> at mode 600
+                                it carries every credential, so it never goes to stdout
+  import <path>               Merge a node document into this host's list
+                                never removes anything; a node already present is
+                                skipped; validated before it is kept
   on                          Start sing-box and enable on boot
   off                         Stop sing-box and disable on boot
   status                      Show service status, TUN interface, rule-set status + age,
@@ -3838,10 +3800,6 @@ COMMANDS
                                 rule   = rule-based routing (default)
                                 global = everything via proxy
                                 direct = everything direct
-  ipv6 <on|off|auto|show>     Whether AAAA (IPv6) queries are resolved or answered empty
-                                auto = answer empty unless this host has a global IPv6
-                                       address (the default; on / off decide it by hand)
-                                show = print the setting and the decision it produces
   telemetry <block|allow|show>  Answer a fixed list of telemetry names "no such domain"
                                 block = reject them locally, asking no resolver (default)
                                 show  = print the setting and every name on the list
@@ -3869,6 +3827,9 @@ EXAMPLES
   sc add 'vless://uuid@host:443?security=reality&pbk=...&sni=...&fp=chrome&flow=xtls-rprx-vision#LosAngeles-US'
   sc ls
   sc use US                   # or: sc use 1
+  sc ping                     # measure every node now
+  sc export /root/nodes-backup.json
+  sc import /root/nodes-backup.json
   sc mode global
   sc update-interval daily             # update rulesets every day
   sc update-interval 'Mon *-*-* 04:00:00'   # every Monday at 04:00
@@ -3892,6 +3853,14 @@ HELP_ZH = """sc —— sing-box 命令行管理工具
   add <分享链接>              从分享链接添加节点
                               支持 vless / vmess / trojan / ss / hysteria2 / tuic
   rm <名称|序号>              删除节点
+  ping [名称|序号]            立即测量每个节点的延迟（经由运行中的 sing-box）
+                                这是实时测量，不同于 `sc ls` 显示的历史值；
+                                测完之后 `sc ls` 显示的就是这次的结果
+                                仅当所有节点都无响应时才以非 0 退出
+  export <路径>               把节点列表写到 <路径>，权限 600
+                                其中包含全部凭据，因此绝不写到标准输出
+  import <路径>               把一份节点文档合并进本机的列表
+                                只增不删；已存在的节点会被跳过；先校验再保留
   on                          启动 sing-box 并设置开机自启
   off                         停止 sing-box 并取消开机自启
   status                      查看服务状态、TUN 接口、规则集状态与更新时间、当前节点、出口 IP
@@ -3908,10 +3877,6 @@ HELP_ZH = """sc —— sing-box 命令行管理工具
                                 rule   = 按规则分流（默认）
                                 global = 全部走代理
                                 direct = 全部直连
-  ipv6 <on|off|auto|show>     AAAA（IPv6）查询是正常解析还是直接返回空结果
-                                auto = 本机没有全局 IPv6 地址时返回空结果（默认；
-                                       on / off 为手动指定）
-                                show = 显示当前设置以及它得出的结论
   telemetry <block|allow|show>  对固定的遥测域名清单直接返回「域名不存在」
                                 block = 本地拦截，不向任何解析器查询（默认）
                                 show  = 显示当前设置以及清单中的每个域名
@@ -3938,6 +3903,9 @@ HELP_ZH = """sc —— sing-box 命令行管理工具
   sc add 'vless://uuid@host:443?security=reality&pbk=...&sni=...&fp=chrome&flow=xtls-rprx-vision#美国洛杉矶'
   sc ls
   sc use 美国                 # 或 sc use 1
+  sc ping                     # 立即测量所有节点
+  sc export /root/nodes-backup.json
+  sc import /root/nodes-backup.json
   sc mode global
   sc update-interval daily             # 改为每天更新规则集
   sc update-interval 'Mon *-*-* 04:00:00'   # 每周一凌晨 4 点
@@ -3985,11 +3953,13 @@ def main():
     p = sub.add_parser("use"); p.add_argument("spec")
     p = sub.add_parser("add"); p.add_argument("url", nargs="?")
     p = sub.add_parser("rm"); p.add_argument("spec")
+    p = sub.add_parser("ping"); p.add_argument("spec", nargs="?")
+    p = sub.add_parser("export"); p.add_argument("path")
+    p = sub.add_parser("import"); p.add_argument("path")
     sub.add_parser("on"); sub.add_parser("off"); sub.add_parser("status")
     sub.add_parser("doctor")
     sub.add_parser("config")
     p = sub.add_parser("mode"); p.add_argument("mode")
-    p = sub.add_parser("ipv6"); p.add_argument("value")
     p = sub.add_parser("telemetry"); p.add_argument("value")
     p = sub.add_parser("default-tun"); p.add_argument("value")
     p = sub.add_parser("update-rules")
@@ -4025,9 +3995,10 @@ def main():
         CLASH_PORT = _resolve_clash_port()
     handlers = {
         "ls": cmd_ls, "now": cmd_now, "use": cmd_use, "add": cmd_add, "rm": cmd_rm,
+        "ping": cmd_ping, "export": cmd_export, "import": cmd_import,
         "on": cmd_on, "off": cmd_off, "status": cmd_status, "doctor": cmd_doctor,
         "config": cmd_config,
-        "mode": cmd_mode, "ipv6": cmd_ipv6, "telemetry": cmd_telemetry,
+        "mode": cmd_mode, "telemetry": cmd_telemetry,
         "default-tun": cmd_default_tun,
         "update-rules": cmd_update_rules, "update-interval": cmd_update_interval,
         "log": cmd_log, "reload": cmd_reload, "uninstall": cmd_uninstall,

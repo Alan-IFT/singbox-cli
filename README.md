@@ -152,6 +152,28 @@ The delay figure is **not a measurement `sc` takes**: it is a value the running 
 
 > **If one of your own nodes is already tagged `auto`**, that host gets **no** auto-select group — two outbounds may not share a tag. `sc use auto` there pins *that node*, so the `Switched to: auto` it prints does **not** mean failover is on. Rename the node and the group appears by itself on the next `sc reload`.
 
+### Measure node latency
+
+```bash
+sc ping                # every node, now
+sc ping JP             # one node (name, substring or index)
+```
+
+`sc ls`'s delay column is a **history**: whatever the auto-select group's own probing last recorded, which is why a node nobody has probed shows `-`. `sc ping` takes a **fresh** measurement — it asks the running sing-box, through the Clash API, to fetch `https://www.gstatic.com/generate_204` through each node in turn and reports the round trip. That is the same endpoint the auto-select group probes, so the two can never disagree about what "reachable" means, and the API records each result, so `sc ls` shows these numbers afterwards.
+
+One line per node, printed as its answer arrives; the index column is the same number `sc use` takes. Each node gets 5 seconds. The service must be running (`sc on`) — the measurement is made by sing-box, not by `sc`. The command exits non-zero only when **no** node answered: one dead node is information, a list in which nothing answers is a run that failed.
+
+### Back up and move nodes
+
+```bash
+sc export /root/nodes-backup.json     # write the node list to a file
+sc import /root/nodes-backup.json     # merge a node list into this host
+```
+
+`sc export` writes what `nodes.json` holds to the path you name, at **mode 600**, atomically. It never prints to stdout, and no flag changes that: the document carries every password and UUID, while `/etc/sudoers.d/sc` lets the install user run `sc` without a password — printing it to a stream that user controls would hand over the whole credential set, which is exactly what `sc config`'s unconditional masking exists to prevent. Moving the backup to another machine is your job, and it is a file full of credentials: treat it like one.
+
+`sc import` **merges**. Nothing already on this host is removed, so an import cannot lose a node. A node that is already present — identical in everything but its name — is skipped, so importing the same backup twice is a no-op rather than a second copy of everything. A name that collides with a *different* node gets a `#2` suffix, exactly as `sc add` does. The configuration is then regenerated and checked **before** the import is kept: if no usable configuration comes out of it, `nodes.json` goes back byte-for-byte and the command exits non-zero.
+
 ### Switch route mode
 
 ```bash
@@ -161,33 +183,6 @@ sc mode direct         # everything direct
 ```
 
 The mode lives in the **running** sing-box: its cache file carries the mode across restarts, and nothing `sc` writes to disk can carry it — a mode in `config.json` loses to the cached one anyway. So `sc mode` needs the service up. With sing-box stopped it changes nothing and says so, instead of recording a preference that would never take effect; start it with `sc on` and set the mode again.
-
-### IPv6 name resolution
-
-```bash
-sc ipv6 auto           # answer AAAA empty unless this host has a global IPv6 address (default)
-sc ipv6 on             # always resolve AAAA normally
-sc ipv6 off            # always answer AAAA empty
-sc ipv6 show           # print the setting and the decision it produces
-```
-
-On a host that cannot use IPv6, an AAAA lookup for a name this config sends to the proxied resolver — in `rule` mode every name outside the table below, in `global` everything but the `hosts` table, in `direct` none at all — still travels there, and while a node accepts the connection but never answers, that lookup produces nothing at all, measured at sing-box's own 10.0 s per-query deadline. Suppression removes that lookup entirely: the generated config answers AAAA (query type 28), and the SVCB / HTTPS types 64 and 65, with an **empty `NOERROR`** locally, asking no resolver at all. `auto` decides it by reading `/proc/net/if_inet6` once — "this host has a global IPv6 address" means an address inside `2000::/3` on an interface that is neither loopback nor `sb-tun`; link-local (`fe80::/10`) and unique-local (`fc00::/7`) addresses never count, and this project's own TUN device is excluded by name because it always carries one. `on` and `off` override that judgment by hand.
-
-The setting is persisted in `/etc/sing-box/settings.json`; an absent key means `auto`, and a value that is none of the three is named on stderr and treated as `auto`. If the address list cannot be read at all, `sc` assumes the host **does** have IPv6 (so nothing becomes unreachable) and says so in one line. `sc ipv6 <value>` regenerates the config and restarts sing-box **only when the effective decision actually changes** — otherwise it says nothing changed and leaves the service alone. `sc ipv6 show` only reports what the setting is and what it decides: it never changes the `ipv6` setting, regenerates no config and touches the service in no way — but, like every command except `sc doctor`, it still runs the ordinary start-up path first, which on a fresh host creates `/etc/sing-box` and `/var/lib/sing-box` and seeds `nodes.json` / `settings.json`, and on **any** host that has not yet recorded a valid Clash API port — a fresh install, or one upgraded from a version that predates the port auto-probe — probes for a free port and writes it into `settings.json`.
-
-The rule that carries this is evaluated **first**, ahead of both routing-mode rules, so it applies in `rule`, `global` and `direct` alike — the modes you switch to when something is already broken — and it references no ruleset, so a host whose `.srs` files are missing still gets it.
-
-**Which names still resolve while every node is unusable** — measured against a node that accepts the connection and then never answers:
-
-| Route mode | Answered without any node | Left unanswered |
-|---|---|---|
-| `rule` | the names in the built-in `hosts` table, the five domestic suffixes (`alidns.com`, `doh.pub`, `dot.pub`, `360.cn`, `onedns.net`), and every suppressed query type — plus, while the rulesets are usable, the names `geosite-cn` and `geosite-private` match | everything else, foreign names included |
-| `global` | the `hosts` table and the suppressed query types only — you asked for everything to go through the proxy | everything else |
-| `direct` | everything: in this mode no name is sent to the proxied resolver at all | — |
-
-**With all four rulesets unusable** (the degraded config `sc` already warns about), the `rule` row above shrinks to the `hosts` table, the five domestic suffixes and the suppressed query types; every other name waits for a usable node or for the rulesets to come back. `global`'s row is already shorter than that, and `direct`'s does not depend on the rulesets at all.
-
-**What this does not do.** There is no second resolver and no wait to configure. When the proxied resolver is reached but does not answer, sing-box abandons that query at its own fixed per-query deadline (10.0 s in 1.13.15 — no key this project emits can change it), returns nothing, and consults no one else; the error you finally see comes from your own client's timeout. A `NXDOMAIN` or `SERVFAIL` from the proxied resolver is relayed verbatim, never re-asked elsewhere, so no name is exposed to the domestic resolver as a consequence of a failure. A node whose address resolves only over IPv6 needs `sc ipv6 on`.
 
 ### Telemetry name rejection
 
@@ -307,21 +302,20 @@ sc version             # which build this is — reads nothing, writes nothing
 sc doctor
 ```
 
-One pass, one screen, nine facts — printed in **causal order**, so every cause appears above the effects it can produce:
+One pass, one screen, eight facts — printed in **causal order**, so every cause appears above the effects it can produce:
 
 | # | Section | What it reports |
 |---|---|---|
 | 1 | sing-box binary | which build of `sc` this is, plus the resolved path of the sing-box binary and its version |
 | 2 | Rule-sets | one row per `.srs`: usable / missing / not a rule-set file / too small / unreadable, the byte count from that same read, and how long ago the file was written — a usable rule-set older than 60 days is reported as a problem naming `sc update-rules` |
 | 3 | Configuration | whether `config.json` exists, whether it is still what `sc` last generated, and what `sing-box check` says about it |
-| 4 | IPv6 (AAAA) | this host's effective AAAA decision, and whether the `config.json` on disk carries that decision as the first `dns.rules` entry |
-| 5 | Service | running now, and registered to start at boot — two separate facts |
-| 6 | TUN interface | whether `sb-tun` exists, and its addresses |
-| 7 | Clash API | the port recorded in `settings.json`, whether it answers, how many of your nodes carry a stored delay and which outbound auto-select is on right now, and one name lookup answered by the running sing-box — which may answer it from its own DNS cache — with the time that took |
-| 8 | Egress IP | the observed public address (queried even when the service is down) |
-| 9 | File permissions | any **credential** file directly inside `/etc/sing-box` that grants access to group or other (`settings.json` is excluded — it carries no credential), and whether the directory itself is group- or other-writable — each offending path named with its mode and the command that narrows it |
+| 4 | Service | running now, and registered to start at boot — two separate facts |
+| 5 | TUN interface | whether `sb-tun` exists, and its addresses |
+| 6 | Clash API | the port recorded in `settings.json`, whether it answers, how many of your nodes carry a stored delay and which outbound auto-select is on right now, and one name lookup answered by the running sing-box — which may answer it from its own DNS cache — with the time that took |
+| 7 | Egress IP | the observed public address (queried even when the service is down) |
+| 8 | File permissions | any file directly inside `/etc/sing-box` that grants access to group or other, and whether the directory itself is group- or other-writable — each offending path named with its mode and the command that narrows it |
 
-Every row is marked `[OK]`, `[PROBLEM]` or `[UNKNOWN]` (`[正常]` / `[异常]` / `[未知]` under `sc lang zh`), so `sc doctor | grep '^\[PROBLEM\]'` lists exactly what is wrong. `[UNKNOWN]` means the check could not run at all — a missing tool, a permission denial — never "the thing being checked is broken". One failing check never ends the run: all nine sections are always printed.
+Every row is marked `[OK]`, `[PROBLEM]` or `[UNKNOWN]` (`[正常]` / `[异常]` / `[未知]` under `sc lang zh`), so `sc doctor | grep '^\[PROBLEM\]'` lists exactly what is wrong. `[UNKNOWN]` means the check could not run at all — a missing tool, a permission denial — never "the thing being checked is broken". One failing check never ends the run: all eight sections are always printed.
 
 **`sc doctor` changes nothing.** It writes no config, downloads nothing, and never starts, stops, restarts, enables or repairs anything. Unlike every other subcommand it does not even create `/etc/sing-box` or persist a Clash API port on first run — on a broken or fresh machine the emptiness of those paths is often the diagnosis, and a diagnostic must not destroy the evidence it was run to collect. The one thing it asks of the outside world is section 7's name lookup: the command itself still touches no path, but the resolution is performed *by the running sing-box*, which may record it in its own DNS cache (`/var/lib/sing-box/cache.db`) exactly as it would any other query — and may equally answer a later query from that cache, which is why the row names the cache as a possible source rather than claiming the name was resolved upstream on this query. It is safe to run repeatedly, concurrently, and as the very first thing after a failure.
 
@@ -431,7 +425,7 @@ User runs the sc CLI:
 
 An override that is absent, empty, or `{}` changes nothing. One that cannot be applied stops the command **before anything is written**: `config.json` is left exactly as it was, the running service is not touched, and the message names the file and the problem.
 
-**Two defaults worth knowing about before you write one.** The generated document rejects **UDP port 443 for every destination** — that pushes QUIC / HTTP-3 back onto TCP so the routing rules can see it, and it applies to direct domestic traffic too, not only to proxied traffic. And its DNS is **domestic-first**: `119.29.29.29` for local names, plus a direct-resolved allow-list of Chinese DoH hosts. That is the right default inside mainland China and a suboptimal one outside it. Both live in `CONFIG_BASE` in `bin/sc`; changing either from here means `$replace`-ing the whole `route.rules` or `dns.servers` array, because an array changes as a whole or not at all.
+**Three defaults worth knowing about before you write one.** This build **does not do IPv6**: AAAA (query type 28), and the SVCB / HTTPS types 64 and 65, are answered with an empty `NOERROR` locally, always — no resolver is asked, and there is no setting or command that changes it. Stated plainly, the consequence is that a node whose address resolves only over AAAA is unreachable here. The generated document also rejects **UDP port 443 for every destination** — that pushes QUIC / HTTP-3 back onto TCP so the routing rules can see it, and it applies to direct domestic traffic too, not only to proxied traffic. And its DNS is **domestic-first**: `119.29.29.29` for local names, plus a direct-resolved allow-list of Chinese DoH hosts. That is the right default inside mainland China and a suboptimal one outside it. The last two live in `CONFIG_BASE` in `bin/sc`, and the AAAA rule is put at the head of `dns.rules` by `_dns_overlay()`; changing any of them from here means `$replace`-ing the whole `route.rules`, `dns.servers` or `dns.rules` array, because an array changes as a whole or not at all.
 
 **Objects merge by depth.** A key you do not mention keeps its value and its position:
 
@@ -507,8 +501,8 @@ PRs welcome. Top priorities:
 - [ ] Subscription link auto-update
 - [x] urltest support beyond selector (auto-pick the fastest node)
 - [x] RHEL / Fedora / Arch family support
-- [ ] `sc ping` for node latency testing
-- [ ] Node import/export (JSON backup)
+- [x] `sc ping` for node latency testing
+- [x] Node import/export (JSON backup)
 
 ## 📄 License
 
