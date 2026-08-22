@@ -5,7 +5,7 @@
 # literal. This file is installed by copying it, so the constant travels with the code
 # and cannot disagree with it; the release tag is what must be kept in step with THIS
 # line, never the other way round.
-SC_VERSION = "0.5.1"
+SC_VERSION = "0.5.2"
 import argparse
 import base64
 import copy
@@ -2481,8 +2481,10 @@ def cmd_ls(args):
     if _auto_group_emitted([n["tag"] for n in nodes]):
         # The auto-select group, first and WITHOUT an index number — it is not a node and
         # must not enter _resolve_node()'s index space. Its address cell names the node it
-        # is on right now, which is the one place `sc` states that fact.
-        auto_addr = f"→ {current}" if current else "-"
+        # is on right now, which is the one place `sc` states that fact. The name is the
+        # Clash API's answer, i.e. foreign text — `sc doctor`'s node-delays row already
+        # neutralises this same value, and the two screens may not treat one fact two ways.
+        auto_addr = f"→ {_plain(current)}" if current else "-"
         auto_marker = "●" if active == AUTO_TAG else " "
         print(f"{'':>4}  {auto_marker:2}  {'urltest':10}  {AUTO_TAG:30}  {auto_addr[:25]:25}"
               f"  {_delay_cell(AUTO_TAG):>9}")
@@ -2490,7 +2492,8 @@ def cmd_ls(args):
         marker = "●" if n["tag"] == active else " "
         # The tag is safe by construction (see _unique_tag), but the address is not: it
         # has to stay byte-exact for sing-box, so a provider's escape sequence in a
-        # hostname is neutralised HERE — the one place an address is printed.
+        # hostname is neutralised where it is printed — here, and at the one other place
+        # an address reaches a screen, `sc add`'s success line.
         addr = _plain(f"{n['server']}:{n['server_port']}")
         print(f"{i:>4}  {marker:2}  {n['type']:10}  {n['tag'][:30]:30}  {addr[:25]:25}"
               f"  {_delay_cell(n['tag']):>9}")
@@ -2574,9 +2577,12 @@ def cmd_add(args):
         print(t("Not added: {tag} — no usable configuration could be produced from it; "
                 "nodes.json is unchanged", tag=outbound["tag"]))
         sys.exit(1)
+    # The address is neutralised like `sc ls`'s address column — it stays byte-exact in
+    # nodes.json for sing-box, and a vmess link's base64 body can put any byte into
+    # `add` without the person pasting it ever seeing one.
     print(t("Added: {tag} ({type} → {server}:{port})",
             tag=outbound["tag"], type=outbound["type"],
-            server=outbound["server"], port=outbound["server_port"]))
+            server=_plain(str(outbound["server"])), port=outbound["server_port"]))
 
 
 def cmd_rm(args):
@@ -4289,7 +4295,7 @@ HELP_ZH = """sc —— sing-box 命令行管理工具
   sc ping                     # 立即测量所有节点
   sc export /root/nodes-backup.json
   sc import /root/nodes-backup.json
-  sc sub add 'https://example.com/sub?token=...'   # wrap it in single quotes
+  sc sub add 'https://example.com/sub?token=...'   # 整个链接用单引号包起来
   sc mode global
   sc update-interval daily             # 改为每天更新规则集
   sc update-interval 'Mon *-*-* 04:00:00'   # 每周一凌晨 4 点

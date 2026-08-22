@@ -1177,6 +1177,40 @@ def t_tag_minter(tmp):
     assert "\x1b" not in out.getvalue(), repr(out.getvalue())
 
 
+def t_foreign_text_on_screen(tmp):
+    """Foreign text is neutralised at every screen that shows it — the two places
+    t_tag_minter's end-to-end check does not reach.
+
+    `sc add`'s success line prints the address, and a vmess link's base64 body can put
+    any byte into `add` without the person pasting it ever seeing one; `sc ls`'s auto
+    row prints the Clash API's answer, which `sc doctor` already neutralises — one fact
+    may not be treated two ways by two screens.
+    """
+    import base64
+    seed(tmp, links=())
+    real_reload = SC.reload_or_restart
+    real_delays = SC.stored_delays
+    SC.reload_or_restart = lambda: True
+    try:
+        payload = base64.b64encode(json.dumps(
+            {"v": "2", "ps": "vm", "add": "h\x1b[31m.example", "port": "443",
+             "id": "11111111-2222-3333-4444-555555555555"}).encode()).decode()
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            SC.cmd_add(type("A", (), {"url": "vmess://" + payload})())
+        assert "\x1b" not in out.getvalue(), repr(out.getvalue())
+
+        SC.stored_delays = lambda port=None: ({}, "x\x1b[2K\x1b[1A")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            SC.cmd_ls(None)
+        assert "→ x" in out.getvalue(), repr(out.getvalue())
+        assert "\x1b" not in out.getvalue(), repr(out.getvalue())
+    finally:
+        SC.reload_or_restart = real_reload
+        SC.stored_delays = real_delays
+
+
 def t_sub_refuses_before_working(tmp):
     """`sc sub add` refuses an unusable settings.json before it does any work.
 
