@@ -88,6 +88,12 @@ PERIODIC_DIRS = {
     "monthly": Path("/etc/periodic/monthly"),
 }
 PERIODIC_SCRIPT = "singbox-update-rules"
+# systemd's counterpart of PERIODIC_DIRS: the drop-in directory `sc update-interval`
+# writes the cadence into. Named here rather than spelled inside that function so it
+# joins the repointable path constants above — which is what lets the refusal path (an
+# OnCalendar systemd will not parse must reach no file at all) be driven from a fixture
+# without root, and without a systemctl running anywhere near the machine under test.
+TIMER_DROPIN_DIR = Path("/etc/systemd/system/sing-box-rules-update.timer.d")
 
 # ============ Rule-set constants ============
 # A *usable rule-set* is a .srs file that exists, carries the SRS magic and meets
@@ -3693,9 +3699,8 @@ def cmd_update_interval(args):
             sys.exit(t("Error: applying timer failed: {err}",
                        err=verdict or "systemd-analyze calendar: exit %d" % code))
 
-        override_dir = Path("/etc/systemd/system/sing-box-rules-update.timer.d")
-        override_dir.mkdir(parents=True, exist_ok=True)
-        (override_dir / "override.conf").write_text(
+        TIMER_DROPIN_DIR.mkdir(parents=True, exist_ok=True)
+        (TIMER_DROPIN_DIR / "override.conf").write_text(
             f"[Timer]\nOnCalendar=\nOnCalendar={on_calendar}\n", encoding="utf-8"
         )
 

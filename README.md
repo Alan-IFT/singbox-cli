@@ -500,6 +500,8 @@ This wipes the service unit, `/etc/sing-box/` (incl. nodes), `/var/lib/sing-box/
 
 ## 🤝 Contributing
 
+Before opening a PR, run `python3 selftest.py` from the repo root. One file, standard library only, no framework and no root: it loads `bin/sc` as a module, repoints every path constant into a temporary directory, and touches nothing else on the machine. It uses the `sing-box` binary and `/etc/sing-box/rules/*.srs` when the host has them — to prove the emitted document is one sing-box actually accepts — and names every check it had to skip when it does not.
+
 PRs welcome. Top priorities:
 
 - [ ] Subscription link auto-update

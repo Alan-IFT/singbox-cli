@@ -500,6 +500,8 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/Alan-IFT/singbox-cl
 
 ## 🤝 贡献
 
+提 PR 之前，在仓库根目录跑一次 `python3 selftest.py`。一个文件、纯标准库、无框架、不需要 root：它把 `bin/sc` 当模块加载，把每个路径常量重指到临时目录，除此之外不碰机器上的任何东西。机器上有 `sing-box` 和 `/etc/sing-box/rules/*.srs` 时它会用上——用来证明生成出来的文档确实是 sing-box 接受的那一份；没有时它会逐条说明跳过了哪些检查。
+
 欢迎 PR。优先方向：
 
 - [ ] 支持订阅链接自动更新

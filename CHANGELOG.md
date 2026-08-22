@@ -2,7 +2,19 @@
 
 ## [Unreleased]
 
-本次没有新功能。六处改动，每一处都是**用一个更小的设计取消掉一类问题**，而不是在原地打补丁——其中三处的净效果是代码变少。
+本次没有新的用户可见功能。六处改动都是**用一个更小的设计取消掉一类问题**，而不是在原地打补丁——其中三处的净效果是代码变少；另外新增了一个单文件自检套件，以及它所需要的那一个常量，让上面这些性质从此有东西守着。
+
+### 新增
+
+- **`selftest.py`：一个文件的自检套件，普通用户即可运行。** 项目此前没有任何测试（随 harness-kit 一起撤掉了），能验证的只有 `py_compile` 与 `bash -n`。这一份刻意不是一个 `test/` 目录：没有框架、没有 fixture 目录、没有配置、没有插件——十几个 `t_*` 函数，加二十行 runner（按名字收集、各给一个临时目录、捕获输出、只在失败时打印）。它把 `bin/sc` 当**模块**加载，把每个路径常量重指到临时目录，所以既不需要 root，也碰不到 `/etc`、`/var` 或任何服务；`t_import_is_inert` 直接对模块体的 AST 断言「导入这个文件不做任何事」，这条性质一旦回退，套件本身就会先被 sudo 掉，所以它必须由结构而不是由运行结果来保证。
+
+  覆盖的是有契约的地方：分享链接六种协议（含 userinfo 的三条规则，其中「以最后一个 `@` 为界」用一个密码里带**未编码** `@` 的链接来分辨）、状态文件的单一写入者与拒绝语义、完整合成链路、规则集降级后无悬空引用、override 的指令与六种拒绝形状（每一种都断言 `config.json` 一个字节都没动）、选择判定的全域性、脱敏的 fail-closed、`_apply_or_exit()` 的非零退出、`update-interval` 对非法表达式的「写之前就拒绝」，以及从 `install.sh` 里抽出来实跑的凭据权限清扫——`CRED_FILES` / `CRED_MODE` 是从 `install.sh` 里读出来的，不是测试自己声明的，否则测的就是测试自己的清单。
+
+  主机上有 `sing-box` 和真实 `.srs` 时会用上（用来断言生成的文档确实被 `sing-box check` 接受，本轮是 1.13.18），没有时逐条报告跳过了什么。**不伪造规则集**：合成出来的 `.srs` 不是 sing-box 能加载的东西，拿它断言等于在断言伪造物。
+
+  套件本身经过变异测试：把已修的缺陷和另外几个逐一注射回副本，12 个变异体报红 10 个；逃掉的两个经核对是等价变异（`os.fchmod` 与 `mkstemp` 的 0600 重复；那处 `_record_generated()` 摘要的是同一份旧文件）。
+
+- **`TIMER_DROPIN_DIR`**：`sc update-interval` 的 systemd drop-in 目录从函数体里的字面量提为常量，加入本文件既有的可重指路径常量集合（「只在函数体内引用」正是为此）。这让本轮最新的那条代码路径可以在 fixture 里验证，且验证的是**拒绝**路径——它在第一个子进程之前就返回，所以测试永远不会碰到宿主机的 systemd。
 
 ### 修复
 
@@ -26,7 +38,7 @@
 
 ### 文档
 
-- **`docs/faq.md` 不再把用户引向 `config.json` 的漂移警告。** 三条回答教的是「改 `bin/sc` 里的 `generate_config()` 然后 `sc reload`」——`override.json` 整套机制在 `docs/` 里出现过 0 次，而 README 有完整一节。现在这三条改成指向 `override.json`：换 DNS / 路由模板、注册自己的 `.srs` tag（`route.rule_set` 与 `route.rules` 各 `$append` 一次）、给 Clash API 挂 Web Dashboard（`experimental.clash_api.external_ui` 是一次深度合并，只加这一个键）。合并语义仍然只在 README 里讲一遍，FAQ 不复述第二份。另外删掉了「README.md 有 TODO 列表」——README 里没有 TODO 列表；出口 IP 那条改为先跑 `sc doctor`。
+- **`docs/faq.md` 不再把用户引向 `config.json` 的漂移警告。** 三条回答教的是「改 `bin/sc` 里的 `generate_config()` 然后 `sc reload`」——`override.json` 整套机制在 `docs/` 里出现过 0 次，而 README 有完整一节。现在这三条改成指向 `override.json`：换 DNS / 路由模板、注册自己的 `.srs` tag（`route.rule_set` 与 `route.rules` 各 `$append` 一次）、给 Clash API 挂 Web Dashboard（`experimental.clash_api.external_ui` 是一次深度合并，只加这一个键）。合并语义仍然只在 README 里讲一遍，FAQ 不复述第二份。「我想贡献代码」那条把指向说细了（清单在 README 的「贡献」一节），并要求附上 `sc doctor` 的输出；出口 IP 那条改为先跑 `sc doctor`。
 - **`docs/architecture.md`**：数据流图里补上 `override.json` 这一层输入；规则集一节改为镜像顺序 + 三重校验 + 原子替换的实际行为（此前写的是「从 GitHub raw 下载」）；安全考量表加上 `settings.json` 一行。
 - **两份 README**：系统要求里写明 **sing-box 1.12+**，并说清 `install.sh` 第 2 步在 `PATH` 上已有 `sing-box` 时会跳过下载——旧内核会在安装最后一步的配置校验处失败，而此前没有任何一处文档说过这件事。`override.json` 一节前面加了两条默认值的说明：生成的文档**对所有目标拒绝 UDP 443**（把 QUIC 逼回 TCP，对直连的国内流量同样生效），以及 DNS 是**国内优先**的——两条都没在任何地方写过。文件位置表里 `settings.json` 标上 mode 600。
 
