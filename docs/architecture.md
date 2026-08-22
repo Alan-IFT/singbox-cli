@@ -56,6 +56,7 @@ nodes.json + settings.json
          ↓
    generate_config()
          │
+         │  最后叠加用户自己的 override.json（sc 从不写它，所以它能挺过重新生成）
          ↓
    候选文档 (config.json.check.*, 0600, 与 config.json 同目录)
          │
@@ -113,7 +114,7 @@ selector 出站类型支持运行时切换默认节点。`sc use <name>` 实际�
 
 `.srs` 是 sing-box 自创的二进制规则集格式，比 v2ray 的 `.dat` 体积小、加载快、按需编译。来源是 [MetaCubeX/meta-rules-dat](https://github.com/MetaCubeX/meta-rules-dat) 的 `sing` 分支。
 
-`sc update-rules` 会从 GitHub raw 下载这些文件到 `/etc/sing-box/rules/`：
+`sc update-rules` 把这些文件下载到 `/etc/sing-box/rules/`。它按顺序试多个镜像（两个国内可达的在前，`raw.githubusercontent.com` 作为最后的权威来源；`--mirror` 可整体替换这个列表），每一份下载都先落到临时文件、校验 SRS 魔数 / 最小字节数 / 与 Content-Length 相等，通过了才原子替换真实路径——所以一个镜像返回错误页或半截文件，不会变成磁盘上一个 sing-box 加载不了的规则集：
 
 - `geoip-cn.srs` — 中国大陆 IP 段
 - `geosite-cn.srs` — 中国大陆域名（含主流站点）
@@ -126,6 +127,7 @@ selector 出站类型支持运行时切换默认节点。`sc use <name>` 实际�
 |---|---|
 | `nodes.json`（含密码/UUID） | mode 600，仅 root 可读 |
 | `config.json`（由 nodes.json 生成，内嵌同样的凭据） | mode 600，仅 root 可读；先建一个空文件并把权限设成 600，再写内容、原子替换，所以写入过程中也不会宽于 600 |
+| `settings.json`（不含凭据，但决定语言、Clash API 端口等） | 与上面两份走同一个写入者：原子替换、mode 600 |
 | `sc` CLI 自身 | mode 755 root:root，普通用户改不动 |
 | sudoers NOPASSWD | 范围限定为 `/usr/local/bin/sc`，不是 ALL |
 | sing-box 进程 | systemd 启动，root 权限运行（TUN 需要 CAP_NET_ADMIN） |

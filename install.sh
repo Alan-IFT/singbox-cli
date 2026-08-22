@@ -453,10 +453,11 @@ install_report() {
 # constants: only ever referenced inside function bodies, so a test harness can repoint
 # them.
 CRED_DIR="/etc/sing-box"
-# settings.json is deliberately absent: it carries no credential, and narrowing it is a
-# user-visible change nobody asked for. rules/*.srs and the directory itself are out by
-# the same rule.
-CRED_FILES=(config.json nodes.json)
+# rules/*.srs and the directory itself are out: public data, no credential. settings.json
+# IS swept — bin/sc writes every state document through one writer at 0600, so a host
+# upgrading from a build whose settings.json was 0644 is narrowed here once, instead of
+# being reported by `sc doctor`'s permission section on every run from now on.
+CRED_FILES=(config.json nodes.json settings.json)
 CRED_MODE=600
 
 # Reports the mode of every credential document and narrows — never widens — any found
@@ -677,25 +678,16 @@ mkdir -p /etc/sing-box/rules /var/lib/sing-box /var/log/sing-box "$LIB_DIR"
 install -m 755 "$ARTIFACT_DIR/bin/sc" /usr/local/bin/sc
 install -m 755 "$ARTIFACT_DIR/uninstall.sh" "$LIB_DIR/uninstall.sh"
 
-# Persist chosen language to settings.json before the first `sc reload`,
-# so the CLI picks it up immediately. Preserves any pre-existing settings.
-python3 - "$LANG_CHOICE" <<'PY'
-import json, os, sys
-from pathlib import Path
-lang = sys.argv[1]
-p = Path("/etc/sing-box/settings.json")
-p.parent.mkdir(parents=True, exist_ok=True)
-# Mirrors bin/sc's _init_files() seed. No "mode" key: the route mode lives in the
-# running sing-box, and nothing reads one from this document.
-data = {"default_tun": True, "lang": "en"}
-if p.exists():
-    try:
-        data.update(json.loads(p.read_text()))
-    except json.JSONDecodeError:
-        pass
-data["lang"] = lang
-p.write_text(json.dumps(data, indent=2))
-PY
+# Persist the chosen language before the first `sc reload`, through the CLI's own state
+# writer: `sc lang` IS this operation, and /usr/local/bin/sc was installed one line above.
+# The inline Python that used to stand here was a second opinion about how settings.json
+# is written, and it disagreed on every point that matters — it caught only
+# JSONDecodeError, so an unreadable or non-object document ended the install in a
+# traceback at step 3; it read and wrote in the locale's encoding; it left the file 0644;
+# and it had to restate _init_files()' seed to avoid erasing it.
+# `|| true`: a settings.json that sc refuses to overwrite leaves the language English —
+# it must never stop the install.
+/usr/local/bin/sc lang "$LANG_CHOICE" >/dev/null 2>&1 || true
 
 # Write distro-info so uninstall.sh and upgrades know the environment
 cat > "$LIB_DIR/distro-info" <<EOF

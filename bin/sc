@@ -141,25 +141,38 @@ RULESET_BASES = (
 RULE_ANSWER_KEYS = frozenset(("outbound", "server", "action", "rcode"))
 
 # ============ Auto-elevate ============
-# Re-exec THIS file under sudo, never a path spelled here: a hard-coded
-# /usr/local/bin/sc means a source copy run as a normal user silently executes the
-# INSTALLED build instead — an edit that appears to have no effect, which is the one
-# failure a developer cannot debug.
-#
-# The re-exec keeps the form `sudo <absolute path to sc> <args>`, because that is exactly
-# the command /etc/sudoers.d/sc grants NOPASSWD. Interposing an interpreter
-# (`sudo python3 <path>`) would not match that rule and would put a password prompt in
-# front of every invocation on every installed host.
-#
-# argv[0] has no directory component when the shell resolved it through PATH (`sc ls`), so
-# abspath() would name the CWD; shutil.which repeats the shell's own lookup. Falling back
-# to argv[0] unchanged leaves the resolution to sudo, which searches its secure_path and
-# arrives at the same file.
-if os.geteuid() != 0:
-    _self = sys.argv[0]
-    _self = (os.path.abspath(_self) if os.sep in _self
-             else (shutil.which(_self) or _self))
-    os.execvp("sudo", ["sudo", _self] + sys.argv[1:])
+
+def _elevate():
+    """Re-exec THIS file under sudo when it is not already root.
+
+    CALLED FROM main(), never at import. This exec used to run at module level, which
+    made importing the file an irreversible side effect: a harness running as a normal
+    user re-exec'd ITSELF under sudo the moment it imported this module. Every path
+    constant above is deliberately referenced only inside function bodies so a fixture
+    can repoint it without root — an affordance that one module-level statement made
+    unusable. Nothing else in this file acts at import time, and nothing may.
+
+    Re-execs THIS file, never a path spelled here: a hard-coded /usr/local/bin/sc means
+    a source copy run as a normal user silently executes the INSTALLED build instead —
+    an edit that appears to have no effect, which is the one failure a developer cannot
+    debug.
+
+    The re-exec keeps the form `sudo <absolute path to sc> <args>`, because that is
+    exactly the command /etc/sudoers.d/sc grants NOPASSWD. Interposing an interpreter
+    (`sudo python3 <path>`) would not match that rule and would put a password prompt in
+    front of every invocation on every installed host.
+
+    argv[0] has no directory component when the shell resolved it through PATH (`sc ls`),
+    so abspath() would name the CWD; shutil.which repeats the shell's own lookup. Falling
+    back to argv[0] unchanged leaves the resolution to sudo, which searches its
+    secure_path and arrives at the same file.
+    """
+    if os.geteuid() == 0:
+        return
+    self = sys.argv[0]
+    self = (os.path.abspath(self) if os.sep in self
+            else (shutil.which(self) or self))
+    os.execvp("sudo", ["sudo", self] + sys.argv[1:])
 
 
 # ============ i18n ============
@@ -601,7 +614,8 @@ def _init_files():
         # ensure_ascii=False, and this path inherits save_nodes()' loud failure.
         save_nodes({"active": None, "nodes": []})
     if not SETTINGS_PATH.exists():
-        # Through save_settings(), like the nodes seed above: it was the SECOND writer.
+        # Through save_settings(), like the nodes seed above: both reach _write_state(),
+        # so a seeded document and a rewritten one are the same bytes at the same mode.
         # No "mode" key: the route mode lives in the running sing-box (see cmd_mode), so
         # seeding one here would put a value in this document that nothing ever reads.
         # A key left over in an existing host's settings.json is simply ignored.
@@ -643,13 +657,33 @@ def load_nodes():
     return _read_state(NODES_PATH, member="nodes")
 
 
-def save_nodes(d):
+def _write_state(path, doc):
+    """THE writer of a state document (nodes.json / settings.json) — _read_state()'s
+    counterpart, and the only one. One shape of bytes, one mode, one failure sentence.
+
+    BOTH documents go through _write_private(), so both are installed atomically at
+    CRED_MODE. settings.json used to be written with a plain write_text(), which is the
+    one truncating writer this project had: a full disk or a power cut mid-write left a
+    document that parses as nothing, and _settings_or_empty() then degraded the whole
+    tool to its defaults — the language, and the Clash API port the RUNNING sing-box is
+    actually listening on, which is what makes `sc mode` fail outright and `sc use` fall
+    back to restarting the service. Neither document has a reader that is not root, so
+    0600 costs nothing and settles what mode a state file has; `sc doctor`'s permission
+    sweep needs no exclusion for it any more, and install.sh narrows it on upgrade.
+
+    ensure_ascii=False with an explicit utf-8 encode inside _write_private: the bytes do
+    not depend on the locale the command happened to run under.
+    """
     try:
-        _write_private(NODES_PATH, json.dumps(d, indent=2, ensure_ascii=False))
+        _write_private(path, json.dumps(doc, indent=2, ensure_ascii=False))
     # ValueError = the UnicodeEncodeError a lone surrogate raises; it has no .strerror.
     except (OSError, ValueError) as e:
         sys.exit(t("Could not write {path}: {err}",
-                   path=NODES_PATH, err=_plain(getattr(e, "strerror", None) or str(e))))
+                   path=path, err=_plain(getattr(e, "strerror", None) or str(e))))
+
+
+def save_nodes(d):
+    _write_state(NODES_PATH, d)
 
 
 def load_settings():
@@ -670,13 +704,7 @@ def _settings_or_empty(warn=False):
 
 
 def save_settings(d):
-    # Locale-independent bytes, non-ASCII literal; mode and mechanism unchanged.
-    try:
-        SETTINGS_PATH.write_text(json.dumps(d, indent=2, ensure_ascii=False), encoding="utf-8")
-    # ValueError = the UnicodeEncodeError a lone surrogate raises; it has no .strerror.
-    except (OSError, ValueError) as e:
-        sys.exit(t("Could not write {path}: {err}",
-                   path=SETTINGS_PATH, err=_plain(getattr(e, "strerror", None) or str(e))))
+    _write_state(SETTINGS_PATH, d)
 
 
 # ============ Share-URL parsers ============
@@ -1010,20 +1038,6 @@ def ruleset_state(path):
         # a partial digest, a partial size and a stray timestamp are never returned
         return ("unreadable", None, None, None)
     return (srs_reject_reason(head, size) or "usable", digest.hexdigest(), size, mtime)
-
-
-def ruleset_status(path):
-    """Usability of one rule-set file — the status-only view of ruleset_state().
-
-    Returns exactly one of: "usable" | "absent" | "bad-magic" | "too-small" | "unreadable".
-
-    Has no in-tree caller today: both remaining questions (the report and update-rules'
-    before/after snapshots) need the digest as well and go through ruleset_states().
-    Retained deliberately as the named per-file adapter of the single usability judgment
-    (`srs_reject_reason`) — the thing to call instead of forming a second opinion with
-    path.exists() when only the status of one file is wanted.
-    """
-    return ruleset_state(path)[0]
 
 
 def ruleset_states():
@@ -2300,6 +2314,29 @@ def reload_or_restart():
     return True
 
 
+def _apply_or_exit():
+    """Regenerate the document, restart the service — or end the run saying it failed.
+
+    THE outcome of a command that has already persisted a change and now has to make it
+    take effect: `rm`, `use`, `ipv6`, `telemetry` and `reload` all owe the same non-zero
+    exit and the same single line when no usable document could be produced. The CAUSE is
+    already on stderr, written by generate_config() itself, so this states a verdict and
+    never a second explanation.
+
+    ONE call site apiece rather than five copies of the same two lines is the point: it
+    makes "a service-affecting command cannot silently succeed" a property of this
+    function instead of a rule every future command has to remember. `sc rm` did not
+    remember it — it discarded the answer, printed its success line and exited 0 while
+    config.json still carried the node it had just said was removed, and the service kept
+    routing through it.
+
+    `sc add` is deliberately NOT a caller: it has to put nodes.json back before it says
+    anything at all, so it reads the boolean itself.
+    """
+    if not reload_or_restart():
+        sys.exit(t("Reload failed"))
+
+
 # ============ Clash API ============
 
 def clash_api(method, path, data=None, port=None):
@@ -2487,10 +2524,8 @@ def cmd_use(args):
             return
     # The slow path owes the same one outcome line as the fast one. It used to fall off
     # the end in silence on a failed regeneration — no output at all and exit 0, which
-    # reads as success while the selection reached nodes.json and nothing else. The
-    # existing key is reused: `sc reload`'s failure and this one are the same event.
-    if not reload_or_restart():
-        sys.exit(t("Reload failed"))
+    # reads as success while the selection reached nodes.json and nothing else.
+    _apply_or_exit()
     print(t("Switched to: {tag} (service restarted)", tag=tag))
 
 
@@ -2549,7 +2584,10 @@ def cmd_rm(args):
         nodes_data["active"] = _valid_selection(
             None, [n["tag"] for n in nodes_data["nodes"]])
     save_nodes(nodes_data)
-    reload_or_restart()
+    # Through the one apply, exactly like `sc use` above: the removal has reached
+    # nodes.json, and whether the document that follows from it could be produced is the
+    # run's outcome — not something to print "Removed" over.
+    _apply_or_exit()
     print(t("Removed: {tag}", tag=node["tag"]))
 
 
@@ -3085,9 +3123,12 @@ def _doctor_permissions():
     directory is offending only when `mode & 0o022`, i.e. group- or other-WRITABLE: that
     is the rename-between-fchmod-and-replace window, whereas the world-readable traversable
     mode every host has would fire on 100% of installs and teach people to ignore the row.
-    settings.json is the one exclusion (it carries no credential), and there is no filename
-    pattern anywhere — which is exactly how a hand-made `config.json.bak-<date>` at 0644,
-    invisible to any enumerated sweep, is caught.
+    There is no exclusion and no filename pattern anywhere — every regular file in the
+    directory is judged by the one test, which is exactly how a hand-made
+    `config.json.bak-<date>` at 0644, invisible to any enumerated sweep, is caught.
+    settings.json used to be excluded because its own writer left it 0644; _write_state()
+    installs it at CRED_MODE like every other state document, so the exclusion went with
+    the second writer rather than being kept as a standing hole in the sweep.
 
     REPORTS ONLY. It never chmods, never creates the directory, never follows a symlink
     (lstat, so a planted link's target mode can never be printed as the link's) and never
@@ -3127,7 +3168,7 @@ def _doctor_permissions():
             links += 1
             details.append(t("{path} is a symbolic link; sc never creates one here — "
                              "check it with: ls -l {path}", path=_plain(str(entry))))
-        elif stat.S_ISREG(mode) and entry.name != "settings.json" and mode & 0o077:
+        elif stat.S_ISREG(mode) and mode & 0o077:
             wide += 1
             details.append(t("{path} is mode {mode} — run: {cmd}", path=_plain(str(entry)),
                              mode="%03o" % (mode & 0o777),
@@ -3142,10 +3183,9 @@ def _doctor_permissions():
                  t("{n} path(s) could not be judged — see below", n=links))]
     else:
         # Exactly one row on a clean host, naming no path: the report may not grow with
-        # the directory's contents when there is nothing to act on. It says CREDENTIAL
-        # file, not file: settings.json is excluded above whatever its mode, and
-        # save_settings() writes it 0644, so the wider sentence would be false on a
-        # default install — the promise stays exactly as wide as the check.
+        # the directory's contents when there is nothing to act on. The sentence says
+        # CREDENTIAL file while the check now covers every regular file — a promise
+        # NARROWER than the test, which can only ever under-claim, never over-claim.
         return [(DOCTOR_OK, "file permissions",
                  t("no credential file grants access to group or other, and the "
                    "directory is not group- or other-writable"))]
@@ -3413,8 +3453,7 @@ def cmd_ipv6(args):
         print(t("Nothing changed — the sing-box service was not touched; run `sc reload` "
                 "to apply this setting to a configuration generated before it"))
         return
-    if not reload_or_restart():
-        sys.exit(t("Reload failed"))
+    _apply_or_exit()
     print(t("Configuration regenerated; sing-box restarted"))
 
 
@@ -3476,8 +3515,7 @@ def cmd_telemetry(args):
         print(t("Nothing changed — the sing-box service was not touched; run `sc reload` "
                 "to apply this setting to a configuration generated before it"))
         return
-    if not reload_or_restart():
-        sys.exit(t("Reload failed"))
+    _apply_or_exit()
     print(t("Configuration regenerated; sing-box restarted"))
 
 
@@ -3623,14 +3661,37 @@ def cmd_update_interval(args):
             )
             return
 
-        presets = {"hourly": "hourly", "daily": "daily",
-                   "weekly": "weekly", "monthly": "monthly"}
-        if val.lower() in presets:
-            on_calendar = presets[val.lower()]
+        # The four presets are systemd's own shorthands and are passed through, not
+        # mapped: a table whose every value equals its key states nothing.
+        if val.lower() in ("hourly", "daily", "weekly", "monthly"):
+            on_calendar = val.lower()
         elif val.startswith("OnCalendar="):
             on_calendar = val[len("OnCalendar="):]
         else:
             on_calendar = val
+
+        # THE verdict, taken BEFORE anything is written — the ordering config.json and
+        # every rule-set download already have, and the one place in this file that did
+        # not have it. systemd's own parser is the judge, so no calendar grammar is
+        # spelled here, and a value it rejects never reaches /etc. That is what removes
+        # BOTH of this command's failures at once, with nothing to roll back: an invalid
+        # expression used to be written, daemon-reloaded and only then refused by
+        # `restart`, leaving the drop-in on disk with the previous cadence already gone;
+        # and a value carrying a newline used to append directives of its own to a unit
+        # file that /etc/sudoers.d/sc lets the install user write through `sc`.
+        #
+        # A validator that cannot be RUN is a refusal here, not a warning — the opposite
+        # of generate_config()'s missing-checker arm, and for the reason that decides it
+        # there: an unapplied cadence costs the user this one command, where an unusable
+        # timer costs them every unattended rule-set update after it. The existing key
+        # renders both outcomes; neither adds a string.
+        try:
+            code, verdict = _doctor_run(["systemd-analyze", "calendar", on_calendar])
+        except OSError as e:
+            sys.exit(t("Error: applying timer failed: {err}", err=_plain(str(e))))
+        if code != 0:
+            sys.exit(t("Error: applying timer failed: {err}",
+                       err=verdict or "systemd-analyze calendar: exit %d" % code))
 
         override_dir = Path("/etc/systemd/system/sing-box-rules-update.timer.d")
         override_dir.mkdir(parents=True, exist_ok=True)
@@ -3713,10 +3774,8 @@ def cmd_log(args):
 
 
 def cmd_reload(args):
-    if reload_or_restart():
-        print(t("Reloaded"))
-    else:
-        sys.exit(t("Reload failed"))
+    _apply_or_exit()
+    print(t("Reloaded"))
 
 
 def cmd_lang(args):
@@ -3900,6 +3959,10 @@ def cmd_help(args):
 
 def main():
     global LANG, CLASH_PORT
+    # Before anything reads a path, opens a socket or prints: the whole process is
+    # replaced when this file is not already running as root, so every statement below
+    # runs exactly once, as root. Importing this module reaches none of it.
+    _elevate()
     # THE stdout configuration — one statement, one place, before anything can print
     # (argparse's own -h included): line buffering, backslashreplace, an explicit newline,
     # the stream's own encoding preserved rather than forced, io.TextIOWrapper rather than

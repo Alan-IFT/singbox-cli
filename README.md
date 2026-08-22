@@ -20,6 +20,7 @@
 - amd64 (x86_64) or arm64 (aarch64)
 - Python 3.6+ (preinstalled on most distros)
 - root (one-time sudoers setup, password-less afterwards)
+- sing-box **1.12 or newer**. `install.sh` downloads the current release for you — but step 2 **skips that download whenever any `sing-box` is already on `PATH`**, so an older binary (a distro package, an earlier manual install) stays. The generated document uses the 1.12+ DNS syntax, so an older core fails the config check at the last install step; remove the binary and re-run to replace it.
 
 ## 🚀 Install
 
@@ -411,7 +412,7 @@ User runs the sc CLI:
 | sc CLI | `/usr/local/bin/sc` |
 | sing-box config (auto-generated) | `/etc/sing-box/config.json` (mode 600) |
 | Node list (with credentials) | `/etc/sing-box/nodes.json` (mode 600) |
-| Settings | `/etc/sing-box/settings.json` |
+| Settings | `/etc/sing-box/settings.json` (mode 600) |
 | Your own config overrides (optional, yours) | `/etc/sing-box/override.json` |
 | Record of what `sc` last generated (internal) | `/etc/sing-box/.config.sha256` |
 | Rulesets | `/etc/sing-box/rules/*.srs` |
@@ -429,6 +430,8 @@ User runs the sc CLI:
 `config.json` is **generated**: `sc reload`, `sc add` and `sc rm` rewrite it from scratch every time, and `sc use` and `sc update-rules` may do so as well, so anything you hand-edit there is discarded without a word. Put your changes in `/etc/sing-box/override.json` instead. `sc` never creates, writes or deletes that file, and applies it **last** — over everything `sc` composes — so it survives every regeneration and survives re-running `install.sh`.
 
 An override that is absent, empty, or `{}` changes nothing. One that cannot be applied stops the command **before anything is written**: `config.json` is left exactly as it was, the running service is not touched, and the message names the file and the problem.
+
+**Two defaults worth knowing about before you write one.** The generated document rejects **UDP port 443 for every destination** — that pushes QUIC / HTTP-3 back onto TCP so the routing rules can see it, and it applies to direct domestic traffic too, not only to proxied traffic. And its DNS is **domestic-first**: `119.29.29.29` for local names, plus a direct-resolved allow-list of Chinese DoH hosts. That is the right default inside mainland China and a suboptimal one outside it. Both live in `CONFIG_BASE` in `bin/sc`; changing either from here means `$replace`-ing the whole `route.rules` or `dns.servers` array, because an array changes as a whole or not at all.
 
 **Objects merge by depth.** A key you do not mention keeps its value and its position:
 

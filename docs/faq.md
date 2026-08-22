@@ -11,11 +11,13 @@ singbox-cli 直接用 systemd 跑 sing-box，绕过 GUI 限制。
 
 ## Q: 加节点后 `sc status` 显示出口 IP 还是本机 IP？
 
-可能性：
+先跑 `sc doctor`：它按因果顺序把二进制、规则集、配置、服务、TUN、Clash API、DNS、出口 IP 一次报完，`[异常]` 出现在哪一行，原因通常就在那一行或它上面一行。它全程只读，坏机器上可以随便重复跑。
 
-1. **节点本身有问题**：用 `sc log -f` 看日志，如果有 `connection failed` 就是节点连不通
-2. **路由规则把目标 IP 当国内**：`api.ipify.org` 偶尔被 geosite-cn 误判，换个测试域名（如 `ifconfig.me`）
-3. **mode 不是 rule 或 global**：`sc mode rule`
+它还没说清楚的三种情况：
+
+1. **节点本身连不通**：`sc log -f` 看日志，有 `connection failed` 就是它
+2. **测试域名被当成国内**：`api.ipify.org` 偶尔被 geosite-cn 误判，换 `ifconfig.me` 再试
+3. **路由模式不是 rule 或 global**：`sc mode rule`
 
 ## Q: 装完之后 SSH 连不上了，怎么办？
 
@@ -32,22 +34,38 @@ sudo ip route add <节点IP>/32 dev <你的物理网卡>
 
 ## Q: 想换 sing-box 配置（DNS、规则等）怎么办？
 
-`sc reload` 会从 `bin/sc` 里的 `generate_config()` 函数重新生成 `config.json`，所以你**不能**直接改 `config.json`（会被覆盖）。
+写 `/etc/sing-box/override.json`。
 
-正确做法：
+**不要**改 `config.json`——它是生成物，`sc reload` / `add` / `rm` 每次都整份重写；也**不要**改 `bin/sc`，升级会覆盖掉。`sc` 从不创建、不写、不删 override.json，并且把它放在最后应用，所以它能挺过每一次重新生成，也能挺过重装。
 
-- 改路由规则、DNS 等模板：直接编辑 `bin/sc` 里的 `generate_config()` 函数，然后 `sc reload`
-- 改节点参数：编辑 `/etc/sing-box/nodes.json`，然后 `sc reload`
+合并规则、指令语法（`$prepend` / `$append` / `$replace` / `$before` / `$after`）和成套示例，见 README 的「自定义配置（override.json）」一节——那里是这件事的唯一说明，本文不再复述一份。
+
+改节点参数仍然是编辑 `/etc/sing-box/nodes.json` 然后 `sc reload`。拿不准改动生效了没有：`sc doctor` 的「配置改动」一行会告诉你磁盘上这份是不是 `sc` 最后生成的那份。
 
 ## Q: 想用自己的 .srs 规则集？
 
-把文件放到 `/etc/sing-box/rules/` 下，文件名照 `geoip-cn.srs` 这样的现有规则命名（覆盖掉默认下载的）。然后 `sc reload` 让 sing-box 加载。
+**替换现有的**：把文件放到 `/etc/sing-box/rules/`，用现有文件名（如 `geoip-cn.srs`）覆盖，然后 `sc reload`。注意下次 `sc update-rules` 会把它换回官方版本。
 
-如果想加全新的规则集 tag，需要改 `bin/sc` 里的 `generate_config()` 把它注册到 `route.rule_set` 里。
+**新增一个 tag**：不用改 `bin/sc`，在 override.json 里追加定义和引用即可——`sc` 是从生成出来的文档里读「哪些 rule-set 有定义」的，所以你自己定义的 tag 不会被当成悬空引用删掉：
+
+```json
+{
+  "route": {
+    "rule_set": { "$append": [
+      {"tag": "my-set", "type": "local", "format": "binary", "path": "/etc/sing-box/rules/my-set.srs"}
+    ] },
+    "rules": { "$append": [
+      {"rule_set": ["my-set"], "outbound": "direct"}
+    ] }
+  }
+}
+```
 
 ## Q: 流量统计、节点测速？
 
-目前没做，因为 sing-box 的 Clash API 已经暴露了相关接口，可以直接装一个 Web Dashboard：
+命令行里已经有一部分：`sc ls` 的「延迟」列是自动选择组探测出来的历史值（不是实时测量），`sc doctor` 会告诉你有多少个节点拿到了延迟值、自动选择组当前走哪个。
+
+要图形界面，装一个 Web Dashboard 挂到 Clash API 上：
 
 ```bash
 # 推荐 metacubexd，纯静态页面
@@ -58,13 +76,10 @@ sudo curl -fsSL -o gh-pages.zip \
 sudo unzip gh-pages.zip
 ```
 
-然后修改 `generate_config()` 里 `clash_api` 段，添加 `external_ui` 字段：
+然后在 `/etc/sing-box/override.json` 里加上 `external_ui`。对象是按层级合并的，所以只写这一个键，`external_controller` 和它的位置都不动：
 
-```python
-"clash_api": {
-    "external_controller": f"127.0.0.1:{CLASH_PORT}",
-    "external_ui": "/etc/sing-box/dashboard/metacubexd-gh-pages",
-}
+```json
+{ "experimental": { "clash_api": { "external_ui": "/etc/sing-box/dashboard/metacubexd-gh-pages" } } }
 ```
 
 Clash API 端口是自动探测的高位端口（避免和 xray/clash/cockpit 等默认占用的 9090 冲突），具体值用 `sc status` 查看（或看 `/etc/sing-box/settings.json` 里的 `clash_api_port`）。`sc reload` 之后浏览器打开 `http://127.0.0.1:<端口>/ui/`，就能看到流量、延迟、节点切换等图形界面。
@@ -90,4 +105,4 @@ TUN 默认会代理所有 UDP，BT 大量 UDP 包会占满代理流量。建议�
 
 ## Q: 我想贡献代码，从哪里开始？
 
-`README.md` 有 TODO 列表。或者直接开 issue 描述你的需求。
+开 issue 描述你的需求，并贴上 `sc doctor` 的输出——它第一行就是这个构建的版本号，没有它就说不清是哪一版产生的问题。

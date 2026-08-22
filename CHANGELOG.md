@@ -2,6 +2,34 @@
 
 ## [Unreleased]
 
+本次没有新功能。六处改动，每一处都是**用一个更小的设计取消掉一类问题**，而不是在原地打补丁——其中三处的净效果是代码变少。
+
+### 修复
+
+- **`sc rm` 不再在配置生成失败时报告成功。** 它此前丢掉了 `reload_or_restart()` 的返回值：节点已经从 `nodes.json` 消失，而 `config.json` 仍然带着它、服务仍然按老配置走它，命令却打印「已删除」并以 0 退出。修法不是给 `rm` 补上那两行判断——那两行已经在 `use` / `ipv6` / `telemetry` / `reload` 里各抄了一遍，`rm` 正是第五处忘了抄的地方。现在这个判断只有一个家 `_apply_or_exit()`，五条命令各调用一次；「一条会动服务的命令不可能悄悄地成功」从此是这个函数的性质，而不是每条新命令都要记住的规矩。`sc add` 刻意不是它的调用者：它必须先把 `nodes.json` 放回去才能开口，所以自己读那个布尔值。
+
+- **`sc update-interval` 先验证，再写入。** 它此前是本文件里唯一一处「先安装、后验证」：把用户给的 OnCalendar 原样写进 systemd drop-in、`daemon-reload`、然后才让 `restart` 去否决它——失败时那份坏的 drop-in 留在 `/etc`，而原来的频率已经没了，自动更新从此静默停摆。而且 `val` 只去掉首尾空白，一个带换行的值可以往 unit 文件里追加它自己的指令，偏偏 `/etc/sudoers.d/sc` 让安装用户可以免密通过 `sc` 写这个文件。现在判决由 systemd 自己的解析器给出（`systemd-analyze calendar`），并且**在写任何东西之前**——这与 `config.json` 的「候选文档 → check → 落位」和每一次规则集下载的顺序一致。坏值到不了 `/etc`，所以没有半应用状态要回滚，也没有残留要清理；两个问题由同一个更早的判决同时消失，没有新增任何一条译文。验证器**跑不起来**时是拒绝而不是警告（与 `generate_config()` 的「无法检查不等于无效」相反，理由也正是那里的理由）：一次没生效的频率只损失这一条命令，一个坏掉的 timer 损失的是此后每一次无人值守的规则集更新。
+
+- **`settings.json` 与 `nodes.json` 从此是同一个写入者。** `save_nodes()` 走原子的 `_write_private()`，`save_settings()` 却是裸的 `write_text()`——本项目唯一一个会截断的写入者。磁盘写满或断电写到一半，这份文档就解析不出任何东西，`_settings_or_empty()` 随即把整个工具降级到默认值：语言，以及**正在运行的 sing-box 实际监听的那个 Clash API 端口**——后者会让 `sc mode` 直接失败、让 `sc use` 退化成重启整个服务。两个函数现在都调用 `_write_state()`，一种字节形状、一个权限、一句失败话。
+
+### 变更
+
+- **auto-elevate 从模块顶层移进了 `main()`。** 这一行 `os.execvp("sudo", ...)` 此前在 `import` 时执行，于是任何以普通用户身份 import 这个文件的进程都会把**自己**重新 exec 成 `sudo`。这是整份文件唯一的 import 副作用，而文件其余部分恰恰是按可测试性写的——八个路径常量刻意只在函数体内引用，就是为了让 fixture 能在没有 root 的情况下重指它们。现在 `import` 什么也不做，`bin/sc` 可以作为模块被加载：配置合成、降级、override 指令、脱敏、漂移判定都能在一个临时目录里以普通用户身份验证。行为完全没变：非 root 运行 `sc` 仍然在第一条语句就 exec 成 `sudo`。
+
+- **install.sh 不再自带第二个 `settings.json` 写入者。** 第 3 步那段内联 Python（17 行）唯一的用途是在首次 `sc reload` 之前把选定的语言写进去——而 `sc lang` 就是这个操作，`/usr/local/bin/sc` 就装在它上面一行。那段代码在每一个要紧的点上都与 `bin/sc` 的写入者不一致：它只捕获 `JSONDecodeError`（于是一份读不出来或顶层不是对象的文档会让安装在第 3 步以 traceback 结束）、它按 locale 编码读写、它把文件留在 0644，还得复述一遍 `_init_files()` 的种子才不至于把已有的键抹掉。现在是一行 `sc lang "$LANG_CHOICE"`。
+
+- **`sc doctor` 的权限检查不再豁免 `settings.json`，install.sh 的收紧清单则把它加了进来。** 那条豁免存在的唯一理由是它自己的写入者把它留在 0644；随着第二个写入者消失，豁免也跟着消失，而不是作为一个长期的空洞留在检查里。检查现在覆盖目录下每一个普通文件；从旧版本升级上来的 0644 文档由安装脚本收紧一次。
+
+### 移除
+
+- **`ruleset_status()`**：零调用者。单一可用性判断由 `srs_reject_reason()` 与 `ruleset_state()` 承担，两者都有真实调用者；一个「保留着以备有人只想问一个文件的状态」的适配器，是把「以后可能有人要」写成了今天的代码。
+
+### 文档
+
+- **`docs/faq.md` 不再把用户引向 `config.json` 的漂移警告。** 三条回答教的是「改 `bin/sc` 里的 `generate_config()` 然后 `sc reload`」——`override.json` 整套机制在 `docs/` 里出现过 0 次，而 README 有完整一节。现在这三条改成指向 `override.json`：换 DNS / 路由模板、注册自己的 `.srs` tag（`route.rule_set` 与 `route.rules` 各 `$append` 一次）、给 Clash API 挂 Web Dashboard（`experimental.clash_api.external_ui` 是一次深度合并，只加这一个键）。合并语义仍然只在 README 里讲一遍，FAQ 不复述第二份。另外删掉了「README.md 有 TODO 列表」——README 里没有 TODO 列表；出口 IP 那条改为先跑 `sc doctor`。
+- **`docs/architecture.md`**：数据流图里补上 `override.json` 这一层输入；规则集一节改为镜像顺序 + 三重校验 + 原子替换的实际行为（此前写的是「从 GitHub raw 下载」）；安全考量表加上 `settings.json` 一行。
+- **两份 README**：系统要求里写明 **sing-box 1.12+**，并说清 `install.sh` 第 2 步在 `PATH` 上已有 `sing-box` 时会跳过下载——旧内核会在安装最后一步的配置校验处失败，而此前没有任何一处文档说过这件事。`override.json` 一节前面加了两条默认值的说明：生成的文档**对所有目标拒绝 UDP 443**（把 QUIC 逼回 TCP，对直连的国内流量同样生效），以及 DNS 是**国内优先**的——两条都没在任何地方写过。文件位置表里 `settings.json` 标上 mode 600。
+
 ## [0.2.0] - 2026-08-17
 
 次版本号而非补丁号：本次有**破坏性变更**。`sc sysproxy` 被删除（见下方「升级须知」），`sc mode` 在服务未运行时改为拒绝执行并非 0 退出，`sc add` 在配置校验不通过时改为非 0 退出且不再保留节点。项目仍在 `0.x`，所以按约定这些变更计入次版本号。

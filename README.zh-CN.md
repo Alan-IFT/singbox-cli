@@ -20,6 +20,7 @@
 - amd64 (x86_64) 或 arm64 (aarch64)
 - Python 3.6+（系统自带）
 - root 权限（一次性配 sudoers，之后免密）
+- sing-box **1.12 或更高**。`install.sh` 会替你下载当前发行版 —— 但第 2 步在 `PATH` 上**已经有 `sing-box` 时会跳过下载**，旧版本会原样留下。生成的配置用的是 1.12+ 的 DNS 语法，旧内核会在安装的最后一步配置校验时失败；删掉旧二进制再重跑即可替换。
 
 ## 🚀 安装
 
@@ -411,7 +412,7 @@ sc help
 | sc CLI | `/usr/local/bin/sc` |
 | sing-box 配置（自动生成） | `/etc/sing-box/config.json`（mode 600） |
 | 节点列表（含密码） | `/etc/sing-box/nodes.json`（mode 600） |
-| 设置 | `/etc/sing-box/settings.json` |
+| 设置 | `/etc/sing-box/settings.json`（mode 600） |
 | 你自己的配置覆盖（可选，归你管） | `/etc/sing-box/override.json` |
 | `sc` 上次生成内容的记录（内部用） | `/etc/sing-box/.config.sha256` |
 | 规则集 | `/etc/sing-box/rules/*.srs` |
@@ -429,6 +430,8 @@ sc help
 `config.json` 是**生成物**：`sc reload`、`sc add`、`sc rm` 每次都会把它整份重写，`sc use` 和 `sc update-rules` 也可能重写，所以你在那里手改的内容会被悄无声息地丢掉。请改成写 `/etc/sing-box/override.json`。`sc` 从不创建、不写入、也不删除这个文件，并且把它放在**最后**应用 —— 覆盖在 `sc` 组合出的一切之上 —— 因此它能挺过每一次重新生成，也能挺过重新执行 `install.sh`。
 
 不存在、内容为空、或者就是 `{}` 的覆盖文件，等于什么都没改。无法应用的覆盖文件会让命令**在写入任何东西之前就停下**：`config.json` 保持原样，运行中的服务不受影响，报错会指名这个文件和具体问题。
+
+**动手之前先知道两条默认值。** 生成的配置会**对所有目标拒绝 UDP 443 端口** —— 这是把 QUIC / HTTP-3 逼回 TCP，好让分流规则能看见它，而且它对直连的国内流量同样生效，不只作用于走代理的流量。以及它的 DNS 是**国内优先**的：本地域名用 `119.29.29.29`，外加一份直连解析的国内 DoH 白名单。这在中国大陆境内是对的默认值，在境外则并非最优。两者都写在 `bin/sc` 的 `CONFIG_BASE` 里；要从这里改，就得 `$replace` 整个 `route.rules` 或 `dns.servers` 数组 —— 数组要么整体改，要么不改。
 
 **对象按层级合并。** 你没提到的键保留原值和原位置：
 
