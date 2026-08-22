@@ -151,14 +151,17 @@ def seed(tmp, links=(VLESS,)):
 # ---------------------------------------------------------------- the contracts
 
 def t_shell_scripts_parse(tmp):
-    """`bash -n` on both scripts — the only gate they have.
+    """`bash -n` on both scripts — the only gate they have — and their executable bit.
 
     bin/sc needs none here: importing it at the top of this file is strictly stronger
     than py_compile, and a syntax error there ends the run with a stated outcome before
-    any test is collected.
+    any test is collected. The bit is checked because both READMEs teach
+    `sudo ./install.sh` for a git clone, and a mode-100644 checkout answers that with
+    sudo's misleading "command not found" — which shipped.
     """
     for script in ("install.sh", "uninstall.sh"):
         subprocess.run(["bash", "-n", str(HERE / script)], check=True)
+        assert os.access(str(HERE / script), os.X_OK), script + " is not executable"
 
 
 def t_import_is_inert(tmp):
