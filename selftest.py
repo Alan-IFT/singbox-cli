@@ -30,6 +30,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -1075,6 +1076,71 @@ def t_scheduled_run_covers_both_jobs(tmp):
     assert execs == ["ExecStart=-/usr/local/bin/sc update-rules",
                      "ExecStart=/usr/local/bin/sc sub update"], execs
     assert "Type=oneshot" in unit
+
+
+def _readme_shape(path):
+    """The language-INDEPENDENT shape of a README: what the two translations must share.
+
+    Heading text cannot be compared across languages, but structure can, and structure is
+    where the drift actually happens: a section added to one file and not the other, a
+    command documented once, a table row dropped, a roadmap box ticked on one side. Each
+    fact below was chosen because it catches a drift that really occurred in this repo.
+
+    Code fences are skipped while scanning for headings and rows: a `# comment` inside a
+    bash block is not a heading, and this file's own examples contain both.
+    """
+    text = (HERE / path).read_text(encoding="utf-8")
+    headings, rows, fences, boxes = [], 0, 0, {}
+    fenced = False
+    for line in text.split("\n"):
+        if line.startswith("```"):
+            fenced = not fenced
+            fences += fenced
+            continue
+        if fenced:
+            continue
+        marks = re.match(r"^(#{1,6}) ", line)
+        if marks:
+            headings.append(len(marks.group(1)))
+        if line.startswith("|"):
+            rows += 1
+        box = re.match(r"^\s*- \[([ x])\]", line)
+        if box:
+            boxes[box.group(1)] = boxes.get(box.group(1), 0) + 1
+    return {"headings": headings, "table rows": rows, "code blocks": fences,
+            "checkboxes": boxes,
+            # `sc <word>` is language-neutral text: a command documented in one
+            # translation and not the other shows up here and nowhere else.
+            "sc commands": sorted(set(re.findall(r"\bsc ([a-z][a-z-]*)", text)))}
+
+
+def t_readme_parity(tmp):
+    """The two READMEs must stay the same document in two languages.
+
+    Not a paragraph-by-paragraph diff — that would need rules more complicated than the
+    problem. Five structural facts, each one a drift this repository has actually
+    produced: a Features bullet and a roadmap checkbox that were updated in English and
+    forgotten in Chinese, and a `sc doctor` table row removed from one table only.
+    """
+    en, zh = _readme_shape("README.md"), _readme_shape("README.zh-CN.md")
+    for fact in sorted(en):
+        if en[fact] == zh[fact]:
+            continue
+        if fact == "headings":
+            for i, (a, b) in enumerate(zip(en[fact], zh[fact])):
+                if a != b:
+                    raise AssertionError(
+                        "README structure diverges at heading %d: level %d in English, "
+                        "%d in Chinese" % (i + 1, a, b))
+            raise AssertionError("README heading count differs: %d English, %d Chinese"
+                                 % (len(en[fact]), len(zh[fact])))
+        if fact == "sc commands":
+            raise AssertionError(
+                "documented in one translation only — English: %s | Chinese: %s"
+                % (sorted(set(en[fact]) - set(zh[fact])),
+                   sorted(set(zh[fact]) - set(en[fact]))))
+        raise AssertionError("%s differ: %r in English, %r in Chinese"
+                             % (fact, en[fact], zh[fact]))
 
 
 # ---------------------------------------------------------------- the runner
