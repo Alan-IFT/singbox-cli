@@ -100,7 +100,7 @@ sudo bash -c "$(curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/
 sudo SB_GH_MIRROR="https://mirror.example.internal/" bash install.sh
 ```
 
-**Fully offline / air-gapped.** The installer skips its only large download when a sing-box binary is already on `PATH`, so place one yourself and the GitHub dependency is limited to the five small artifact files (which `git clone`, a tarball copy or a USB stick can supply just as well):
+**Fully offline / air-gapped.** The installer skips its only large download when a sing-box binary is already on `PATH`, so place one yourself and the GitHub dependency is limited to the six small artifact files (which `git clone`, a tarball copy or a USB stick can supply just as well):
 
 ```bash
 sudo install -m 755 ./sing-box /usr/local/bin/sing-box   # from any trusted source
@@ -316,6 +316,7 @@ sc off                 # stop + disable on boot
 sc default-tun on|off  # boot autostart only — leaves the running service alone
 sc status              # service status, TUN interface, rule-set status + age, current node, egress IP
 sc doctor              # one-pass read-only health report (see below)
+sc watchdog status     # the optional policy-route watchdog (off by default, see below)
 sc log -f              # follow logs in real time
 sc version             # which build this is — reads nothing, writes nothing
 ```
@@ -326,7 +327,7 @@ sc version             # which build this is — reads nothing, writes nothing
 sc doctor
 ```
 
-One pass, one screen, eight facts — printed in **causal order**, so every cause appears above the effects it can produce:
+One pass, one screen, nine facts — printed in **causal order**, so every cause appears above the effects it can produce:
 
 | # | Section | What it reports |
 |---|---|---|
@@ -335,21 +336,69 @@ One pass, one screen, eight facts — printed in **causal order**, so every caus
 | 3 | Configuration | whether `config.json` exists, whether it is still what `sc` last generated, and what `sing-box check` says about it |
 | 4 | Service | running now, and registered to start at boot — two separate facts |
 | 5 | TUN interface | whether `sb-tun` exists, and its addresses |
-| 6 | Clash API | the port recorded in `settings.json`, whether it answers, how many of your nodes carry a stored delay and which outbound auto-select is on right now, and one name lookup answered by the running sing-box — which may answer it from its own DNS cache — with the time that took |
-| 7 | Egress IP | the observed public address (queried even when the service is down) |
-| 8 | File permissions | any file directly inside `/etc/sing-box` that grants access to group or other, and whether the directory itself is group- or other-writable — each offending path named with its mode and the command that narrows it |
+| 6 | Policy routing | whether the kernel still routes through that device: the route table named by `config.json` carries a default route via the tun, `ip rule` holds no `[unresolved]` entry, every `goto` has its target rule, some rule other than the tun's own `iif` entry feeds the table, `ip route get 1.1.1.1` really resolves through the tun — and whether `systemd-networkd` is configured not to delete these rules in the first place |
+| 7 | Clash API | the port recorded in `settings.json`, whether it answers, how many of your nodes carry a stored delay and which outbound auto-select is on right now, and one name lookup answered by the running sing-box — which may answer it from its own DNS cache — with the time that took |
+| 8 | Egress IP | the observed public address (queried even when the service is down) |
+| 9 | File permissions | any file directly inside `/etc/sing-box` that grants access to group or other, and whether the directory itself is group- or other-writable — each offending path named with its mode and the command that narrows it |
 
-Every row is marked `[OK]`, `[PROBLEM]` or `[UNKNOWN]` (`[正常]` / `[异常]` / `[未知]` under `sc lang zh`), so `sc doctor | grep '^\[PROBLEM\]'` lists exactly what is wrong. `[UNKNOWN]` means the check could not run at all — a missing tool, a permission denial — never "the thing being checked is broken". One failing check never ends the run: all eight sections are always printed.
+**A live sing-box and an existing `sb-tun` do not mean your traffic is proxied.** sing-box's `auto_route` installs a *policy-routing set* — one route table holding the default route through the tun, plus a band of `ip rule` entries that send traffic into it. That band can be lost while the process keeps running and the device keeps existing: the service is `active`, `sb-tun` is up, table 2022 still holds `default via … dev sb-tun`, and yet `ip rule` is down to `local` / `main` / `default` plus one dangling `goto … [unresolved]`. Nothing routes into the table any more, so every local connection quietly takes the physical interface — a **silent direct leak**, with `sc status` and every pre-0.6.0 `sc doctor` row still green. Section 6 is the check that sees it; `sc reload` reinstalls the rules.
 
-**`sc doctor` changes nothing.** It writes no config, downloads nothing, and never starts, stops, restarts, enables or repairs anything. Unlike every other subcommand it does not even create `/etc/sing-box` or persist a Clash API port on first run — on a broken or fresh machine the emptiness of those paths is often the diagnosis, and a diagnostic must not destroy the evidence it was run to collect. The one thing it asks of the outside world is section 7's name lookup: the command itself still touches no path, but the resolution is performed *by the running sing-box*, which may record it in its own DNS cache (`/var/lib/sing-box/cache.db`) exactly as it would any other query — and may equally answer a later query from that cache, which is why the row names the cache as a possible source rather than claiming the name was resolved upstream on this query. It is safe to run repeatedly, concurrently, and as the very first thing after a failure.
+**Who deletes them, and why this is prevented rather than merely detected.** The known culprit is `systemd-networkd`: its `ManageForeignRoutingPolicyRules=` defaults to **yes**, which means networkd takes ownership of routing policy rules created by *other* programs and removes the ones it does not recognise — sing-box's are exactly that. Any networkd reload (a network change, a resume from suspend, a `systemctl restart systemd-networkd`) can therefore wipe them. The same thing happens to other VPNs; see [netbirdio/netbird#4578](https://github.com/netbirdio/netbird/issues/4578).
+
+sing-box cannot recover on its own: its Linux TUN backend installs these rules once at start-up and never re-checks them — unlike its own nftables path, which reconciles. Tailscale hit the identical problem and solved it by subscribing to netlink rule-deletion events and reinstalling ([tailscale@b3af74e](https://github.com/tailscale/tailscale/commit/b3af74e4ff334c37427522119c77d59f2c737be9), [#10857](https://github.com/tailscale/tailscale/issues/10857)).
+
+So `install.sh` drops in `/etc/systemd/networkd.conf.d/singbox-cli-keep-foreign-rules.conf` containing `ManageForeignRoutingPolicyRules=no`, which stops the deletion at its source. It is installed only where `systemd-networkd` exists, never starts it, and `sc uninstall` removes it again. Section 6's last row reports whether that protection is in place — and reports its absence as a **problem even while the rules are currently intact**, because such a host will lose them again at the next networkd reload.
+
+The interface name and the table index are read from `config.json`, not hard-coded, so an `override.json` that sets `interface_name` or `iproute2_table_index` is diagnosed against its own values. Section 6 issues three `ip` **queries** and no commands: `ip route get` selects a route from the kernel's tables and prints it, transmitting nothing, so this check reaches no network and works on a host whose proxy is down.
+
+Every row is marked `[OK]`, `[PROBLEM]` or `[UNKNOWN]` (`[正常]` / `[异常]` / `[未知]` under `sc lang zh`), so `sc doctor | grep '^\[PROBLEM\]'` lists exactly what is wrong. `[UNKNOWN]` means the check could not run at all — a missing tool, a permission denial — never "the thing being checked is broken". One failing check never ends the run: all nine sections are always printed.
+
+**`sc doctor` changes nothing.** It writes no config, downloads nothing, and never starts, stops, restarts, enables or repairs anything. Unlike every other subcommand it does not even create `/etc/sing-box` or persist a Clash API port on first run — on a broken or fresh machine the emptiness of those paths is often the diagnosis, and a diagnostic must not destroy the evidence it was run to collect. The one thing it asks of the outside world is section 7's name lookup (section 6's `ip route get` is a local table lookup and reaches nothing): the command itself still touches no path, but the resolution is performed *by the running sing-box*, which may record it in its own DNS cache (`/var/lib/sing-box/cache.db`) exactly as it would any other query — and may equally answer a later query from that cache, which is why the row names the cache as a possible source rather than claiming the name was resolved upstream on this query. It is safe to run repeatedly, concurrently, and as the very first thing after a failure.
 
 Exit status:
 
 | Exit | Meaning |
 |---|---|
 | `0` | every section OK |
-| `1` | at least one `[PROBLEM]` — any section: a missing binary, an unusable or stale rule-set, a `config.json` changed outside `sc`, a failed config check, a stopped or non-autostarting service, a missing TUN device, an unanswered Clash API port, no node carrying a stored delay, a name lookup that produced no answer, a failed egress query, a credential file or a configuration directory open to group or other |
-| `2` | no `[PROBLEM]`, but at least one `[UNKNOWN]` — a check could not run: no sing-box binary to check the config with, no record of what `sc` last generated, no init system detected, `ip` missing, no Clash API port recorded in `settings.json` (which also leaves the node-delay and DNS rows unprobed), a `nodes.json` that cannot be read, or a configuration directory that is absent or cannot be listed |
+| `1` | at least one `[PROBLEM]` — any section: a missing binary, an unusable or stale rule-set, a `config.json` changed outside `sc`, a failed config check, a stopped or non-autostarting service, a missing TUN device, **an incomplete policy-routing set (a direct-leak risk)**, an unanswered Clash API port, no node carrying a stored delay, a name lookup that produced no answer, a failed egress query, a credential file or a configuration directory open to group or other |
+| `2` | no `[PROBLEM]`, but at least one `[UNKNOWN]` — a check could not run: no sing-box binary to check the config with, no record of what `sc` last generated, no init system detected, `ip` missing, a `config.json` that cannot be read or that installs no policy routing at all, no Clash API port recorded in `settings.json` (which also leaves the node-delay and DNS rows unprobed), a `nodes.json` that cannot be read, or a configuration directory that is absent or cannot be listed |
+
+### Fallback: repair lost policy routing automatically (optional)
+
+```bash
+sc watchdog on         # install + enable the systemd timer
+sc watchdog status     # timer state, last check, last result, last automatic repair
+sc watchdog off        # disable and stop it
+```
+
+**This is a fallback, not the fix.** The known deleter is handled at its source by the networkd drop-in described above, which costs nothing and drops no connections. This watchdog only notices the damage afterwards and undoes it by **restarting sing-box**, which interrupts every live connection. It exists because that drop-in covers one deleter and not every deleter — a hand-run `ip rule flush`, another VPN's teardown, a manager nobody has met yet. **If you find yourself needing it regularly, something else is deleting your rules**, and `sc doctor`'s rule-protection row is where that investigation starts.
+
+**Off by default.** Nothing installs, enables or starts it until you run `sc watchdog on` — a component that restarts a network service has to be something you chose. It is **systemd only**; on any other init system the command says so and does nothing rather than failing quietly.
+
+It repairs exactly one fault: the policy-routing set described above having gone missing while sing-box still runs. A `systemd` timer (`OnBootSec=2min`, `OnUnitActiveSec=1min`) runs a oneshot unit that asks the same question section 6 asks, and:
+
+- **it judges kernel state only** — `ip rule`, `ip route`. It never contacts a website, never resolves a name and never measures a node, so an unreachable site, a slow DNS server or a failing node **cannot** make it restart anything. Node quality is a separate question with a separate answer: `sc ping`;
+- **one failing check is not enough.** It re-checks after ~5 seconds and acts only if both fail — sing-box rewrites its own rules during a reload, and a single sample taken mid-reload looks exactly like the fault;
+- **the repair is `systemctl restart sing-box`**, not `sc reload`: the configuration was never wrong, the kernel state was, so there is nothing to regenerate;
+- **at most one restart every 5 minutes.** A host that comes back still broken stays broken and visible in the journal rather than being restarted every minute forever;
+- **`sc off` stands.** On a host where sing-box is stopped *and* disabled, the watchdog records that it stood down and starts nothing;
+- **a healthy host is silent** — no restart, and no log line per minute;
+- after a restart it re-checks the kernel and logs whether the rules actually came back, exiting non-zero when they did not.
+
+**An automatic repair briefly interrupts connections**, exactly as `sc reload` does. That is the trade: a few dropped connections against traffic leaving unproxied until someone notices.
+
+```bash
+journalctl -u sing-box-route-watchdog.service    # what it did, and why
+```
+
+Diagnosing and repairing by hand, in the order worth trying:
+
+```bash
+sc doctor              # section 6 names the condition that failed
+ip rule show           # the rule band; look for [unresolved] and for a missing 9010 nop
+ip route get 1.1.1.1   # must resolve via sb-tun, not via your physical NIC
+sc reload              # regenerate + restart, which reinstalls the rules
+```
 
 ### Show the configuration
 
@@ -437,6 +486,9 @@ User runs the sc CLI:
 | systemd service | `/etc/systemd/system/sing-box.service` (systemd only) |
 | Auto-update timer | `/etc/systemd/system/sing-box-rules-update.timer` (systemd only) |
 | Auto-update cadence override | `/etc/systemd/system/sing-box-rules-update.timer.d/override.conf` (systemd only) |
+| Policy-rule protection (stops systemd-networkd deleting them) | `/etc/systemd/networkd.conf.d/singbox-cli-keep-foreign-rules.conf` (only where systemd-networkd exists) |
+| Route watchdog units (only after `sc watchdog on`) | `/etc/systemd/system/sing-box-route-watchdog.{service,timer}` (systemd only) |
+| Route watchdog state (last check / result / repair) | `/var/lib/sing-box/watchdog.json` |
 | OpenRC service | `/etc/init.d/sing-box` (OpenRC/Alpine only) |
 | Periodic update scripts | `/etc/periodic/{daily,weekly,monthly}/singbox-update-rules` (OpenRC/Alpine only) |
 | Password-less sudo | `/etc/sudoers.d/sc` |

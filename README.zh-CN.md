@@ -100,7 +100,7 @@ sudo bash -c "$(curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/
 sudo SB_GH_MIRROR="https://mirror.example.internal/" bash install.sh
 ```
 
-**完全离线 / 内网隔离。** 只要 `PATH` 上已经有 sing-box，安装脚本就会跳过它唯一的大文件下载。所以自己先放一个进去，对 GitHub 的依赖就只剩五个很小的文件（`git clone`、打包拷贝、U 盘都能提供）：
+**完全离线 / 内网隔离。** 只要 `PATH` 上已经有 sing-box，安装脚本就会跳过它唯一的大文件下载。所以自己先放一个进去，对 GitHub 的依赖就只剩六个很小的文件（`git clone`、打包拷贝、U 盘都能提供）：
 
 ```bash
 sudo install -m 755 ./sing-box /usr/local/bin/sing-box   # 来源自选，只要可信
@@ -316,6 +316,7 @@ sc off                 # 停止 + 取消开机自启
 sc default-tun on|off  # 只改开机自启，不动正在运行的服务
 sc status              # 查看服务状态、TUN 接口、规则集状态与更新时间、当前节点、出口 IP
 sc doctor              # 一次跑完的只读体检报告（见下）
+sc watchdog status     # 可选的策略路由 watchdog（默认关闭，见下）
 sc log -f              # 实时日志
 sc version             # 查看当前是哪个版本 —— 不读文件、不写文件
 ```
@@ -326,7 +327,7 @@ sc version             # 查看当前是哪个版本 —— 不读文件、不�
 sc doctor
 ```
 
-一条命令、一屏输出、八项事实 —— 按**因果顺序**打印，任何一项的原因都排在它能导致的结果之上：
+一条命令、一屏输出、九项事实 —— 按**因果顺序**打印，任何一项的原因都排在它能导致的结果之上：
 
 | # | 检查项 | 报告内容 |
 |---|---|---|
@@ -335,21 +336,69 @@ sc doctor
 | 3 | 配置文件 | `config.json` 是否存在、是否仍是 `sc` 最近一次生成的那份，以及 `sing-box check` 的结论 |
 | 4 | 服务 | 当前是否运行、是否已设置开机自启 —— 两件独立的事实 |
 | 5 | TUN 接口 | `sb-tun` 是否存在及其地址 |
-| 6 | Clash API | `settings.json` 中记录的端口、该端口是否响应、有多少个节点带有已记录的延迟以及自动选择当前走哪个出站，还有一次由正在运行的 sing-box 给出应答的域名解析（应答可能来自它自己的 DNS 缓存）及其耗时 |
-| 7 | 出口 IP | 观察到的公网出口地址（服务已停止时同样查询） |
-| 8 | 文件权限 | `/etc/sing-box` 下任何对同组或其他用户开放的文件，以及目录本身是否可被同组或其他用户写入 —— 每个有问题的路径都会连同权限位和收紧它的命令一起点名 |
+| 6 | 策略路由 | 内核是否仍然把流量送进这个设备：`config.json` 指定的那张路由表里有经该 TUN 的默认路由、`ip rule` 中没有 `[unresolved]`、每个 `goto` 都有对应的目标规则、除 TUN 自己的 `iif` 规则之外还有规则把流量送进该表、`ip route get 1.1.1.1` 确实经过该 TUN —— 以及 `systemd-networkd` 是否已被配置为不删除这些规则 |
+| 7 | Clash API | `settings.json` 中记录的端口、该端口是否响应、有多少个节点带有已记录的延迟以及自动选择当前走哪个出站，还有一次由正在运行的 sing-box 给出应答的域名解析（应答可能来自它自己的 DNS 缓存）及其耗时 |
+| 8 | 出口 IP | 观察到的公网出口地址（服务已停止时同样查询） |
+| 9 | 文件权限 | `/etc/sing-box` 下任何对同组或其他用户开放的文件，以及目录本身是否可被同组或其他用户写入 —— 每个有问题的路径都会连同权限位和收紧它的命令一起点名 |
 
-每一行都标注 `[正常]` / `[异常]` / `[未知]`（`sc lang en` 下为 `[OK]` / `[PROBLEM]` / `[UNKNOWN]`），所以 `sc doctor | grep '^\[异常\]'` 就能列出所有出问题的项。`[未知]` 表示这项检查根本没能执行 —— 工具缺失、权限不足 —— 而不是「被检查的东西坏了」。任何一项检查出问题都不会中断整个报告：八项永远都会打印。
+**sing-box 在运行、`sb-tun` 存在，都不代表你的流量还在走代理。** sing-box 的 `auto_route` 装的是一整套**策略路由**：一张路由表里放着经 TUN 的默认路由，外加一组 `ip rule` 规则负责把流量送进这张表。这组规则可能在进程仍然运行、设备仍然存在的情况下丢失：服务是 `active`、`sb-tun` 在、表 2022 里 `default via … dev sb-tun` 也在，但 `ip rule` 只剩 `local` / `main` / `default` 外加一条悬空的 `goto … [unresolved]`。此时已经没有任何规则把流量送进那张表，于是本机每一个连接都悄悄走了物理网卡 —— 这是一次**静默直连泄漏**，而 `sc status` 和 0.6.0 之前的每一行 `sc doctor` 依然全绿。第 6 项就是能看见它的那一项；`sc reload` 会把规则重新装回去。
 
-**`sc doctor` 不会改动任何东西。** 它不生成配置、不下载、不启动、不停止、不重启、不启用、不修复。与其他子命令不同，它连启动阶段那步也不做：不会创建 `/etc/sing-box`，也不会在首次运行时探测并保存 Clash API 端口 —— 机器已经坏掉或全新时，这些路径的「空」本身就是诊断结论，诊断工具不能把自己要收集的证据先毁掉。它唯一向外界发起的动作是第 7 项里的那次域名解析：命令本身仍然不碰任何路径，但**这次解析是由正在运行的 sing-box 完成的**，它可能会像对待任何一次查询那样把结果记进自己的 DNS 缓存（`/var/lib/sing-box/cache.db`），同样也可能直接用这份缓存来回答后来的查询 —— 所以这一行只把缓存列为应答的可能来源，并不声称这次查询是在上游解析的。它可以反复运行、并发运行，出问题后第一个跑的就该是它。
+**是谁删的，以及为什么这次是「预防」而不只是「发现」。** 已知的元凶是 `systemd-networkd`：它的 `ManageForeignRoutingPolicyRules=` 默认值是 **yes**，语义正是「networkd 接管**别的程序**建的策略路由规则，并删掉它不认识的那些」—— sing-box 建的恰好就是这一类。因此任何一次 networkd 重载（网络变化、从挂起恢复、`systemctl restart systemd-networkd`）都可能把它们抹掉。别的 VPN 也在栽同一个跟头，见 [netbirdio/netbird#4578](https://github.com/netbirdio/netbird/issues/4578)。
+
+sing-box 自己恢复不了：它的 Linux TUN 后端只在启动时装一次规则，此后**从不复查** —— 而同一个库里的 nftables 那条路径却是有对账的。Tailscale 撞上过一模一样的问题，解法是订阅 netlink 的规则删除事件并立即重装（[tailscale@b3af74e](https://github.com/tailscale/tailscale/commit/b3af74e4ff334c37427522119c77d59f2c737be9)、[#10857](https://github.com/tailscale/tailscale/issues/10857)）。
+
+所以 `install.sh` 会安装 `/etc/systemd/networkd.conf.d/singbox-cli-keep-foreign-rules.conf`，内容是 `ManageForeignRoutingPolicyRules=no`，从源头上让删除不再发生。它只在**装有 `systemd-networkd`** 的机器上安装，不会去启动它，`sc uninstall` 也会把它删掉。第 6 项的最后一行就是报告这层保护在不在 —— 而且**即使当前规则完好，缺少保护也算「异常」**，因为这样的机器在下一次 networkd 重载时会再丢一次。
+
+接口名和路由表号是**从 `config.json` 读出来的**，不是写死的，所以在 `override.json` 里设过 `interface_name` 或 `iproute2_table_index` 的机器，也是按它自己的取值来判断。第 6 项只发出三条 `ip` **查询**、不执行任何命令：`ip route get` 是从内核路由表里选出一条路由并打印，不发送任何报文，因此这项检查不触网，代理已经不通的机器上照样能跑。
+
+每一行都标注 `[正常]` / `[异常]` / `[未知]`（`sc lang en` 下为 `[OK]` / `[PROBLEM]` / `[UNKNOWN]`），所以 `sc doctor | grep '^\[异常\]'` 就能列出所有出问题的项。`[未知]` 表示这项检查根本没能执行 —— 工具缺失、权限不足 —— 而不是「被检查的东西坏了」。任何一项检查出问题都不会中断整个报告：九项永远都会打印。
+
+**`sc doctor` 不会改动任何东西。** 它不生成配置、不下载、不启动、不停止、不重启、不启用、不修复。与其他子命令不同，它连启动阶段那步也不做：不会创建 `/etc/sing-box`，也不会在首次运行时探测并保存 Clash API 端口 —— 机器已经坏掉或全新时，这些路径的「空」本身就是诊断结论，诊断工具不能把自己要收集的证据先毁掉。它唯一向外界发起的动作是第 7 项里的那次域名解析（第 6 项的 `ip route get` 只是本地路由表查询，不触网）：命令本身仍然不碰任何路径，但**这次解析是由正在运行的 sing-box 完成的**，它可能会像对待任何一次查询那样把结果记进自己的 DNS 缓存（`/var/lib/sing-box/cache.db`），同样也可能直接用这份缓存来回答后来的查询 —— 所以这一行只把缓存列为应答的可能来源，并不声称这次查询是在上游解析的。它可以反复运行、并发运行，出问题后第一个跑的就该是它。
 
 退出码：
 
 | 退出码 | 含义 |
 |---|---|
-| `0` | 八项全部正常 |
-| `1` | 至少一项 `[异常]` —— 任意一项：可执行文件缺失、规则集不可用或已过期、`config.json` 被 `sc` 以外的方式改过、配置检查未通过、服务未运行或未设置开机自启、TUN 设备不存在、Clash API 端口无响应、没有任何节点带有已记录的延迟、域名解析没有拿到结果、出口 IP 查询未成功、凭据文件或配置目录对同组/其他用户开放 |
-| `2` | 没有 `[异常]`，但至少一项 `[未知]` —— 该项检查无法执行：没有 sing-box 可执行文件来检查配置、没有 `sc` 最近一次生成内容的记录、未检测到 init 系统、缺少 `ip` 命令、`settings.json` 中没有记录 Clash API 端口（此时节点延迟与 DNS 两项也不会发起探测）、`nodes.json` 读不出来、或配置目录不存在 / 无法列出 |
+| `0` | 九项全部正常 |
+| `1` | 至少一项 `[异常]` —— 任意一项：可执行文件缺失、规则集不可用或已过期、`config.json` 被 `sc` 以外的方式改过、配置检查未通过、服务未运行或未设置开机自启、TUN 设备不存在、**策略路由不完整（存在直连泄漏风险）**、Clash API 端口无响应、没有任何节点带有已记录的延迟、域名解析没有拿到结果、出口 IP 查询未成功、凭据文件或配置目录对同组/其他用户开放 |
+| `2` | 没有 `[异常]`，但至少一项 `[未知]` —— 该项检查无法执行：没有 sing-box 可执行文件来检查配置、没有 `sc` 最近一次生成内容的记录、未检测到 init 系统、缺少 `ip` 命令、`config.json` 读不出来或它根本不安装策略路由、`settings.json` 中没有记录 Clash API 端口（此时节点延迟与 DNS 两项也不会发起探测）、`nodes.json` 读不出来、或配置目录不存在 / 无法列出 |
+
+### 兜底：自动修复丢失的策略路由（可选）
+
+```bash
+sc watchdog on         # 安装并启用 systemd 定时器
+sc watchdog status     # 定时器状态、最近检查时间、最近检查结果、最近一次自动修复
+sc watchdog off        # 停用并停止
+```
+
+**这是兜底，不是解法。** 已知的删除者已经被上面那份 networkd 配置从源头挡掉了，代价为零、也不掐断任何连接。而这个 watchdog 只能在**事后**发现损坏，并靠**重启 sing-box** 来复原 —— 那会中断所有活动连接。它之所以保留，是因为那份配置挡的是**一个**删除者而不是所有删除者：手工执行的 `ip rule flush`、另一个 VPN 的清理动作、以及将来才出现的某个管理器。**如果你发现自己经常需要它，说明还有别的东西在删你的规则**，这时该从 `sc doctor` 的「规则保护」那一行开始查。
+
+**默认关闭。** 在你执行 `sc watchdog on` 之前，它不会被安装、启用或启动 —— 一个会重启网络服务的组件，必须由你自己决定要不要开。它**仅支持 systemd**；其他 init 系统上命令会明确告知不支持，而不是悄悄什么都不做。
+
+它只修复一种故障：上面说的那套策略路由在 sing-box 仍然运行时丢失了。一个 systemd 定时器（`OnBootSec=2min`、`OnUnitActiveSec=1min`）触发一个 oneshot 单元，问的是与第 6 项完全相同的问题，并且：
+
+- **只判断内核状态** —— `ip rule`、`ip route`。它不访问任何网站、不解析域名、不测量节点，因此某个网站不可达、DNS 临时失败或节点测速失败**都不可能**让它重启任何东西。节点可用性是另一类问题，答案也在别处：`sc ping`；
+- **一次失败不算数。** 它会在约 5 秒后复查，两次都失败才动手 —— sing-box 在 reload 期间会自己重写这些规则，而恰好落在那一刻的单次采样，看起来与故障一模一样；
+- **修复动作是 `systemctl restart sing-box`**，不是 `sc reload`：配置从来没错，错的是内核状态，所以没有什么需要重新生成；
+- **每 5 分钟最多重启一次。** 重启后仍然坏掉的机器就让它保持坏掉、并留在 journal 里可见，而不是从此每分钟重启一次；
+- **`sc off` 说了算。** sing-box 已停止且已禁用的机器上，watchdog 会记录自己「按兵不动」，不会启动任何东西；
+- **健康时完全安静** —— 不重启，也不会每分钟打一条日志；
+- 重启之后它会再查一次内核，记录规则是否真的回来了；没回来就以非 0 退出。
+
+**自动修复会短暂中断连接**，与 `sc reload` 一样。这就是取舍：用几个被掐断的连接，换掉「流量在没人发现之前一直不经代理外发」。
+
+```bash
+journalctl -u sing-box-route-watchdog.service    # 它做了什么、为什么
+```
+
+手动诊断与恢复，按值得尝试的顺序：
+
+```bash
+sc doctor              # 第 6 项会指出是哪个条件不满足
+ip rule show           # 看这组规则：有没有 [unresolved]，9010 nop 还在不在
+ip route get 1.1.1.1   # 必须经 sb-tun，而不是你的物理网卡
+sc reload              # 重新生成并重启，规则随之重新装上
+```
 
 ### 查看配置
 
@@ -439,6 +488,9 @@ sc help
 | systemd 服务 | `/etc/systemd/system/sing-box.service`（仅 systemd） |
 | 自动更新 timer | `/etc/systemd/system/sing-box-rules-update.timer`（仅 systemd） |
 | 自动更新频率覆盖 | `/etc/systemd/system/sing-box-rules-update.timer.d/override.conf`（仅 systemd） |
+| 策略路由保护配置（阻止 systemd-networkd 删除规则） | `/etc/systemd/networkd.conf.d/singbox-cli-keep-foreign-rules.conf`（仅在装有 systemd-networkd 的机器上） |
+| 策略路由 watchdog 单元（执行 `sc watchdog on` 之后才有） | `/etc/systemd/system/sing-box-route-watchdog.{service,timer}`（仅 systemd） |
+| 策略路由 watchdog 状态（最近检查 / 结果 / 修复） | `/var/lib/sing-box/watchdog.json` |
 | OpenRC 服务 | `/etc/init.d/sing-box`（仅 Alpine/OpenRC） |
 | 定期更新脚本 | `/etc/periodic/{daily,weekly,monthly}/singbox-update-rules`（仅 Alpine/OpenRC） |
 | 免密 sudo | `/etc/sudoers.d/sc` |

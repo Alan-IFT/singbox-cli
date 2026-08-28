@@ -2,6 +2,70 @@
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-28
+
+次版本号而非补丁号，按 `0.2.0` 立下的同一条规矩——**行为变更，脚本看得见**：`sc doctor` 从八节变为**九节**（新增「策略路由」，且它可以让一台此前退出 0 的机器现在退出 1）；`sing-box.service` 的 `ExecReload=` 被**删除**（`systemctl reload sing-box` 从「返回成功但什么都不做」变成明确失败）；安装脚本新增一个**会写入 `/etc/systemd/networkd.conf.d/` 的步骤**。项目仍在 `0.x`，所以这些计入次版本号。
+
+主题只有一个：**TUN 接口存在不代表策略路由仍然完整**——以及随之而来的、按「预防 > 检测 > 兜底」排序的三层处理。
+
+### 根因
+
+- **规则是被 `systemd-networkd` 删的，而这一版从源头堵住了它。**
+
+  `systemd-networkd` 的 `ManageForeignRoutingPolicyRules=` **默认为 `yes`**，语义是「接管**别的程序**创建的策略路由规则，并删掉它不认识的那些」—— sing-box `auto_route` 建的正好属于这一类。于是任何一次 networkd 重载（网络变化、挂起恢复、`systemctl restart systemd-networkd`）都可能把它们抹掉，而 sing-box 进程、`sb-tun` 设备、表 2022 的默认路由全都完好无损 —— 这就是「服务在跑却静默直连」的由来。同类受害者不止我们：[netbirdio/netbird#4578](https://github.com/netbirdio/netbird/issues/4578)。
+
+  **为什么 sing-box 不自愈**：从 1.13.18 二进制的 Go 符号表可以直接读出，`sing-tun` 对两套内核状态的一致性策略是**不对称**的 —— nftables 那条路径有 `reconcileRedirectRoutesLocked` / `calculateRedirectRouteChanges`（有对账），而 `NativeTun` 的 `ip rule` 只有 `setRules`（`Start` 时一次）与 `unsetRules`（`Close` 时一次），**没有任何重装入口**。规则是 fire-and-forget，装完就再也不复查。
+
+  **业界已有答案，而且就编译在同一个二进制里**：sing-box 静态链接了 Tailscale，后者撞上过一模一样的问题并已解决 —— 订阅 netlink 的规则删除事件后立即重装（符号 `netmon.RuleDeleted`、`osrouter.(*linuxRouter).onIPRuleDeleted`；上游 commit [b3af74e「restore Linux ip rules when systemd deletes them」](https://github.com/tailscale/tailscale/commit/b3af74e4ff334c37427522119c77d59f2c737be9)、先行的[只记日志版本](https://github.com/tailscale/tailscale/commit/2ba36c294b51b672073a36a599a61c758d0ffafa)、以及讨论重装顺序的 [#10857](https://github.com/tailscale/tailscale/issues/10857)）。
+
+  据此，本版的修复顺序是**预防 > 检测 > 兜底**，而不是只做兜底。
+
+### 新增
+
+- **`install.sh` 安装 `/etc/systemd/networkd.conf.d/singbox-cli-keep-foreign-rules.conf`（`ManageForeignRoutingPolicyRules=no`），从源头消除删除行为。** 这是这一版真正的修复：代价为零、不重启任何东西、不掉一个连接。只在**装有 `systemd-networkd`** 的机器上安装（判断依据是 `list-unit-files` 而非 `is-active` —— 保护必须在 networkd 下次启动**之前**就位）；只用 `try-reload-or-restart`，因此**绝不会把一个没在运行的 networkd 启动起来**；写入用 `install -m 644`，重跑写入同样的字节，天然幂等。`uninstall.sh` 会删除它并重载，让本机行为回到发行版默认。
+
+- **`sc doctor` 第 6 节新增「规则保护」一行**，报告这层保护在不在。它是三态的，而中间那态才是重点：networkd 未安装 → 正常（这个删除者根本不存在）；drop-in 已就位 → 正常；**networkd 已安装但 drop-in 缺失 → 异常**。注意最后一种在**当前规则完好**时也报异常 —— 因为这样的机器在下一次 networkd 重载时必然再丢一次，等到规则真的没了才报，就永远只能事后诸葛亮。
+
+### 变更
+
+- **`sc watchdog` 降级为「兜底」，不再是推荐解法。** 它只能在事后发现损坏，并靠**重启 sing-box** 复原（会中断所有活动连接），而已知删除者已被上面那份配置在源头挡掉。保留它是因为那份配置挡的是**一个**删除者而非所有：手工 `ip rule flush`、别的 VPN 的清理、将来才出现的管理器。帮助文本与两份 README 都改成明说这一点，并指出**若经常需要它，说明还有别的东西在删规则**，该从「规则保护」那一行开始查。
+
+- **删除 `sing-box.service` 里的 `ExecReload=/bin/kill -HUP $MAINPID`。** 它是双重死配置：`sc` 从不调用 `systemctl reload`（所有改动文档的路径都走 `restart_service()`），而且实测 1.13.18 —— **sing-box 收到 SIGHUP 既不重载也不退出**。留着它唯一的作用是让管理员以为 `systemctl reload sing-box` 有效，而那条命令返回成功、什么也没做。`Restart=on-failure` / `RestartSec=5` 原样保留，并由测试守着不被这次删除顺手带走。
+
+- **`sc doctor` 第 6 项：策略路由。以及一句必须写下来的话——TUN 接口存在不代表策略路由仍然完整。**
+
+  实测故障（0.5.3 / sing-box 1.13.18 / systemd）：`sing-box.service` 是 `active`、`sb-tun` 在、表 2022 里 `default via 172.19.0.2 dev sb-tun` 也在，而 `ip rule` 只剩 `local` / `main` / `default` 外加一条 `9002: from all iif sb-tun goto 9010 [unresolved]`。9000 / 9001 / 9003 / 9010 全部消失，于是没有任何规则把本机流量送进那张表，全部走物理网卡。Global 模式下 `icanhazip.com` 返回的是本机直连 IP，而**此前的八项检查每一行都是 `[正常]`** —— 服务在跑、TUN 在、配置校验通过，没有一项在看内核到底怎么选路。`sc reload` 之后规则齐全，`ip route get 1.1.1.1` 回到 `via 172.19.0.2 dev sb-tun table 2022`。
+
+  新的一节检查五个条件，每个条件对应这次故障的一种呈现方式：路由表里有经该 TUN 的默认路由；`ip rule` 里没有 `[unresolved]`；每个 `goto` 都有目标规则（换一个不打印 `[unresolved]` 的内核，同一个截断仍然抓得到）；**除 TUN 自己的 `iif` 规则之外**还有规则把流量送进那张表（这条排除是关键：本次故障剩下的恰好就是那条 `iif` 规则，只问「表被引用了吗」会把泄漏判成健康）；`ip route get 1.1.1.1` 确实经过该 TUN。任一不满足即 `[异常]`、退出码 1，并附一行说明存在直连泄漏风险、可运行 `sc reload`。
+
+  接口名与路由表号**从 `config.json` 读出**（`interface_name` / `iproute2_table_index`），常量只是文档没写这两个字段时的回退值 —— 在探测点写死数字，会让改过 override 的机器被误报为损坏。位置在 TUN 之后、Clash API 之前：设备存在是这一节的前提，而规则截断正是「出口 IP 是本机地址」的解释。
+
+  **全程只读**：三条 `ip` 查询，没有 `ip rule add`。`ip route get` 是从内核路由表里选一条路由打印出来，**不发送任何报文**，所以这项检查不触网、代理已断的机器上照样能跑。设备不存在时只报这一个事实，不再往下派生四条关于「一个不存在的设备的路由表」的异常。
+
+- **`sc watchdog on|off|status`：可选的策略路由自动修复，默认关闭。**
+
+  只修一种故障 —— 上面那种。诊断复用 `_route_policy_probe()`，与 doctor 第 6 项是同一个判断，不存在第二套「什么叫健康」。systemd `oneshot` + timer（`OnBootSec=2min`、`OnUnitActiveSec=1min`）；非 systemd 主机明确拒绝并说明，而不是静默失败。
+
+  状态机与防抖：健康 → 什么都不做、不写日志（每分钟一次的东西一旦成功也打日志，日志就没人看了）；失败 → 等约 5 秒复查 → 仍失败才动手。这一步是必需的，`sc reload` 期间 sing-box 正在自己重写规则，单次采样与真故障长得一模一样。修复用 `systemctl restart sing-box`，**不用 `sc reload`**：配置没变，需要重建的是内核状态而不是文档。重启后**再查一次内核**来判断是否恢复 —— systemctl 返回 0 只说明进程起来了，不说明规则回来了。
+
+  三条不做的事，都是结构上不做而非约定不做：**不访问任何网站 / DNS / 节点**（输入全是本地内核查询，所以某站不可达、DNS 抖动、节点测速失败都不可能触发重启 —— 节点可用性是 `sc ping` 的问题）；**不启动被 `sc off` 禁用的服务**（`is-active` 与 `is-enabled` 都为否即视为用户的决定，记一条「按兵不动」后返回）；**5 分钟内不重启第二次**（重启循环比泄漏更糟，它每次还要掐断全部连接）。并发由 `flock` 挡住：定时器在上一次的 5 秒确认窗口里再次触发时会直接退出，否则它会自己再采两次样、绕过冷却重启第二次。
+
+  `sc watchdog status` 显示四件事：timer 是否启用、最近检查时间、最近检查结果、最近一次自动修复时间；状态存在 `/var/lib/sing-box/watchdog.json`。
+
+### 变更
+
+- **`install.sh` 只刷新「已经开启」的 watchdog，绝不替用户开启。** 判断依据是 systemd 对 timer 的 `is-enabled`，不是单元文件是否存在 —— `sc watchdog off` 留下的文件不是同意。它委托 `sc watchdog on` 完成，而后者写的是常量字节、并对已启用的 timer 重复 enable，所以刷新的幂等性来自被委托的操作本身，而不是又一层判断。`uninstall.sh` 增加这两个单元的 disable 与删除，从未开启过的机器上两条都是空操作。
+
+### 测试
+
+- 新增 8 个测试。策略路由的判定被拆成一个**纯函数**（三段 `ip` 输出进、判定出），所以五种故障各是一组字符串，全程不跑 `ip`、不碰本机路由：健康基线、`goto ... [unresolved]`、缺 9010 nop、表在但没有规则送流量进去、表里默认路由走了别的设备、以及 `ip route get` 仍走物理网卡。另有一条断言：同一份字节在「按文档读到的名字」下健康、在「写死的默认名」下异常 —— 这是**唯一**能证明接口名和表号真的来自 `config.json` 的形状。
+
+  watchdog 的时间由测试自己持有（`_Clock` 替换 `time.time` / `time.sleep`），健康与否由脚本化的判定序列给出，所以「第一次失败不重启」「连续两次才重启」「冷却期内不重启」「重启后恢复」「重启后仍失败则记录并非 0 退出」「`sc off` 时不启动」六条都是确定性的，没有真的 sleep、没有真的 systemctl。单元文件内容、on/off/status 的重复执行幂等、以及 `install.sh` 那段升级逻辑（`sed` 抽出来对着桩跑，两个分支各断言一次）同样覆盖。doctor 只读由「断言每一条子进程 argv 都是 ip 查询、且临时目录内容前后一致」来守。
+
+- 根因修复另有 3 个测试：出厂的 networkd 配置内容（**必须是 `[Network]` 节** —— 写错节名会让文件解析通过却静默失效）、安装器那段逻辑（`sed` 抽出来对着桩跑：无 networkd 不写、有 networkd 才写、重复执行幂等、只 `try-reload-or-restart` 绝不 `start`/`enable`）、以及 `sing-box.service` 不再含 `ExecReload`。还有一条对拍：**安装器写入的路径与 doctor 查找的路径必须逐字相同** —— 两者分属不同程序，没有这条断言，改一处就会让 doctor 把已保护的机器报成有风险。另 7 个变异全部报红（doctor 恒判已保护、doctor 查错路径、安装器不装、安装器擅自 `start networkd`、删掉存在性守卫、死 `ExecReload` 复活、配置节名写错）。
+
+- 变异测试 12 个，3 个逃逸，**每一个逃逸都是测试的真实漏洞而不是等价变异**：删掉 `iif` 排除条件后仍然全绿（样本里那条 `iif` 规则没写 `lookup 2022`，于是排除逻辑从未被执行到 —— 而它恰恰是本次故障剩下的那条规则）；默认路由检查里删掉接口名后仍然全绿（缺一个「表里有默认路由但走 eth0」的用例）；`ip route get` 只看有没有 `dev` 同理。补齐样本与用例后 12 个变异全部报红。
+
 ## [0.5.3] - 2026-08-22
 
 把「本构建不做 IPv6」这句话补完整。0.4.0 移除 IPv6 检测子系统时，这个立场只在 DNS 层落了地（AAAA 一律本地返回空 NOERROR）——绕过系统 DNS 拿到 v6 地址的软件不在其内：应用内置 DoH 的应答、写死的 v6 字面量、P2P 交换来的地址。TUN 只有 v4 地址，这类流量在双栈宿主上**整个绕过代理直连**，要么泄漏真实地址，要么对直连不通的目标悄悄挂死，用户无从归因。

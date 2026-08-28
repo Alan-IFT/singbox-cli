@@ -460,12 +460,70 @@ CRED_DIR="/etc/sing-box"
 CRED_FILES=(config.json nodes.json settings.json)
 CRED_MODE=600
 
+# ----------------- optional route watchdog, on upgrade -----------------
+# THE upgrade path of the optional watchdog, and the only place this installer mentions
+# it. The watchdog is OFF by default and is never turned on here: enabling a component
+# that restarts a network service must stay the user's own decision (`sc watchdog on`).
+#
+# What refresh_route_watchdog() does is rewrite the units of a host that ALREADY opted
+# in, so an upgrade whose unit content changed actually reaches it. Consent is read from
+# systemd's own enablement of the timer, never from a unit file being present — a file
+# left behind by `sc watchdog off` is not consent. `sc watchdog on` writes constant bytes
+# and re-enables an already-enabled timer, so running this twice does nothing the first
+# run did not: the refresh is idempotent because the operation it delegates to is.
+#
+# The unit name is a variable for the same reason CRED_FILES is one: the test extracts
+# this function and runs it against stubs, and a literal would make that impossible.
+WATCHDOG_TIMER="sing-box-route-watchdog.timer"
+
+# ----------------- protect sing-box's policy routing from systemd-networkd -----------------
+# THE root-cause fix, and the reason the watchdog is a fallback rather than the answer.
+#
+# systemd-networkd's ManageForeignRoutingPolicyRules= defaults to YES: it takes ownership
+# of routing policy rules created by other programs and deletes the ones it does not
+# recognise. sing-box's auto_route installs exactly such rules, so any networkd reload can
+# remove them while sing-box keeps running — the silent direct leak this release is about.
+# Dropping in `no` stops that at the source, which is strictly better than noticing the
+# damage afterwards and restarting a service to undo it.
+#
+# Installed ONLY where it can do something: a host with no systemd-networkd unit gets
+# nothing, because writing networkd configuration onto a machine that does not run
+# networkd is litter. The reload is `try-reload-or-restart`, which is a no-op on a host
+# where the unit exists but is not running, so an inactive networkd is never started by us.
+#
+# Both paths are variables for the same reason CRED_FILES is one: the test extracts this
+# function and points it at a temporary directory.
+NETWORKD_DROPIN_DIR="/etc/systemd/networkd.conf.d"
+NETWORKD_DROPIN_NAME="singbox-cli-keep-foreign-rules.conf"
+protect_foreign_rules() {
+    local source="$1"
+    [ -f "$source" ] || return 0
+    # `list-unit-files` rather than is-active: the protection must be in place BEFORE
+    # networkd is next started, not only on hosts where it happens to be running now.
+    if ! systemctl list-unit-files systemd-networkd.service >/dev/null 2>&1 \
+        || ! systemctl list-unit-files systemd-networkd.service 2>/dev/null \
+             | grep -q '^systemd-networkd\.service'; then
+        return 0
+    fi
+    mkdir -p "$NETWORKD_DROPIN_DIR"
+    # install(1) rather than cp: one call sets the mode, and re-running writes the same
+    # bytes over the same path, so the step is idempotent by construction.
+    install -m 644 "$source" "$NETWORKD_DROPIN_DIR/$NETWORKD_DROPIN_NAME"
+    systemctl try-reload-or-restart systemd-networkd >/dev/null 2>&1 || true
+}
+
 # Reports the mode of every credential document and narrows — never widens — any found
 # wider than CRED_MODE. Structurally incapable of terminating the installer under
 # `set -euo pipefail`: every command whose status can be non-zero sits in an `if`
 # condition or a `case`, which are set -e's exempt contexts. Reads nothing from PHASE_*
 # and writes nothing to it, so install_report()'s derivation and the exit status are
 # untouched.
+refresh_route_watchdog() {
+    [ "$INIT_SYS" = "systemd" ] || return 0
+    systemctl is-enabled "$WATCHDOG_TIMER" >/dev/null 2>&1 || return 0
+    /usr/local/bin/sc watchdog on >/dev/null 2>&1 || true
+}
+
 sweep_credential_modes() {
     local f path mode newmode
     t perm_header "$CRED_DIR"
@@ -559,7 +617,8 @@ else
         uninstall.sh \
         systemd/sing-box.service \
         systemd/sing-box-rules-update.service \
-        systemd/sing-box-rules-update.timer
+        systemd/sing-box-rules-update.timer \
+        systemd/networkd-keep-foreign-rules.conf
     do
         t fetching_item "$rel"
         if ! gh_fetch "$RAW_BASE/$rel" "$ARTIFACT_DIR/$rel" "${CURL_OPTS_QUIET[@]}"; then
@@ -702,6 +761,7 @@ if [ "$INIT_SYS" = "systemd" ]; then
     install -m 644 "$ARTIFACT_DIR/systemd/sing-box-rules-update.service" /etc/systemd/system/
     install -m 644 "$ARTIFACT_DIR/systemd/sing-box-rules-update.timer" /etc/systemd/system/
     systemctl daemon-reload
+    protect_foreign_rules "$ARTIFACT_DIR/systemd/networkd-keep-foreign-rules.conf"
 else
     # OpenRC (Alpine and compatible)
     cat > /etc/init.d/sing-box <<INITEOF
@@ -792,6 +852,10 @@ fi
 # `|| true` makes "the sweep cannot change the run's outcome" true by construction
 # rather than by an audit of every line inside it.
 sweep_credential_modes || true
+# Same placement and the same `|| true` for the same reason: a host that never enabled
+# the watchdog takes one systemctl query and returns, and neither arm may change what
+# install_report() derives from PHASE_CONFIG / PHASE_SERVICE.
+refresh_route_watchdog || true
 
 # The closing report and the exit status come from the same derivation, so the
 # installer cannot print success for a run that did not install a working service.

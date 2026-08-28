@@ -5,10 +5,11 @@
 # literal. This file is installed by copying it, so the constant travels with the code
 # and cannot disagree with it; the release tag is what must be kept in step with THIS
 # line, never the other way round.
-SC_VERSION = "0.5.3"
+SC_VERSION = "0.6.0"
 import argparse
 import base64
 import copy
+import fcntl
 import hashlib
 import http.client
 import io
@@ -53,6 +54,27 @@ SERVICE = "sing-box"
 # Renaming the device must stay a one-line edit — a probe left on the old name would
 # report a false PROBLEM on a perfectly healthy host.
 TUN_IFACE = "sb-tun"
+# What `auto_route` asks the Linux kernel for, and the number a diagnostic needs in order
+# to look for it. sing-box installs a POLICY-ROUTING SET — one route table holding the
+# default route through the tun, plus a band of `ip rule` entries that send traffic into
+# it — and the DOCUMENT decides that table's index. sc emits no such field, so this is
+# sing-box's own Linux default; _route_policy_spec() reads the effective values out of
+# config.json and falls back to this only when the document leaves the field implicit.
+# Never spell this number at a probe site: a host whose override sets
+# `iproute2_table_index` would be reported broken while being perfectly healthy.
+IPROUTE2_TABLE_DEFAULT = 2022
+# The destination handed to `ip route get`. A LOCAL query against the kernel's routing
+# tables: it selects a route and prints it, and transmits nothing. The address is a
+# well-known public one purely so the answer exercises the default route rather than a
+# LAN or loopback entry — no packet ever reaches it, so this is not a reachability probe
+# and no judgement about proxy or node quality may ever be built on it.
+ROUTE_PROBE_DEST = "1.1.1.1"
+# THE drop-in that stops systemd-networkd deleting the rules above, installed by
+# install.sh and only ever READ here (`sc doctor` writes nothing). Its content and the
+# reasoning live in systemd/networkd-keep-foreign-rules.conf; the name is repeated here
+# rather than derived because the installer and the diagnostic are separate programs, and
+# the test asserts the two spellings agree.
+NETWORKD_DROPIN = Path("/etc/systemd/networkd.conf.d/singbox-cli-keep-foreign-rules.conf")
 # THE tag of the auto-select group — the `urltest` outbound that probes every node and
 # routes to the fastest responding one. One definition; every consumer reads this name and
 # no consumer spells the literal. Deliberately language-neutral: tags live in config.json,
@@ -105,6 +127,49 @@ PERIODIC_SCRIPT = "singbox-update-rules"
 # OnCalendar systemd will not parse must reach no file at all) be driven from a fixture
 # without root, and without a systemctl running anywhere near the machine under test.
 TIMER_DROPIN_DIR = Path("/etc/systemd/system/sing-box-rules-update.timer.d")
+
+# ============ Route watchdog ============
+# A FALLBACK, and deliberately not the answer to lost policy routing.
+#
+# The known cause of that loss is systemd-networkd deleting foreign routing policy rules
+# (ManageForeignRoutingPolicyRules= defaults to yes), and the fix for it is a networkd
+# drop-in installed by install.sh — see NETWORKD_DROPIN above. That removes the deletion;
+# this only notices the damage afterwards and undoes it by restarting the service, which
+# drops every live connection. Prevention beats repair, so a host needing this one
+# regularly has something ELSE deleting its rules, and `sc doctor`'s rule-protection row
+# is where that investigation starts.
+#
+# It stays because the drop-in covers one deleter, not every deleter — a hand-run
+# `ip rule flush`, another VPN's teardown, a future manager nobody has met yet.
+#
+# THE names and numbers, in one place. It is OFF until the user runs `sc watchdog on`:
+# nothing installs, enables or starts it, because a component that restarts a network
+# service must be something a person chose.
+#
+# It repairs exactly ONE fault — the kernel policy routing that carries this host's
+# traffic having gone missing while sing-box still runs — and it decides that from kernel
+# state alone (`ip rule`, `ip route`), never from a website, a DNS answer or a latency
+# measurement. Node quality is a different question with a different answer (`sc ping`),
+# and mixing the two would make an unreachable site restart the service.
+WATCHDOG_UNIT = "sing-box-route-watchdog"
+WATCHDOG_SERVICE = WATCHDOG_UNIT + ".service"
+WATCHDOG_TIMER = WATCHDOG_UNIT + ".timer"
+SYSTEMD_DIR = Path("/etc/systemd/system")
+# Everything the watchdog remembers between runs: the last check's time and verdict, and
+# the last repair's time. /var/lib rather than /etc — it is runtime state, not
+# configuration, and uninstall removes both trees anyway.
+WATCHDOG_STATE_DIR = Path("/var/lib/sing-box")
+WATCHDOG_STATE_PATH = WATCHDOG_STATE_DIR / "watchdog.json"
+WATCHDOG_LOCK_PATH = WATCHDOG_STATE_DIR / "watchdog.lock"
+# Two failing checks, separated by this pause, before anything is restarted. One check is
+# not evidence: sing-box rewrites its own rules during a reload, so a single sample taken
+# mid-reload sees exactly the state this watchdog exists to repair.
+WATCHDOG_CONFIRM_DELAY = 5
+# No second restart within this window, whatever the checks say. A host that comes back
+# broken must stay broken and visible in the journal rather than being restarted every
+# minute forever — a restart loop is worse than the leak, because it also drops every
+# live connection each time.
+WATCHDOG_COOLDOWN = 300
 
 # ============ Rule-set constants ============
 # A *usable rule-set* is a .srs file that exists, carries the SRS magic and meets
@@ -456,6 +521,92 @@ TRANSLATIONS = {
             "{path} 是符号链接，sc 不会在此创建符号链接 —— 请用 ls -l {path} 检查",
         "no directory at {path}": "目录不存在：{path}",
         "this check could not run: {e}": "该项检查无法执行：{e}",
+        # doctor — policy routing (S6). The section that catches the failure in which
+        # sing-box is running, sb-tun exists, and traffic still leaves unproxied.
+        "policy routing": "策略路由",
+        "route table": "路由表",
+        "ip rule": "ip rule 规则",
+        "rule to table": "进入路由表的规则",
+        "route lookup": "路由查询",
+        "{iface}, table {table}": "{iface}，路由表 {table}",
+        "this configuration installs no policy routing (no tun inbound with auto_route)":
+            "当前配置不会安装策略路由（没有开启 auto_route 的 tun 入站）",
+        "table {table} carries the default route via {iface}":
+            "路由表 {table} 中有经 {iface} 的默认路由",
+        "table {table} has no default route via {iface}":
+            "路由表 {table} 中没有经 {iface} 的默认路由",
+        "the rule set is incomplete: {detail}": "策略路由规则不完整：{detail}",
+        " and ": "；",
+        "the kernel reports a rule as [unresolved]": "内核报告存在 [unresolved] 规则",
+        "no rule at priority {prios}, which a goto targets":
+            "goto 指向的优先级 {prios} 上没有对应规则",
+        "{n} rule(s), every goto resolved": "共 {n} 条规则，所有 goto 均已解析",
+        "traffic is directed into table {table}": "已有规则把流量送入路由表 {table}",
+        "no rule sends ordinary traffic into table {table} — traffic takes the physical "
+        "interface instead":
+            "没有任何规则把普通流量送入路由表 {table} —— 流量改走物理网卡",
+        "{dest} resolves through {iface}": "{dest} 的路由查询经过 {iface}",
+        "{dest} does not resolve through {iface} — this host is leaking directly":
+            "{dest} 的路由查询没有经过 {iface} —— 本机正在直连泄漏",
+        "traffic can leave this host unproxied while sing-box still runs — run "
+        "`sc reload` to reinstall the rules":
+            "sing-box 仍在运行，但流量可能未经代理直接外发 —— 运行 `sc reload` 重新安装规则",
+        "rule protection": "规则保护",
+        "the rules are not protected: whatever their state now, a systemd-networkd "
+        "reload can delete them again":
+            "这些规则没有受到保护：无论此刻是否完好，systemd-networkd 的一次重载"
+            "就可能再次删掉它们",
+        "systemd-networkd is not installed — it cannot delete these rules":
+            "本机未安装 systemd-networkd —— 它不会删除这些规则",
+        "systemd-networkd is told to keep foreign rules ({path})":
+            "已配置 systemd-networkd 不删除外部规则（{path}）",
+        "systemd-networkd may delete these rules — it is installed and {path} is "
+        "missing; reinstall sc, or create it with [Network] "
+        "ManageForeignRoutingPolicyRules=no":
+            "systemd-networkd 可能删除这些规则 —— 它已安装，而 {path} 不存在；"
+            "请重新安装 sc，或自行创建该文件并写入 [Network] "
+            "ManageForeignRoutingPolicyRules=no",
+        # watchdog — the optional repair loop. Every string it can print.
+        "Error: the watchdog requires systemd; this host has none":
+            "错误：watchdog 需要 systemd，本机没有",
+        "Error: argument must be one of on / off / status":
+            "错误：参数必须是 on / off / status 之一",
+        "Route watchdog → on": "策略路由 watchdog → 已开启",
+        "Route watchdog → off": "策略路由 watchdog → 已关闭",
+        "It checks kernel policy routing only, and restarts sing-box at most once every "
+        "{n} second(s); a repair briefly interrupts connections.":
+            "它只检查内核策略路由，且每 {n} 秒最多重启一次 sing-box；修复会短暂中断连接。",
+        "Logs: journalctl -u {unit}": "查看日志：journalctl -u {unit}",
+        "policy routing is incomplete ({detail}) — no restart: the last one was less "
+        "than {n} second(s) ago":
+            "策略路由不完整（{detail}）—— 本次不重启：距上次重启不足 {n} 秒",
+        "policy routing is incomplete ({detail}) — restarting {service}":
+            "策略路由不完整（{detail}）—— 正在重启 {service}",
+        "policy routing restored after restarting {service}":
+            "重启 {service} 后策略路由已恢复",
+        "policy routing is STILL incomplete after restarting {service} ({detail}) — run "
+        "`sc doctor`":
+            "重启 {service} 后策略路由仍然不完整（{detail}）—— 请运行 `sc doctor`",
+        "{service} could not be restarted — policy routing is still incomplete "
+        "({detail})":
+            "{service} 重启未成功 —— 策略路由仍然不完整（{detail}）",
+        "timer": "定时器",
+        "last check": "最近检查时间",
+        "last result": "最近检查结果",
+        "last automatic repair": "最近一次自动修复",
+        "enabled and running": "已启用且正在运行",
+        "enabled, timer not running": "已启用，但定时器未运行",
+        "off": "未开启",
+        "policy routing complete": "策略路由完整",
+        "policy routing complete (the first check had failed)":
+            "策略路由完整（第一次检查曾失败）",
+        "not checked — sing-box is disabled (`sc off`)":
+            "未检查 —— sing-box 已被禁用（`sc off`）",
+        "incomplete — no restart, still within the cooldown":
+            "不完整 —— 处于冷却期内，未重启",
+        "was incomplete — restarting sing-box restored it":
+            "曾不完整 —— 重启 sing-box 后已恢复",
+        "still incomplete after a restart": "重启后仍然不完整",
         # config composition — the user override and the drift statement. None of these
         # may contain 失败, which is the load-bearing grep literal of "failed: {e}" above.
         "Cannot use {path}: {problem}": "无法使用 {path}：{problem}",
@@ -3093,12 +3244,14 @@ def cmd_status(args):
 
 
 # ============ doctor ============
-# One pass, one screen, eight sections, in CAUSAL order: no section is printed before a
+# One pass, one screen, nine sections, in CAUSAL order: no section is printed before a
 # section whose failure would explain it (binary and rule-sets above the config check,
-# all three above the service, the service above TUN / Clash API, the Clash rows above
-# the node delays and the lookup, and all of them above egress; file permissions last,
-# because a wrong mode explains no other row). Nothing here forms a second opinion —
-# every fact comes from the function that already owns that judgment.
+# all three above the service, the service above TUN, TUN above the policy routing that
+# only exists once the device does, policy routing above the Clash API and the lookup —
+# a truncated rule band explains an egress address that is the host's own — the Clash
+# rows above the node delays and the lookup, and all of them above egress; file
+# permissions last, because a wrong mode explains no other row). Nothing here forms a
+# second opinion — every fact comes from the function that already owns that judgment.
 #
 # READ-ONLY, absolutely. `doctor` runs when the machine is already broken, so it must not
 # destroy the evidence: it writes no file, touches no service, and main() keeps it off
@@ -3394,8 +3547,254 @@ def _doctor_tun():
              ", ".join(addrs) if addrs else t("(none)"))]
 
 
+def _route_policy_spec():
+    """What the document on disk asks the kernel to install, or None when it asks for
+    nothing. Reads config.json and NOTHING else; raises this file's usual reader
+    exceptions (OSError / ValueError) for the caller to render.
+
+    Returns {"iface": <name>, "table": <index>} — both taken from the tun inbound that
+    enables `auto_route`, because that flag is what makes sing-box create a route table
+    and a band of `ip rule` entries at all. `interface_name` and `iproute2_table_index`
+    are read from the DOCUMENT and fall back to TUN_IFACE / IPROUTE2_TABLE_DEFAULT only
+    when the document leaves them implicit, which is the whole reason this function
+    exists: an override may set either, and a probe holding a literal would report a
+    correctly configured host as broken.
+
+    None means "this document installs no policy routing" — no tun inbound, or one with
+    auto_route off. That is a legitimate configuration, not a fault, and every consumer
+    renders it as such rather than as a missing route.
+    """
+    doc = json.loads(CFG_PATH.read_bytes().decode("utf-8"))
+    if not isinstance(doc, dict):
+        return None
+    for inbound in doc.get("inbounds") or []:
+        if not isinstance(inbound, dict) or inbound.get("type") != "tun":
+            continue
+        if not inbound.get("auto_route"):
+            continue
+        table = inbound.get("iproute2_table_index")
+        iface = inbound.get("interface_name")
+        return {"iface": iface if isinstance(iface, str) and iface else TUN_IFACE,
+                "table": table if isinstance(table, int) and not isinstance(table, bool)
+                         else IPROUTE2_TABLE_DEFAULT}
+    return None
+
+
+def _rule_priorities(rules):
+    """Every priority `ip rule show` printed, as a set of strings. A rule line begins
+    with its priority followed by a colon; anything else in the output is ignored."""
+    found = set()
+    for line in rules.splitlines():
+        head = line.split(":", 1)[0].strip()
+        if head and head.isdigit():
+            found.add(head)
+    return found
+
+
+def _goto_targets(rules):
+    """Every priority named by a `goto` action in `ip rule show` output.
+
+    These are what turns a partial rule set into a silent leak: sing-box's tun rules jump
+    to a `nop` rule at the end of its band, and a jump whose target is gone leaves the
+    kernel evaluating the ordinary tables — i.e. the physical interface.
+    """
+    targets = []
+    for line in rules.splitlines():
+        words = line.split()
+        for i, word in enumerate(words):
+            if word == "goto" and i + 1 < len(words) and words[i + 1].isdigit():
+                targets.append(words[i + 1])
+    return targets
+
+
+def _route_policy_findings(spec, rules, table_routes, route_get):
+    """THE verdict on a policy-routing set, as doctor rows — a PURE function of the three
+    `ip` outputs it is handed, so both consumers (the doctor section and the watchdog)
+    judge one set of bytes by one set of rules, and a test drives it with no `ip` at all.
+
+    Five conditions, each its own row, each one a way the reported failure actually
+    presents itself on a host where sing-box is still running and the tun still exists:
+
+      * the tun device carries the table's default route — the table is there but empty
+        is a leak, and an empty table is invisible in `ip rule` output;
+      * `ip rule` holds no `[unresolved]` entry — the kernel's own word for a jump whose
+        target is gone, and the single most direct evidence of a truncated rule band;
+      * every `goto` has its target rule — the same fault stated structurally, so it is
+        still caught on a kernel that renders it differently;
+      * some rule other than the tun's own `iif` entry sends traffic INTO the table —
+        without one the table is complete and simply never consulted;
+      * `ip route get` for an ordinary public address really resolves through the tun.
+
+    Judges CONNECTIVITY NOWHERE. Every input is a local kernel query; nothing here is a
+    reachability test, a DNS lookup or a latency measurement, and no row may ever be
+    added that makes this function an opinion about a node or a proxy.
+    """
+    iface = spec["iface"]
+    table = str(spec["table"])
+    rows = []
+
+    default_via_tun = any(
+        line.split()[:1] == ["default"] and ("dev " + iface) in line
+        for line in table_routes.splitlines())
+    rows.append((DOCTOR_OK if default_via_tun else DOCTOR_PROBLEM, "route table",
+                 t("table {table} carries the default route via {iface}",
+                   table=table, iface=iface) if default_via_tun
+                 else t("table {table} has no default route via {iface}",
+                        table=table, iface=iface)))
+
+    priorities = _rule_priorities(rules)
+    unresolved = "[unresolved]" in rules
+    missing_goto = sorted(set(target for target in _goto_targets(rules)
+                              if target not in priorities))
+    if unresolved or missing_goto:
+        detail = ([t("the kernel reports a rule as [unresolved]")] if unresolved else []) \
+            + ([t("no rule at priority {prios}, which a goto targets",
+                  prios=" ".join(missing_goto))] if missing_goto else [])
+        # The separator between two translated fragments is itself translated, exactly
+        # as the rule-set and status phrases in this file already are: joining with a
+        # literal ", " would put an ASCII comma inside a Chinese sentence.
+        rows.append((DOCTOR_PROBLEM, "ip rule",
+                     t("the rule set is incomplete: {detail}",
+                       detail=t(" and ").join(detail))))
+    else:
+        rows.append((DOCTOR_OK, "ip rule",
+                     t("{n} rule(s), every goto resolved", n=len(priorities))))
+
+    # A rule that FEEDS the table. The tun's own `iif <iface>` rule is excluded on
+    # purpose: it matches traffic already emitted by the tun, so a set reduced to that
+    # one entry — exactly the reported failure — looks like it references the table
+    # while sending nothing into it.
+    feeds_table = any(("lookup " + table) in line and (" iif " + iface) not in line
+                      for line in rules.splitlines())
+    rows.append((DOCTOR_OK if feeds_table else DOCTOR_PROBLEM, "rule to table",
+                 t("traffic is directed into table {table}", table=table) if feeds_table
+                 else t("no rule sends ordinary traffic into table {table} — traffic "
+                        "takes the physical interface instead", table=table)))
+
+    through_tun = ("dev " + iface) in route_get
+    rows.append((DOCTOR_OK if through_tun else DOCTOR_PROBLEM, "route lookup",
+                 t("{dest} resolves through {iface}", dest=ROUTE_PROBE_DEST, iface=iface)
+                 if through_tun
+                 else t("{dest} does not resolve through {iface} — this host is leaking "
+                        "directly", dest=ROUTE_PROBE_DEST, iface=iface)))
+    return rows
+
+
+def _route_policy_probe():
+    """The policy-routing rows for THIS host: read config.json, ask `ip` three read-only
+    questions, and hand the answers to the pure judge above.
+
+    Every command is a query. `ip rule show`, `ip route show table N` and `ip route get`
+    read kernel state and change none of it; `ip route get` selects a route and prints
+    it without transmitting a packet, which is why this check reaches no network and can
+    be run on a host whose proxy is down.
+    """
+    try:
+        spec = _route_policy_spec()
+    except FileNotFoundError:
+        return [(DOCTOR_UNKNOWN, "policy routing",
+                 t("no file at {path}", path=str(CFG_PATH)))]
+    except (OSError, ValueError) as e:
+        return [(DOCTOR_UNKNOWN, "policy routing",
+                 t("cannot read {path}: {e}", path=str(CFG_PATH), e=_plain(str(e))))]
+    if spec is None:
+        return [(DOCTOR_UNKNOWN, "policy routing",
+                 t("this configuration installs no policy routing (no tun inbound with "
+                   "auto_route)"))]
+    iface, table = spec["iface"], str(spec["table"])
+    try:
+        link_code, link_out = _doctor_run(["ip", "-br", "link", "show", iface])
+        _rc, rules = _doctor_run(["ip", "rule", "show"])
+        _rc, table_routes = _doctor_run(["ip", "route", "show", "table", table])
+        _rc, route_get = _doctor_run(["ip", "route", "get", ROUTE_PROBE_DEST])
+    except OSError as e:
+        return [(DOCTOR_UNKNOWN, "policy routing",
+                 t("cannot query: {e}", e=_plain(str(e))))]
+    # The device is the precondition of every row below it, so a host without it gets
+    # that one fact and no derived ones: four PROBLEM rows about a table belonging to a
+    # device that does not exist would bury the cause under its own consequences.
+    if link_code != 0 or not link_out.strip():
+        return [(DOCTOR_PROBLEM, "policy routing",
+                 t("{iface} does not exist", iface=iface))]
+    rows = [(DOCTOR_OK, "policy routing",
+             t("{iface}, table {table}", iface=iface, table=table))]
+    return (rows + _route_policy_findings(spec, rules, table_routes, route_get)
+            + [_networkd_protection_row()])
+
+
+def _networkd_protection_row():
+    """Is the one known DELETER of these rules configured to leave them alone?
+
+    THE root-cause row, and the reason it sits inside this section rather than in one of
+    its own: it explains the four rows above it. systemd-networkd's
+    ManageForeignRoutingPolicyRules= defaults to yes, which means it takes ownership of
+    routing policy rules created by other programs and removes what it does not
+    recognise — sing-box's auto_route rules are exactly that. Every networkd reload can
+    therefore delete them while sing-box keeps running, which is the silent leak the rows
+    above detect after the fact.
+
+    Three states, and the middle one is the point:
+      * networkd is not installed        -> OK, and nothing to do (this deleter is absent)
+      * the drop-in is in place          -> OK
+      * networkd present, no drop-in     -> PROBLEM naming the fix
+
+    A PROBLEM here is a RISK, not damage: the rules may well be intact right now. It is
+    still a problem, because a host in this state will lose them again at the next
+    networkd reload no matter how many times they are restored.
+    """
+    unit = Path("/lib/systemd/system/systemd-networkd.service")
+    unit_alt = Path("/usr/lib/systemd/system/systemd-networkd.service")
+    if not unit.exists() and not unit_alt.exists():
+        return (DOCTOR_OK, "rule protection",
+                t("systemd-networkd is not installed — it cannot delete these rules"))
+    if NETWORKD_DROPIN.exists():
+        return (DOCTOR_OK, "rule protection",
+                t("systemd-networkd is told to keep foreign rules ({path})",
+                  path=str(NETWORKD_DROPIN)))
+    return (DOCTOR_PROBLEM, "rule protection",
+            t("systemd-networkd may delete these rules — it is installed and "
+              "{path} is missing; reinstall sc, or create it with "
+              "[Network] ManageForeignRoutingPolicyRules=no",
+              path=str(NETWORKD_DROPIN)))
+
+
+def _doctor_route_policy():
+    """S6 — is the kernel policy routing that carries this host's traffic still whole?
+
+    Below the TUN section and above everything that goes through the proxy, because that
+    is the causal position of the failure it exists for: sing-box running, the tun device
+    present, `sc status` and the old doctor rows all green — and the `ip rule` band
+    truncated, so every local connection quietly takes the physical interface. The TUN
+    section cannot see it (the device really is there) and the egress row can only see
+    its consequence.
+
+    READ-ONLY like every other section: it runs `ip` queries, never `ip rule add`, and it
+    does not restart, reload or repair anything. The repair belongs to the user
+    (`sc reload`) or, on a host that opted in, to `sc watchdog`.
+    """
+    rows = _route_policy_probe()
+    # The closing advice is chosen by WHICH rows failed, because the two failures need
+    # opposite actions and one sentence for both would misdirect exactly half of them.
+    # A missing protection is a RISK on a host whose rules are currently fine — telling
+    # that user to `sc reload` would have them reinstall rules that are already there and
+    # learn nothing about the deleter that will remove them again.
+    broken = [label for cls, label, _v in rows
+              if cls == DOCTOR_PROBLEM and label != "rule protection"]
+    at_risk = any(cls == DOCTOR_PROBLEM and label == "rule protection"
+                  for cls, label, _v in rows)
+    if broken:
+        rows.append((None, None, "    " + t(
+            "traffic can leave this host unproxied while sing-box still runs — run "
+            "`sc reload` to reinstall the rules")))
+    if at_risk:
+        rows.append((None, None, "    " + t(
+            "the rules are not protected: whatever their state now, a systemd-networkd "
+            "reload can delete them again")))
+    return rows
+
+
 def _doctor_clash():
-    """S6 — the persisted Clash API port, whether it answers, how many nodes carry a
+    """S7 — the persisted Clash API port, whether it answers, how many nodes carry a
     stored delay, and one measured name lookup through the running install.
 
     The port comes from settings only. doctor never probes for a free port (that would
@@ -3487,7 +3886,7 @@ def _doctor_clash():
 
 
 def _doctor_egress():
-    """S7 — the observed public egress address.
+    """S8 — the observed public egress address.
 
     Unconditional, unlike `sc status`: "the service is down and my egress IP is my ISP
     address" is a confirmation, not noise. Makes no claim about whether it is proxied.
@@ -3499,7 +3898,7 @@ def _doctor_egress():
 
 
 def _doctor_permissions():
-    """S8 — does anything in the configuration directory grant access to group or other?
+    """S9 — does anything in the configuration directory grant access to group or other?
 
     LAST, because a wrong mode explains no other row on the screen; the ordering rule puts
     a row above another only when its failure would explain it.
@@ -3591,6 +3990,7 @@ DOCTOR_SECTIONS = (
     ("configuration", _doctor_config),
     ("service", _doctor_service),
     ("TUN interface", _doctor_tun),
+    ("policy routing", _doctor_route_policy),
     ("Clash API", _doctor_clash),
     ("egress IP", _doctor_egress),
     ("file permissions", _doctor_permissions),
@@ -3629,6 +4029,301 @@ def cmd_doctor(args):
             if cls is not None:
                 worst = max(worst, cls)
     sys.exit(DOCTOR_EXIT[worst])
+
+
+# ============ watchdog ============
+# The optional repair loop, and the ONE fault it repairs: the kernel policy routing this
+# host's traffic depends on having gone missing while sing-box still runs. Everything it
+# knows it learns from _route_policy_probe() — the same probe `sc doctor`'s policy-routing
+# section renders — so the diagnosis has one owner and the watchdog forms no second
+# opinion about what "healthy" means.
+#
+# WHAT IT WILL NOT DO, by construction rather than by convention:
+#   * it reaches no network. Not ipify, not Cloudflare, not a DNS server, not a node.
+#     Every input is a local kernel query, so an unreachable site, a slow resolver and a
+#     failing node CANNOT make it restart anything;
+#   * it does not start a service the user disabled. `sc off` is a decision, and a
+#     watchdog that overrode it would be a way of turning the proxy back on by surprise;
+#   * it restarts at most once per WATCHDOG_COOLDOWN, and only after two failing checks
+#     WATCHDOG_CONFIRM_DELAY apart;
+#   * it never regenerates the config. The document is not what went missing — the kernel
+#     state is — so `systemctl restart` is the whole repair, and `sc reload` would rewrite
+#     a file that was already correct.
+
+
+def _watchdog_state():
+    """What the last run recorded, as a dict; {} when there is nothing (or nothing
+    usable) to read. Never raises and never writes: a corrupt state file must not stop a
+    repair, it must only cost the history rendered by `sc watchdog status`."""
+    try:
+        doc = json.loads(WATCHDOG_STATE_PATH.read_bytes().decode("utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return doc if isinstance(doc, dict) else {}
+
+
+def _watchdog_record(**fields):
+    """Merge `fields` into the state document. Best-effort by design: this is history for
+    a human to read, so failing to write it may never change what the run DID."""
+    doc = _watchdog_state()
+    doc.update(fields)
+    try:
+        WATCHDOG_STATE_DIR.mkdir(parents=True, exist_ok=True)
+        _write_private(WATCHDOG_STATE_PATH, json.dumps(doc, indent=2, ensure_ascii=False))
+    except (OSError, ValueError):
+        pass
+
+
+def _watchdog_log(message):
+    """One line to the journal — stderr, which is where systemd collects a unit's output.
+    Deliberately not `logger`: the unit already runs under journald, so a second transport
+    would only add a dependency and a second timestamp."""
+    sys.stderr.write(_plain(message) + "\n")
+    sys.stderr.flush()
+
+
+def _route_policy_healthy():
+    """(healthy, detail) for the ONE fault this watchdog repairs.
+
+    Healthy is the ABSENCE of a PROBLEM row, so an UNKNOWN — no config, no `ip`, a
+    document that installs no policy routing at all — is NOT a failure: a watchdog that
+    restarted a service because it could not tell would be a restart loop on every host
+    it does not apply to. The detail is the first PROBLEM row's text, so the journal says
+    which condition failed rather than "unhealthy".
+    """
+    rows = _route_policy_probe()
+    for cls, _label, value in rows:
+        if cls == DOCTOR_PROBLEM:
+            return False, value
+    return True, ""
+
+
+def _watchdog_enabled_units():
+    """(timer_enabled, timer_active) as reported by systemd, or (None, None) when it
+    cannot be asked. Read through _doctor_run like every other probe in this file."""
+    try:
+        code, _out = _doctor_run(["systemctl", "is-enabled", WATCHDOG_TIMER])
+        enabled = code == 0
+        code, _out = _doctor_run(["systemctl", "is-active", WATCHDOG_TIMER])
+        active = code == 0
+    except OSError:
+        return None, None
+    return enabled, active
+
+
+def _service_disabled_by_user():
+    """True when sing-box is neither running nor enabled — i.e. `sc off` was run.
+
+    BOTH facts, and both from systemd: a service that is merely stopped right now may be
+    mid-restart, while one that is also not enabled at boot is a decision. The watchdog
+    stands down on that host rather than starting a proxy the user turned off.
+    """
+    try:
+        active, _out = _doctor_run(["systemctl", "is-active", SERVICE])
+        enabled, _out = _doctor_run(["systemctl", "is-enabled", SERVICE])
+    except OSError:
+        return False
+    return active != 0 and enabled != 0
+
+
+def cmd_watchdog_run(args):
+    """The timer's payload: check, confirm, repair once, verify. Exit 0 when this host is
+    fine or was repaired; non-zero when it is still leaking.
+
+    The state machine, and every transition it can make:
+
+        healthy ─────────────────────────────► exit 0, one nothing-written run
+        failing ─► wait WATCHDOG_CONFIRM_DELAY ─► healthy ─► exit 0 (a transient)
+                                                └ failing ─► cooling ─► exit 1, no restart
+                                                            └ restart ─► healthy ─► exit 0
+                                                                        └ failing ─► exit 1
+
+    A healthy run writes its verdict and prints NOTHING: this fires every minute, and a
+    watchdog that logs on success is a watchdog whose journal nobody reads.
+    """
+    if not SYSTEMD:
+        sys.exit(t("Error: the watchdog requires systemd; this host has none"))
+    # ONE runner at a time. A timer that fires while the previous run is inside its 5 s
+    # confirmation window would otherwise take its own two samples and could restart the
+    # service a second time, defeating the cooldown that exists to prevent exactly that.
+    WATCHDOG_STATE_DIR.mkdir(parents=True, exist_ok=True)
+    lock = open(str(WATCHDOG_LOCK_PATH), "w")
+    try:
+        try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return          # another run owns this; silence is correct, not an error
+        now = time.time()
+        # `sc off` stands. Checked before the first probe, so a disabled host costs one
+        # systemctl query and never reports a leak it was told not to care about.
+        if _service_disabled_by_user():
+            _watchdog_record(last_check=now, last_result="skipped-disabled")
+            return
+        healthy, detail = _route_policy_healthy()
+        if healthy:
+            _watchdog_record(last_check=now, last_result="ok")
+            return
+        # Second opinion from the same probe, after a pause: the one thing that
+        # distinguishes a truncated rule set from a reload in progress.
+        time.sleep(WATCHDOG_CONFIRM_DELAY)
+        healthy, detail = _route_policy_healthy()
+        if healthy:
+            _watchdog_record(last_check=time.time(), last_result="ok-after-retry")
+            return
+        state = _watchdog_state()
+        last_repair = state.get("last_repair")
+        if isinstance(last_repair, (int, float)) and now - last_repair < WATCHDOG_COOLDOWN:
+            _watchdog_record(last_check=time.time(), last_result="failing-cooldown")
+            _watchdog_log(t("policy routing is incomplete ({detail}) — no restart: the "
+                            "last one was less than {n} second(s) ago",
+                            detail=detail, n=WATCHDOG_COOLDOWN))
+            sys.exit(1)
+        _watchdog_log(t("policy routing is incomplete ({detail}) — restarting {service}",
+                        detail=detail, service=SERVICE))
+        restarted = restart_service()
+        # Verified from the kernel, never from the restart's own exit status: systemctl
+        # reporting success says the process started, not that the rules came back.
+        healthy, detail = _route_policy_healthy()
+        _watchdog_record(last_check=time.time(), last_repair=time.time(),
+                         last_result="repaired" if healthy else "still-failing")
+        if healthy:
+            _watchdog_log(t("policy routing restored after restarting {service}",
+                            service=SERVICE))
+            return
+        _watchdog_log(t("policy routing is STILL incomplete after restarting {service} "
+                        "({detail}) — run `sc doctor`", service=SERVICE, detail=detail)
+                      if restarted else
+                      t("{service} could not be restarted — policy routing is still "
+                        "incomplete ({detail})", service=SERVICE, detail=detail))
+        sys.exit(1)
+    finally:
+        lock.close()
+
+
+def _watchdog_units_text():
+    """THE two unit files, as text. One definition, two consumers: `sc watchdog on` writes
+    them, and the test suite asserts their content — so what is installed and what is
+    reviewed cannot drift apart.
+
+    `OnBootSec=2min` gives the boot-time race (auto_route is installed asynchronously)
+    room to settle before the first check, and `OnUnitActiveSec=1min` is the cadence
+    afterwards. `Persistent=` is deliberately absent: a missed check is not worth
+    catching up on, because the next one is sixty seconds away.
+    """
+    service = (
+        "[Unit]\n"
+        "Description=sing-box policy-route watchdog (kernel state only)\n"
+        "Documentation=https://github.com/Alan-IFT/singbox-cli\n"
+        "After=sing-box.service\n"
+        "\n"
+        "[Service]\n"
+        "Type=oneshot\n"
+        "ExecStart=/usr/local/bin/sc watchdog run\n")
+    timer = (
+        "[Unit]\n"
+        "Description=Periodic sing-box policy-route check\n"
+        "\n"
+        "[Timer]\n"
+        "OnBootSec=2min\n"
+        "OnUnitActiveSec=1min\n"
+        "AccuracySec=10s\n"
+        "Unit=" + WATCHDOG_SERVICE + "\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=timers.target\n")
+    return service, timer
+
+
+def _watchdog_install_units():
+    """Write both unit files at 0644 and daemon-reload. IDEMPOTENT: the content is a
+    constant, so re-running writes the same bytes, and `install.sh` re-running over an
+    enabled watchdog neither duplicates nor disables it."""
+    service_text, timer_text = _watchdog_units_text()
+    SYSTEMD_DIR.mkdir(parents=True, exist_ok=True)
+    (SYSTEMD_DIR / WATCHDOG_SERVICE).write_text(service_text, encoding="utf-8")
+    (SYSTEMD_DIR / WATCHDOG_TIMER).write_text(timer_text, encoding="utf-8")
+    os.chmod(str(SYSTEMD_DIR / WATCHDOG_SERVICE), 0o644)
+    os.chmod(str(SYSTEMD_DIR / WATCHDOG_TIMER), 0o644)
+    subprocess.run(["systemctl", "daemon-reload"], check=False)
+
+
+def _watchdog_status_rows():
+    """The four facts `sc watchdog status` prints, as (label, value) pairs."""
+    enabled, active = _watchdog_enabled_units()
+    if enabled is None:
+        state_text = t("cannot determine: {e}", e="systemctl")
+    elif enabled and active:
+        state_text = t("enabled and running")
+    elif enabled:
+        state_text = t("enabled, timer not running")
+    else:
+        state_text = t("off")
+    state = _watchdog_state()
+    return [(t("timer"), state_text),
+            (t("last check"), _watchdog_when(state.get("last_check"))),
+            (t("last result"), _watchdog_result_text(state.get("last_result"))),
+            (t("last automatic repair"), _watchdog_when(state.get("last_repair")))]
+
+
+def _watchdog_when(value):
+    """A recorded epoch as local time plus this file's own age phrasing, or "(none)"."""
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return t("(none)")
+    return "%s (%s)" % (time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(value)),
+                        _age_text(value))
+
+
+def _watchdog_result_text(value):
+    """A recorded verdict rendered in the user's language. An unknown value is printed
+    verbatim rather than mapped to a wrong sentence."""
+    table = {
+        "ok": t("policy routing complete"),
+        "ok-after-retry": t("policy routing complete (the first check had failed)"),
+        "skipped-disabled": t("not checked — sing-box is disabled (`sc off`)"),
+        "failing-cooldown": t("incomplete — no restart, still within the cooldown"),
+        "repaired": t("was incomplete — restarting sing-box restored it"),
+        "still-failing": t("still incomplete after a restart"),
+    }
+    if not isinstance(value, str) or not value:
+        return t("(none)")
+    return table.get(value, _plain(value))
+
+
+def cmd_watchdog(args):
+    """`sc watchdog on|off|status|run` — the user-facing surface of the repair loop.
+
+    systemd only, and it says so rather than failing quietly: the whole mechanism is a
+    timer plus a oneshot unit, and there is no OpenRC equivalent in this project to hang
+    it on. `run` exists for the unit's own ExecStart; a person uses the other three.
+    """
+    action = args.action.lower()
+    if action not in ("on", "off", "status", "run"):
+        sys.exit(t("Error: argument must be one of on / off / status"))
+    if action == "run":
+        return cmd_watchdog_run(args)
+    if not SYSTEMD:
+        sys.exit(t("Error: the watchdog requires systemd; this host has none"))
+    if action == "on":
+        _watchdog_install_units()
+        subprocess.run(["systemctl", "enable", "--now", WATCHDOG_TIMER], check=False)
+        settings = load_settings()
+        settings["watchdog"] = True
+        save_settings(settings)
+        print(t("Route watchdog → on"))
+        print(t("It checks kernel policy routing only, and restarts sing-box at most "
+                "once every {n} second(s); a repair briefly interrupts connections.",
+                n=WATCHDOG_COOLDOWN))
+        print(t("Logs: journalctl -u {unit}", unit=WATCHDOG_SERVICE))
+        return
+    if action == "off":
+        subprocess.run(["systemctl", "disable", "--now", WATCHDOG_TIMER], check=False)
+        settings = load_settings()
+        settings["watchdog"] = False
+        save_settings(settings)
+        print(t("Route watchdog → off"))
+        return
+    for label, value in _watchdog_status_rows():
+        print(label + ": " + value)
 
 
 # ============ config ============
@@ -4185,11 +4880,30 @@ COMMANDS
   off                         Stop sing-box and disable on boot
   status                      Show service status, TUN interface, rule-set status + age,
                               active node, egress IP
-  doctor                      Diagnose the install: eight read-only checks, causal order
+  doctor                      Diagnose the install: nine read-only checks, causal order
                                 changes nothing — no config, no download, no restart
+                                includes policy routing: a running sing-box and an
+                                  existing sb-tun do NOT mean traffic is still proxied,
+                                  so this reads `ip rule` / `ip route` and says whether
+                                  the kernel still sends traffic into the tun
                                 exit 0 = every section OK
                                 exit 1 = at least one PROBLEM
                                 exit 2 = no PROBLEM, but at least one UNKNOWN
+  watchdog <on|off|status>    Optional FALLBACK: repair lost policy routing
+                                the known deleter (systemd-networkd) is already
+                                  stopped at the source by a drop-in the installer
+                                  places; this only repairs damage after the fact,
+                                  by restarting sing-box — needing it often means
+                                  something ELSE is deleting your rules
+                                OFF until you turn it on; systemd only
+                                checks kernel state only — never a website, a DNS
+                                  answer or a node's speed, so a slow or unreachable
+                                  node can never trigger a restart
+                                restarts sing-box only after two failing checks ~5 s
+                                  apart, at most once every 5 minutes, and never on a
+                                  host where sing-box is disabled (`sc off`)
+                                a repair briefly interrupts connections
+                                logs: journalctl -u sing-box-route-watchdog.service
   config                      Print /etc/sing-box/config.json with node credentials masked
                                 reads only — writes no file, touches no service
                                 a masked value shows as ****** (the key stays visible)
@@ -4272,11 +4986,26 @@ HELP_ZH = """sc —— sing-box 命令行管理工具
   on                          启动 sing-box 并设置开机自启
   off                         停止 sing-box 并取消开机自启
   status                      查看服务状态、TUN 接口、规则集状态与更新时间、当前节点、出口 IP
-  doctor                      一键体检：按因果顺序执行八项只读检查
+  doctor                      一键体检：按因果顺序执行九项只读检查
                                 全程只读 —— 不生成配置、不下载、不重启、不修复
-                                退出码 0 = 八项全部正常
+                                含策略路由：sing-box 在运行、sb-tun 存在，都不代表
+                                  流量仍在走代理；该项读取 ip rule / ip route，
+                                  判断内核是否仍把流量送进 TUN
+                                退出码 0 = 九项全部正常
                                 退出码 1 = 至少一项异常
                                 退出码 2 = 没有异常，但至少一项未知
+  watchdog <on|off|status>    可选的「兜底」：自动修复丢失的策略路由
+                                已知的删除者（systemd-networkd）已由安装器放置的
+                                  配置从源头挡掉；本命令只能在事后靠重启 sing-box
+                                  复原 —— 若经常需要它，说明还有别的东西在删规则
+                                默认关闭，需你主动开启；仅支持 systemd
+                                只检查内核状态 —— 不访问任何网站、不看 DNS、
+                                  不测节点速度，因此节点慢或不可达绝不会触发重启
+                                连续两次检查失败（间隔约 5 秒）才重启 sing-box，
+                                  且每 5 分钟最多一次；sing-box 已被 `sc off` 禁用时
+                                  绝不擅自启动它
+                                自动修复会短暂中断连接
+                                日志：journalctl -u sing-box-route-watchdog.service
   config                      打印 /etc/sing-box/config.json，节点凭据已隐去
                                 全程只读 —— 不写文件、不碰服务
                                 被隐去的值显示为 ******（键名本身照常显示）
@@ -4373,6 +5102,7 @@ def main():
     sub.add_parser("config")
     p = sub.add_parser("mode"); p.add_argument("mode")
     p = sub.add_parser("telemetry"); p.add_argument("value")
+    p = sub.add_parser("watchdog"); p.add_argument("action", nargs="?", default="status")
     p = sub.add_parser("default-tun"); p.add_argument("value")
     p = sub.add_parser("update-rules")
     p.add_argument("--mirror", action="append", default=None)
@@ -4410,7 +5140,7 @@ def main():
         "ping": cmd_ping, "export": cmd_export, "import": cmd_import, "sub": cmd_sub,
         "on": cmd_on, "off": cmd_off, "status": cmd_status, "doctor": cmd_doctor,
         "config": cmd_config,
-        "mode": cmd_mode, "telemetry": cmd_telemetry,
+        "mode": cmd_mode, "telemetry": cmd_telemetry, "watchdog": cmd_watchdog,
         "default-tun": cmd_default_tun,
         "update-rules": cmd_update_rules, "update-interval": cmd_update_interval,
         "log": cmd_log, "reload": cmd_reload, "uninstall": cmd_uninstall,

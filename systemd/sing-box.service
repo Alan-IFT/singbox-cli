@@ -7,7 +7,13 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/sing-box run -c /etc/sing-box/config.json
-ExecReload=/bin/kill -HUP $MAINPID
+# No ExecReload=. There used to be `/bin/kill -HUP $MAINPID`, and it was dead
+# configuration twice over: `sc` never invokes `systemctl reload` (every path that
+# changes the document goes through restart_service()), and sing-box does not reload on
+# SIGHUP — measured on 1.13.18, the process neither reloads nor exits. Keeping the line
+# only promised administrators that `systemctl reload sing-box` does something, while it
+# returns success and changes nothing. `sc reload` is the operation: it regenerates the
+# document, has it checked, and restarts.
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=infinity

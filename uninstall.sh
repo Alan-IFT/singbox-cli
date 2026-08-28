@@ -41,7 +41,7 @@ t() {
             run_as_root)    fmt="请以 root 身份运行（sudo bash uninstall.sh 或 sc uninstall）" ;;
             banner)         fmt="  singbox-cli 卸载" ;;
             will_remove)    fmt="将删除：" ;;
-            list_systemd)   fmt="  - systemd 服务 sing-box, sing-box-rules-update.{service,timer}" ;;
+            list_systemd)   fmt="  - systemd 服务 sing-box, sing-box-rules-update.{service,timer}, sing-box-route-watchdog.{service,timer}, networkd 策略路由保护配置" ;;
             list_openrc)    fmt="  - OpenRC 服务 sing-box (/etc/init.d/sing-box)" ;;
             list_bin)       fmt="  - /usr/local/bin/sc" ;;
             list_etc)       fmt="  - /etc/sing-box/         （含节点配置）" ;;
@@ -60,7 +60,7 @@ t() {
             run_as_root)    fmt="Run as root (sudo bash uninstall.sh, or sc uninstall)" ;;
             banner)         fmt="  singbox-cli uninstall" ;;
             will_remove)    fmt="The following will be removed:" ;;
-            list_systemd)   fmt="  - systemd units sing-box, sing-box-rules-update.{service,timer}" ;;
+            list_systemd)   fmt="  - systemd units sing-box, sing-box-rules-update.{service,timer}, sing-box-route-watchdog.{service,timer}, the networkd policy-rule protection drop-in" ;;
             list_openrc)    fmt="  - OpenRC service sing-box (/etc/init.d/sing-box)" ;;
             list_bin)       fmt="  - /usr/local/bin/sc" ;;
             list_etc)       fmt="  - /etc/sing-box/         (incl. node configs)" ;;
@@ -121,11 +121,24 @@ if [ "$INIT_SYS" = "openrc" ]; then
 else
     systemctl disable --now sing-box 2>/dev/null || true
     systemctl disable --now sing-box-rules-update.timer 2>/dev/null || true
+    # The watchdog is optional and may never have been enabled on this host; both calls
+    # are no-ops then, which is why neither is conditional on a probe.
+    systemctl disable --now sing-box-route-watchdog.timer 2>/dev/null || true
+    systemctl disable --now sing-box-route-watchdog.service 2>/dev/null || true
 
     rm -f /etc/systemd/system/sing-box.service
     rm -f /etc/systemd/system/sing-box-rules-update.service
     rm -f /etc/systemd/system/sing-box-rules-update.timer
     rm -rf /etc/systemd/system/sing-box-rules-update.timer.d/
+    rm -f /etc/systemd/system/sing-box-route-watchdog.service
+    rm -f /etc/systemd/system/sing-box-route-watchdog.timer
+    # The networkd drop-in that kept sing-box's policy routing from being deleted. It is
+    # ours, it is inert once sing-box is gone, and leaving it behind would silently change
+    # this host's networkd behaviour forever. Reload so the default comes back at once.
+    if [ -f /etc/systemd/networkd.conf.d/singbox-cli-keep-foreign-rules.conf ]; then
+        rm -f /etc/systemd/networkd.conf.d/singbox-cli-keep-foreign-rules.conf
+        systemctl try-reload-or-restart systemd-networkd 2>/dev/null || true
+    fi
     systemctl daemon-reload 2>/dev/null || true
 fi
 

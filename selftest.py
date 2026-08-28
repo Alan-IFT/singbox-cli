@@ -37,6 +37,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import traceback
 from pathlib import Path
 
@@ -771,20 +772,574 @@ def t_doctor_smoke(tmp):
         assert e.code in (0, 1, 2), e.code
     finally:
         SC._egress_ip = real
-    # The eight sections and their ORDER, spelled out here rather than read back from
+    # The nine sections and their ORDER, spelled out here rather than read back from
     # DOCTOR_SECTIONS: a test that iterates the table it is checking asserts nothing —
     # delete a section and it dutifully expects one fewer. Both READMEs document these
     # checks in this causal order, so this list is the contract and the table is what has
-    # to match it. (It was nine until IPv6 support was removed, and this line is what
-    # made that removal state itself rather than pass silently.)
+    # to match it. (It was nine, then eight when IPv6 support was removed, and nine again
+    # once policy routing got a section of its own — each of those three edits had to
+    # come through this line rather than past it.)
     expected = ("sing-box binary", "rule-sets", "configuration", "service",
-                "TUN interface", "Clash API", "egress IP", "file permissions")
+                "TUN interface", "policy routing", "Clash API", "egress IP",
+                "file permissions")
     assert tuple(name for name, _probe in SC.DOCTOR_SECTIONS) == expected
     text = out.getvalue()
     for label in expected:
         assert SC.t(label) in text, label
     assert "this check could not run" not in text, text      # no probe raised
     assert "no file at " in text                             # the bare host's diagnosis
+
+
+# The `ip rule show` of a HEALTHY host, copied from a real 1.13.18 install with
+# auto_route + strict_route. Every policy-routing test below is this text with one thing
+# taken away, so each case differs from health by exactly the fault it is named for.
+RULES_HEALTHY = """0:\tfrom all lookup local
+9000:\tfrom all to 172.19.0.0/30 lookup 2022
+9001:\tfrom all lookup 2022 suppress_prefixlength 0
+9002:\tnot from all dport 53 lookup main suppress_prefixlength 0
+9002:\tfrom all iif sb-tun goto 9010
+9003:\tnot from all iif lo lookup 2022
+9003:\tfrom 0.0.0.0 iif lo lookup 2022
+9003:\tfrom 172.19.0.0/30 iif lo lookup 2022
+9010:\tfrom all nop
+32766:\tfrom all lookup main
+32767:\tfrom all lookup default
+"""
+# The reported failure verbatim: sing-box still running, sb-tun still up, table 2022
+# still complete — and every rule that FED that table gone, so the jump at 9002 has no
+# target and the kernel says so.
+RULES_UNRESOLVED = """0:\tfrom all lookup local
+9002:\tfrom all iif sb-tun goto 9010 [unresolved]
+32766:\tfrom all lookup main
+32767:\tfrom all lookup default
+"""
+# The same truncation on a kernel that does NOT print [unresolved]: the goto is still
+# dangling, which is why the check tests the structure as well as the word.
+RULES_NO_NOP = """0:\tfrom all lookup local
+9000:\tfrom all to 172.19.0.0/30 lookup 2022
+9001:\tfrom all lookup 2022 suppress_prefixlength 0
+9002:\tfrom all iif sb-tun goto 9010
+32766:\tfrom all lookup main
+32767:\tfrom all lookup default
+"""
+# Every rule resolves and nothing is unresolved — but the ONLY rule naming table 2022 is
+# the tun's own `iif` one, which matches traffic the tun already emitted. The table is
+# complete and never consulted for anything originating on this host. A check that merely
+# asked "is the table referenced anywhere?" calls this healthy while the host leaks, so
+# the `iif` line here deliberately DOES say `lookup 2022`: that is what makes the
+# exclusion load-bearing rather than incidental.
+RULES_NO_FEED = """0:\tfrom all lookup local
+9002:\tfrom all iif sb-tun lookup 2022
+9002:\tfrom all iif sb-tun goto 9010
+9010:\tfrom all nop
+32766:\tfrom all lookup main
+32767:\tfrom all lookup default
+"""
+TABLE_HEALTHY = "default via 172.19.0.2 dev sb-tun table 2022\n"
+GET_VIA_TUN = "1.1.1.1 via 172.19.0.2 dev sb-tun table 2022 src 172.19.0.1 uid 0\n"
+GET_VIA_ETH = "1.1.1.1 via 192.168.1.1 dev eth0 src 192.168.1.23 uid 0\n"
+
+
+def _verdict(rules, table=TABLE_HEALTHY, get=GET_VIA_TUN, iface="sb-tun", table_id=2022):
+    """(worst class, joined text) of the pure judge, for one set of `ip` outputs.
+
+    The judge takes its three inputs as arguments, so every case below is a string
+    triple: no `ip` runs, no route is read and nothing on this machine is touched.
+    """
+    rows = SC._route_policy_findings({"iface": iface, "table": table_id},
+                                     rules, table, get)
+    worst = max(cls for cls, _l, _v in rows)
+    return worst, "\n".join(value for _c, _l, value in rows)
+
+
+def t_route_policy_verdicts(tmp):
+    """The five conditions, one failing case each, against one healthy baseline.
+
+    This is the whole diagnosis: sing-box running and sb-tun present are NOT evidence
+    that traffic is proxied, and each case below is a way a real host has presented that
+    while every previously existing doctor row read OK.
+    """
+    healthy, text = _verdict(RULES_HEALTHY)
+    assert healthy == SC.DOCTOR_OK, text
+
+    # 1. the reported failure: a goto the kernel itself calls unresolved.
+    cls, text = _verdict(RULES_UNRESOLVED)
+    assert cls == SC.DOCTOR_PROBLEM and "unresolved" in text, text
+
+    # 2. the same truncation without the kernel's word for it.
+    cls, text = _verdict(RULES_NO_NOP)
+    assert cls == SC.DOCTOR_PROBLEM and "9010" in text, text
+
+    # 3. the table is fine, but nothing routes into it.
+    cls, text = _verdict(RULES_NO_FEED)
+    assert cls == SC.DOCTOR_PROBLEM, text
+
+    # 4. rules intact, table empty — invisible in `ip rule` output entirely.
+    cls, text = _verdict(RULES_HEALTHY, table="")
+    assert cls == SC.DOCTOR_PROBLEM, text
+
+    # 4b. the table HAS a default route, through the wrong device. The rule band is
+    # whole, so only the device name distinguishes this from health — which is what
+    # keeps the interface part of the route test load-bearing.
+    cls, text = _verdict(RULES_HEALTHY,
+                         table="default via 192.168.1.1 dev eth0 table 2022\n")
+    assert cls == SC.DOCTOR_PROBLEM, text
+
+    # 5. everything above passes and the kernel still routes out of the physical NIC.
+    cls, text = _verdict(RULES_HEALTHY, get=GET_VIA_ETH)
+    assert cls == SC.DOCTOR_PROBLEM and "1.1.1.1" in text, text
+
+    # The interface and table are read from the document, never spelled by the probe: a
+    # host whose override renames either is healthy, and the same bytes judged under the
+    # default names are not.
+    custom_rules = RULES_HEALTHY.replace("2022", "1234").replace("sb-tun", "tun9")
+    custom_table = TABLE_HEALTHY.replace("2022", "1234").replace("sb-tun", "tun9")
+    custom_get = GET_VIA_TUN.replace("2022", "1234").replace("sb-tun", "tun9")
+    cls, text = _verdict(custom_rules, custom_table, custom_get,
+                         iface="tun9", table_id=1234)
+    assert cls == SC.DOCTOR_OK, text
+    cls, _text = _verdict(custom_rules, custom_table, custom_get)
+    assert cls == SC.DOCTOR_PROBLEM, "the probe ignored the document's own names"
+
+
+def t_route_policy_spec_reads_the_document(tmp):
+    """The names come from config.json — the constants are only the fallback."""
+    sandbox(tmp)
+    SC.CFG_PATH.write_text(json.dumps({"inbounds": [
+        {"type": "tun", "tag": "tun-in", "auto_route": True}]}))
+    assert SC._route_policy_spec() == {"iface": SC.TUN_IFACE,
+                                       "table": SC.IPROUTE2_TABLE_DEFAULT}
+    SC.CFG_PATH.write_text(json.dumps({"inbounds": [
+        {"type": "tun", "interface_name": "tun9", "auto_route": True,
+         "iproute2_table_index": 1234}]}))
+    assert SC._route_policy_spec() == {"iface": "tun9", "table": 1234}
+    # No policy routing asked for is a legitimate document, not a fault: None, so the
+    # section renders UNKNOWN rather than reporting a route that was never requested.
+    SC.CFG_PATH.write_text(json.dumps({"inbounds": [
+        {"type": "tun", "auto_route": False}]}))
+    assert SC._route_policy_spec() is None
+    SC.CFG_PATH.write_text(json.dumps({"inbounds": []}))
+    assert SC._route_policy_spec() is None
+
+
+def t_doctor_route_policy_is_read_only(tmp):
+    """The section runs `ip` QUERIES and nothing else, and writes no path.
+
+    Asserted against the argv of every subprocess it makes — the only way to state "this
+    never repairs anything", since a test cannot prove the absence of a command by
+    running it on a host that has none.
+    """
+    sandbox(tmp)
+    SC.CFG_PATH.write_text(json.dumps({"inbounds": [
+        {"type": "tun", "interface_name": "sb-tun", "auto_route": True}]}))
+    before = sorted(p.name for p in tmp.iterdir())
+    seen = []
+    answers = {
+        ("ip", "-br", "link", "show", "sb-tun"): (0, "sb-tun UNKNOWN <POINTOPOINT,UP>"),
+        ("ip", "rule", "show"): (0, RULES_UNRESOLVED),
+        ("ip", "route", "show", "table", "2022"): (0, TABLE_HEALTHY),
+        ("ip", "route", "get", "1.1.1.1"): (0, GET_VIA_ETH),
+    }
+    real = SC._doctor_run
+    SC._doctor_run = lambda cmd: (seen.append(tuple(cmd)),
+                                  answers[tuple(cmd)])[1]
+    try:
+        rows = SC._doctor_route_policy()
+    finally:
+        SC._doctor_run = real
+    assert any(cls == SC.DOCTOR_PROBLEM for cls, _l, _v in rows), rows
+    # The advice names the manual repair; the section itself performs none of it.
+    assert any("sc reload" in value for _c, _l, value in rows), rows
+    for cmd in seen:
+        assert cmd[0] == "ip", cmd
+        assert cmd[1] in ("-br", "rule", "route"), cmd
+        assert "add" not in cmd and "del" not in cmd and "flush" not in cmd, cmd
+    assert sorted(p.name for p in tmp.iterdir()) == before, "doctor wrote a path"
+
+
+def t_networkd_protection_is_the_root_cause_fix(tmp):
+    """The drop-in that stops systemd-networkd deleting sing-box's policy rules.
+
+    This is the ROOT-CAUSE fix, so three things must hold together and none of them can
+    be checked from prose: the shipped file says the right thing, the installer puts it
+    where networkd reads it, and `sc doctor` looks for it at exactly that path.
+    """
+    # 1. The shipped file. `[Network]` is the section networkd reads this key from —
+    # under any other heading the file parses and silently does nothing.
+    conf = (HERE / "systemd" / "networkd-keep-foreign-rules.conf").read_text(
+        encoding="utf-8")
+    lines = [l.strip() for l in conf.splitlines()
+             if l.strip() and not l.strip().startswith("#")]
+    assert lines == ["[Network]", "ManageForeignRoutingPolicyRules=no"], lines
+
+    # 2. The installer and the diagnostic must name the SAME path. They are separate
+    # programs, so nothing but this assertion keeps the two spellings together — and a
+    # disagreement would make doctor report a correctly protected host as at risk.
+    decl = subprocess.run(
+        ["sed", "-n", "/^NETWORKD_DROPIN_DIR=/p;/^NETWORKD_DROPIN_NAME=/p",
+         str(HERE / "install.sh")], stdout=subprocess.PIPE, check=True).stdout.decode()
+    values = dict(l.split("=", 1) for l in decl.strip().splitlines())
+    installed = (values["NETWORKD_DROPIN_DIR"].strip('"')
+                 + "/" + values["NETWORKD_DROPIN_NAME"].strip('"'))
+    assert installed == str(SC.NETWORKD_DROPIN), (installed, str(SC.NETWORKD_DROPIN))
+
+    # 3. The installer step, extracted and run against a temp tree: it installs only
+    # where networkd exists, is idempotent, and never starts anything.
+    body = subprocess.run(["sed", "-n", "/^protect_foreign_rules() {/,/^}/p",
+                           str(HERE / "install.sh")],
+                          stdout=subprocess.PIPE, check=True).stdout.decode()
+    assert "install -m 644" in body, "protect_foreign_rules() could not be extracted"
+
+    def run(has_networkd):
+        target = tmp / ("d-%s" % has_networkd)
+        calls = target / "systemctl-calls"
+        script = (
+            "set -euo pipefail\n"
+            "NETWORKD_DROPIN_DIR=%s\n" % str(target)
+            + "NETWORKD_DROPIN_NAME=%s\n" % values["NETWORKD_DROPIN_NAME"].strip('"')
+            + "mkdir -p %s\n" % str(target)
+            + "systemctl() { echo \"$*\" >> %s; " % str(calls)
+            + ("[ \"$1\" = list-unit-files ] && echo 'systemd-networkd.service enabled'; "
+               if has_networkd else
+               "[ \"$1\" = list-unit-files ] && return 1; ")
+            + "return 0; }\n"
+            + body + "\nprotect_foreign_rules %s\n" % str(
+                HERE / "systemd" / "networkd-keep-foreign-rules.conf"))
+        subprocess.run(["bash", "-c", script], check=True)
+        dropin = target / values["NETWORKD_DROPIN_NAME"].strip('"')
+        return dropin, (calls.read_text() if calls.exists() else "")
+
+    dropin, calls = run(False)
+    assert not dropin.exists(), "wrote networkd config on a host without networkd"
+    assert "restart" not in calls, calls
+
+    dropin, calls = run(True)
+    assert dropin.exists() and dropin.read_text(encoding="utf-8") == conf
+    assert stat.S_IMODE(dropin.stat().st_mode) == 0o644
+    # try-reload-or-restart, never start/enable: on a host where networkd exists but is
+    # not running, this must stay a no-op rather than starting it.
+    # Compared per VERB, not by substring: "try-reload-or-restart systemd-networkd"
+    # contains the text "start systemd-networkd", so a substring test here passes
+    # whatever the installer does.
+    verbs = [l.split()[0] for l in calls.splitlines() if l.strip()]
+    assert "try-reload-or-restart" in verbs, calls
+    assert "start" not in verbs and "enable" not in verbs, calls
+    before = dropin.read_bytes()
+    dropin2, _calls = run(True)                  # twice: the step is idempotent
+    assert dropin2.read_bytes() == before
+
+
+def t_doctor_reports_the_deleter(tmp):
+    """doctor names the ROOT CAUSE, not only its damage.
+
+    The middle state is the whole point: rules intact right now, networkd installed, no
+    drop-in. Nothing is broken yet and the host will still lose its rules at the next
+    networkd reload — so it must read as a PROBLEM, or the check only ever fires after
+    the leak instead of before it.
+    """
+    real = SC.NETWORKD_DROPIN
+    try:
+        SC.NETWORKD_DROPIN = tmp / "keep.conf"
+        cls, label, value = SC._networkd_protection_row()
+        assert label == "rule protection", label
+        # networkd IS installed on the machine running this suite or it is not; both
+        # answers are legitimate, and only one of them is assertable here.
+        if Path("/lib/systemd/system/systemd-networkd.service").exists() \
+                or Path("/usr/lib/systemd/system/systemd-networkd.service").exists():
+            assert cls == SC.DOCTOR_PROBLEM, value
+            assert "ManageForeignRoutingPolicyRules" in value, value
+            SC.NETWORKD_DROPIN.write_text("[Network]\n")
+            cls, _l, value = SC._networkd_protection_row()
+            assert cls == SC.DOCTOR_OK, value
+        else:
+            assert cls == SC.DOCTOR_OK, value
+            SKIPPED.append("t_doctor_reports_the_deleter: at-risk arm "
+                           "(no systemd-networkd on this host)")
+    finally:
+        SC.NETWORKD_DROPIN = real
+
+
+def t_route_policy_advice_matches_the_fault(tmp):
+    """Broken rules and unprotected rules need OPPOSITE advice, so the section must not
+    give one sentence for both.
+
+    A host whose rules are intact but unprotected is at RISK, not damaged: telling that
+    user to `sc reload` would have them reinstall rules that are already there and learn
+    nothing about the thing that will delete them again.
+    """
+    sandbox(tmp)
+    SC.CFG_PATH.write_text(json.dumps({"inbounds": [
+        {"type": "tun", "interface_name": "sb-tun", "auto_route": True}]}))
+    answers = {
+        ("ip", "-br", "link", "show", "sb-tun"): (0, "sb-tun UNKNOWN <POINTOPOINT,UP>"),
+        ("ip", "route", "show", "table", "2022"): (0, TABLE_HEALTHY),
+    }
+    real_run, real_dropin = SC._doctor_run, SC.NETWORKD_DROPIN
+
+    def advice(rules, route_get, protected):
+        SC.NETWORKD_DROPIN = (tmp / "present.conf") if protected else (tmp / "absent.conf")
+        if protected:
+            SC.NETWORKD_DROPIN.write_text("[Network]\n")
+        table = dict(answers)
+        table[("ip", "rule", "show")] = (0, rules)
+        table[("ip", "route", "get", "1.1.1.1")] = (0, route_get)
+        SC._doctor_run = lambda cmd: table[tuple(cmd)]
+        return "\n".join(v for c, _l, v in SC._doctor_route_policy() if c is None)
+
+    try:
+        # Rules gone: the actionable repair is named.
+        text = advice(RULES_UNRESOLVED, GET_VIA_ETH, protected=True)
+        assert "sc reload" in text, text
+        assert "networkd" not in text, text
+
+        # Rules fine, protection missing: the risk is named and `sc reload` is NOT,
+        # because there is nothing on this host to reinstall.
+        text = advice(RULES_HEALTHY, GET_VIA_TUN, protected=False)
+        if Path("/lib/systemd/system/systemd-networkd.service").exists() \
+                or Path("/usr/lib/systemd/system/systemd-networkd.service").exists():
+            assert "sc reload" not in text, text
+            assert SC.t("the rules are not protected: whatever their state now, a "
+                        "systemd-networkd reload can delete them again") in text, text
+        else:
+            SKIPPED.append("t_route_policy_advice_matches_the_fault: at-risk arm "
+                           "(no systemd-networkd on this host)")
+    finally:
+        SC._doctor_run, SC.NETWORKD_DROPIN = real_run, real_dropin
+
+
+def t_service_unit_has_no_dead_reload(tmp):
+    """No ExecReload=. sing-box does not reload on SIGHUP (measured on 1.13.18: the
+    process neither reloads nor exits) and `sc` never calls `systemctl reload`, so the
+    line only promised administrators an operation that silently does nothing."""
+    unit = (HERE / "systemd" / "sing-box.service").read_text(encoding="utf-8")
+    directives = [l.split("=", 1)[0] for l in unit.splitlines()
+                  if "=" in l and not l.strip().startswith("#")]
+    assert "ExecReload" not in directives, unit
+    # The restart policy is what actually recovers a crashed sing-box; a casual edit of
+    # this block must not take it with the removed line.
+    assert "Restart=on-failure" in unit and "RestartSec=5" in unit, unit
+
+
+class _Clock:
+    """A monotonically advancing stand-in for time.time / time.sleep.
+
+    The watchdog's debounce and its cooldown are both times, so a test of either has to
+    own the clock: sleeping 5 s per case would make the suite unusable, and asserting on
+    wall-clock time would make it flaky.
+    """
+
+    def __init__(self, now=1000.0):
+        self.now = now
+        self.slept = []
+
+    def time(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.slept.append(seconds)
+        self.now += seconds
+
+
+def _watchdog_harness(tmp, verdicts, disabled=False, restart_ok=True):
+    """Run `sc watchdog run` against a scripted sequence of health verdicts.
+
+    `verdicts` is consumed one per check, so a case states exactly what the kernel looked
+    like on each sample. Returns (exit code or None, restarts, clock, stderr text).
+    """
+    # Repointed WITHOUT sandbox(): rule-sets are irrelevant to the watchdog, and
+    # sandbox() creates that directory, which a second call into the same tmp cannot do
+    # twice. Some cases below deliberately run the harness more than once against one
+    # directory, because that is how a previous run's recorded state reaches the next.
+    tmp.mkdir(parents=True, exist_ok=True)
+    SC.CFG_DIR = tmp
+    SC.CFG_PATH = tmp / "config.json"
+    SC.NODES_PATH = tmp / "nodes.json"
+    SC.SETTINGS_PATH = tmp / "settings.json"
+    SC.OVERRIDE_PATH = tmp / "override.json"
+    SC.STATE_PATH = tmp / ".config.sha256"
+    SC.RULES_DIR = tmp / "rules"
+    SC.WATCHDOG_STATE_DIR = tmp
+    SC.WATCHDOG_STATE_PATH = tmp / "watchdog.json"
+    SC.WATCHDOG_LOCK_PATH = tmp / "watchdog.lock"
+    clock = _Clock()
+    restarts = []
+    pending = list(verdicts)
+    real = (SC.SYSTEMD, SC.restart_service, SC._route_policy_healthy,
+            SC._service_disabled_by_user, time.time, time.sleep)
+    SC.SYSTEMD = True
+    SC.restart_service = lambda: (restarts.append(1), restart_ok)[1]
+    SC._route_policy_healthy = lambda: (True, "") if pending.pop(0) else (False, "no rule")
+    SC._service_disabled_by_user = lambda: disabled
+    time.time, time.sleep = clock.time, clock.sleep
+    err = io.StringIO()
+    code = None
+    try:
+        with contextlib.redirect_stderr(err):
+            SC.cmd_watchdog_run(None)
+    except SystemExit as e:
+        code = e.code
+    finally:
+        (SC.SYSTEMD, SC.restart_service, SC._route_policy_healthy,
+         SC._service_disabled_by_user, time.time, time.sleep) = real
+    return code, restarts, clock, err.getvalue()
+
+
+def t_watchdog_debounces_before_restarting(tmp):
+    """One failing check is not evidence; two, five seconds apart, are.
+
+    The transient case is the one that matters: sing-box rewrites its own rules during a
+    reload, so a watchdog firing on a single sample would restart the service every time
+    the user ran `sc reload`.
+    """
+    # Healthy: no restart, no log, no sleep.
+    code, restarts, clock, err = _watchdog_harness(tmp / "a", [True])
+    assert (code, restarts, clock.slept, err) == (None, [], [], ""), (code, restarts, err)
+
+    # Failing then healthy: the second look clears it, and nothing is restarted.
+    code, restarts, clock, err = _watchdog_harness(tmp / "b", [False, True])
+    assert restarts == [] and code is None, (restarts, code)
+    assert clock.slept == [SC.WATCHDOG_CONFIRM_DELAY], clock.slept
+
+    # Failing twice: exactly one restart, and it is verified afterwards.
+    code, restarts, _clock, err = _watchdog_harness(tmp / "c", [False, False, True])
+    assert restarts == [1], restarts
+    assert code is None, code
+    assert "restart" in err.lower(), err
+
+
+def t_watchdog_respects_cooldown_and_reports_failure(tmp):
+    """No second restart inside the cooldown, and a host still broken after one exits 1."""
+    # A repair recorded 10 s ago: the fault is real, and the answer is still no restart.
+    # The state is seeded through the harness's own paths, so the run that follows reads
+    # exactly the document a previous run would have left.
+    target = tmp / "cool"
+    _watchdog_harness(target, [True])                # creates the sandbox and its paths
+    SC._watchdog_record(last_repair=990.0)
+    code, restarts, _clock, err = _watchdog_harness(target, [False, False])
+    assert restarts == [], "restarted inside the cooldown"
+    assert code == 1, code
+    # The line has to say WHY nothing was restarted, or the journal reads as a watchdog
+    # that noticed a leak and did nothing about it.
+    assert "no restart" in err and str(SC.WATCHDOG_COOLDOWN) in err, err
+    assert SC._watchdog_state()["last_result"] == "failing-cooldown"
+
+    # Restart attempted, kernel still broken: recorded, logged, non-zero.
+    code, restarts, _clock, err = _watchdog_harness(
+        tmp / "still", [False, False, False])
+    assert restarts == [1] and code == 1, (restarts, code)
+    assert SC._watchdog_state()["last_result"] == "still-failing"
+    assert "doctor" in err.lower(), err
+
+    # And a repair that worked records itself, which is what the cooldown reads next time.
+    code, restarts, _clock, _err = _watchdog_harness(tmp / "fixed", [False, False, True])
+    assert code is None and restarts == [1], (code, restarts)
+    state = SC._watchdog_state()
+    assert state["last_result"] == "repaired" and state["last_repair"], state
+
+
+def t_watchdog_stands_down_when_disabled(tmp):
+    """`sc off` is a decision: the watchdog checks nothing and starts nothing.
+
+    The verdict list is deliberately EMPTY — reaching the health probe at all would pop
+    from it and raise, so this asserts the service check happens first and short-circuits.
+    """
+    code, restarts, clock, err = _watchdog_harness(tmp, [], disabled=True)
+    assert (code, restarts, clock.slept, err) == (None, [], [], ""), (code, restarts, err)
+    assert SC._watchdog_state()["last_result"] == "skipped-disabled"
+
+
+def t_watchdog_units_and_toggle_are_idempotent(tmp):
+    """The units say what they must, and on/off/status can be repeated safely."""
+    service, timer = SC._watchdog_units_text()
+    assert "ExecStart=/usr/local/bin/sc watchdog run" in service, service
+    assert "Type=oneshot" in service, service
+    assert "OnBootSec=2min" in timer and "OnUnitActiveSec=1min" in timer, timer
+    assert "Unit=" + SC.WATCHDOG_SERVICE in timer, timer
+    # No network endpoint may appear in either unit: the check is kernel state only.
+    for text in (service, timer):
+        for host in ("ipify", "cloudflare", "google", "gstatic", "curl", "ping"):
+            assert host not in text.lower(), text
+
+    sandbox(tmp)
+    SC.SYSTEMD_DIR = tmp / "systemd"
+    calls = []
+    real = (SC.SYSTEMD, subprocess.run)
+    SC.SYSTEMD = True
+    subprocess.run = lambda cmd, **kw: calls.append(list(cmd)) or type(
+        "R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+    try:
+        for _ in range(2):                       # twice: installation is idempotent
+            with contextlib.redirect_stdout(io.StringIO()):
+                SC.cmd_watchdog(type("A", (), {"action": "on"})())
+        installed = sorted(p.name for p in SC.SYSTEMD_DIR.iterdir())
+        assert installed == [SC.WATCHDOG_SERVICE, SC.WATCHDOG_TIMER], installed
+        assert (SC.SYSTEMD_DIR / SC.WATCHDOG_SERVICE).read_text() == service
+        assert SC.load_settings()["watchdog"] is True
+        assert calls.count(["systemctl", "enable", "--now", SC.WATCHDOG_TIMER]) == 2
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            SC.cmd_watchdog(type("A", (), {"action": "off"})())
+        assert SC.load_settings()["watchdog"] is False
+        assert ["systemctl", "disable", "--now", SC.WATCHDOG_TIMER] in calls
+
+        out = io.StringIO()
+        SC._doctor_run = lambda cmd: (1, "disabled")
+        with contextlib.redirect_stdout(out):
+            SC.cmd_watchdog(type("A", (), {"action": "status"})())
+        for label in ("timer", "last check", "last result", "last automatic repair"):
+            assert SC.t(label) in out.getvalue(), (label, out.getvalue())
+    finally:
+        SC.SYSTEMD, subprocess.run = real
+        SC._doctor_run = SC._doctor_run
+
+    # A non-systemd host is told so, rather than silently doing nothing.
+    SC.SYSTEMD = False
+    try:
+        for action in ("on", "off"):
+            try:
+                SC.cmd_watchdog(type("A", (), {"action": action})())
+                raise AssertionError("%s succeeded without systemd" % action)
+            except SystemExit as e:
+                assert "systemd" in str(e.code), e.code
+    finally:
+        SC.SYSTEMD = real[0]
+
+
+def t_installer_refreshes_only_an_enabled_watchdog(tmp):
+    """install.sh's watchdog step, extracted and run against stubs.
+
+    Consent is systemd's enablement of the timer, never a leftover unit file, and the
+    step never turns the watchdog on. Both arms are asserted from the same extracted
+    function, so the installer cannot drift from what this documents.
+    """
+    body = subprocess.run(["sed", "-n", "/^refresh_route_watchdog() {/,/^}/p",
+                           str(HERE / "install.sh")],
+                          stdout=subprocess.PIPE, check=True).stdout.decode()
+    assert "is-enabled" in body, "refresh_route_watchdog() could not be extracted"
+    decl = subprocess.run(["sed", "-n", "/^WATCHDOG_TIMER=/p", str(HERE / "install.sh")],
+                          stdout=subprocess.PIPE, check=True).stdout.decode()
+    assert "WATCHDOG_TIMER=" in decl, decl
+
+    def run(enabled):
+        marker = tmp / ("ran-%s" % enabled)
+        script = (
+            "set -euo pipefail\n"
+            "INIT_SYS=systemd\n"
+            + decl +
+            "systemctl() { [ \"$1\" = is-enabled ] && return %d; return 0; }\n" % (
+                0 if enabled else 1)
+            + "mkdir -p %s\n" % str(tmp / "bin")
+            + "cat > %s <<'EOF'\n#!/bin/sh\ntouch %s\nEOF\n" % (
+                str(tmp / "bin" / "sc"), str(marker))
+            + "chmod +x %s\n" % str(tmp / "bin" / "sc")
+            + body.replace("/usr/local/bin/sc", str(tmp / "bin" / "sc"))
+            + "\nrefresh_route_watchdog\n")
+        subprocess.run(["bash", "-c", script], check=True)
+        return marker.exists()
+
+    assert run(False) is False, "the installer enabled a watchdog nobody asked for"
+    assert run(True) is True, "an enabled watchdog was not refreshed on upgrade"
+    assert run(True) is True, "the refresh is not idempotent"
 
 
 def t_config_command(tmp):
