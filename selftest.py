@@ -283,6 +283,13 @@ def t_generate_config(tmp):
     # AAAA is suppressed unconditionally in this build — no setting, no host probe.
     assert doc["dns"]["rules"][0] == {"action": "predefined", "rcode": "NOERROR",
                                       "query_type": [28, 64, 65]}
+    # sing-box 1.14 rejects any legacy response field (ip_accept_any, ip_cidr,
+    # ip_is_private without match_response) in a dns config that also uses query_type —
+    # which rule 0 always does. The hosts rule therefore matches by name.
+    assert doc["dns"]["rules"][1] == {"server": "hosts_dns",
+                                      "domain": list(SC.HOSTS_TABLE)}
+    for rule in doc["dns"]["rules"]:
+        assert not {"ip_accept_any", "ip_cidr", "ip_is_private"} & set(rule), rule
     # The connection-layer half of the same stance: v6 is captured (the ULA address is
     # what makes auto_route install v6 routes) and reset — the fast failure that makes
     # an application's own dual-stack fallback retry over v4. Position is the contract:
@@ -314,6 +321,16 @@ def t_generate_config(tmp):
     # A hand-edit is drift, and the record says so without the document being read.
     SC.CFG_PATH.write_text('{"hand": "edited"}')
     assert SC._drift_state() is True
+
+
+def t_fit_to_singbox(tmp):
+    """independent_cache is kept where it still does something (1.13, or unknown) and
+    dropped from 1.14, where the DNS cache is always per server and the key only warns."""
+    for ver, kept in ((None, True), ((1, 13), True), ((1, 14), False), ((2, 0), False)):
+        doc = SC._compose([])
+        SC._fit_to_singbox(doc, ver)
+        assert ("independent_cache" in doc["dns"]) is kept, ver
+    assert SC.CONFIG_BASE["dns"]["independent_cache"] is True   # template untouched
 
 
 def t_degradation(tmp):

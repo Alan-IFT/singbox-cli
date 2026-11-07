@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### 修复
+
+- **sing-box 1.14 上 `sc reload` 和全新安装都失败：`validate dns rule[1]: Response Match Fields ... require match_response to be enabled`。** 安装脚本取的是 sing-box 的最新版，而 1.14.0 规定：一份 DNS 配置只要用了 `query_type`（第 0 条 AAAA 屏蔽规则就用了），就不能再出现旧式的响应过滤字段。第 1 条 `{"server": "hosts_dns", "ip_accept_any": true}` 正是这种字段，于是 `sing-box check` 拒绝了整份配置，服务起不来。现在这条规则改为**按域名**匹配内置 hosts 表里的名字（`"domain": [...]`，和 hosts 服务器的 `predefined` 共用一份定义）。意思不变 —— hosts 服务器本来就只回答这几个名字 —— 并且 1.13 和 1.14 都能通过校验。锚定 `{"server": "hosts_dns"}` 的 override 照常生效。
+
+- **sing-box ≥ 1.14 时不再生成 `dns.independent_cache`。** 从 1.14 起，DNS 缓存键总是带着服务器的 tag（`dns/client.go` 里的 `dnsCacheKey.transportTag`），所以每台服务器的缓存本来就是分开的。这个选项在 1.14 只会在每次 `sing-box check` 时打一条弃用警告，到 1.16 会直接报错。在 1.13 上，或者读不出版本号时，它照旧生成，因为那里它仍然起作用。
+
 ## [0.6.0] - 2026-08-28
 
 次版本号而非补丁号，按 `0.2.0` 立下的同一条规矩——**行为变更，脚本看得见**：`sc doctor` 从八节变为**九节**（新增「策略路由」，且它可以让一台此前退出 0 的机器现在退出 1）；`sing-box.service` 的 `ExecReload=` 被**删除**（`systemctl reload sing-box` 从「返回成功但什么都不做」变成明确失败）；安装脚本新增一个**会写入 `/etc/systemd/networkd.conf.d/` 的步骤**。项目仍在 `0.x`，所以这些计入次版本号。

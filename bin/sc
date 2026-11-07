@@ -1591,6 +1591,19 @@ def _directive_list():
 # reassigned anywhere in this file). CLASH_PORT and RULES_DIR are not — main() assigns the
 # first after import and a test harness repoints the second — which is why exactly those
 # two are read at call time, by _runtime_overlay().
+#
+# THE hosts table, one definition with two consumers in CONFIG_BASE: the hosts_dns
+# server's `predefined` answers and the dns rule that routes exactly these names to it.
+# Key order is emission order in both.
+HOSTS_TABLE = {
+    "dns.google": ["8.8.8.8", "8.8.4.4"],
+    "cloudflare-dns.com": ["104.16.249.249", "104.16.248.249"],
+    "one.one.one.one": ["1.1.1.1", "1.0.0.1"],
+    "dns.alidns.com": ["223.5.5.5", "223.6.6.6"],
+    "doh.pub": ["1.12.12.12", "120.53.53.53"],
+    "dot.pub": ["1.12.12.12", "120.53.53.53"],
+}
+
 CONFIG_BASE = {
     "log": {"level": "warn", "timestamp": True},
     "dns": {
@@ -1600,17 +1613,16 @@ CONFIG_BASE = {
              "path": "/dns-query", "type": "https", "tag": "remote_dns", "detour": "proxy"},
             {"server": "119.29.29.29", "domain_resolver": "local_local",
              "type": "udp", "tag": "direct_dns"},
-            {"predefined": {
-                "dns.google": ["8.8.8.8", "8.8.4.4"],
-                "cloudflare-dns.com": ["104.16.249.249", "104.16.248.249"],
-                "one.one.one.one": ["1.1.1.1", "1.0.0.1"],
-                "dns.alidns.com": ["223.5.5.5", "223.6.6.6"],
-                "doh.pub": ["1.12.12.12", "120.53.53.53"],
-                "dot.pub": ["1.12.12.12", "120.53.53.53"],
-            }, "type": "hosts", "tag": "hosts_dns"},
+            {"predefined": HOSTS_TABLE, "type": "hosts", "tag": "hosts_dns"},
         ],
         "rules": [
-            {"server": "hosts_dns", "ip_accept_any": True},
+            # Matches the hosts table's names BY NAME, never by response. The old form
+            # `ip_accept_any` is a legacy address-filter field, and sing-box 1.14 rejects
+            # it at startup next to _dns_overlay()'s query_type rule ("Response Match
+            # Fields ... require match_response"). A name match means the same thing here
+            # — the hosts server answers exactly these names — and is valid on 1.13 and
+            # 1.14 alike, with no `evaluate` round-trip.
+            {"server": "hosts_dns", "domain": list(HOSTS_TABLE)},
             {"server": "remote_dns", "clash_mode": "Global"},
             {"server": "direct_dns", "clash_mode": "Direct"},
             # The suppressed-query-type rule USED to sit here. It is emitted by
@@ -1879,6 +1891,42 @@ def _load_override():
     if not isinstance(doc, dict):
         raise OverrideError(t("the top level must be a JSON object"))
     return doc
+
+
+def _singbox_minor():
+    """(major, minor) of the installed sing-box, or None when it cannot be learned.
+
+    None means "assume the oldest build sc supports": every caller treats it as 1.13, so
+    an absent or unreadable binary changes nothing about what was emitted before.
+    """
+    try:
+        code, out = _doctor_run([SB_BIN, "version"])
+    except OSError:
+        return None
+    # First line is "sing-box version 1.14.4"; anything else is "cannot be learned".
+    words = _first_line(out).split()
+    if code != 0 or len(words) < 3 or words[:2] != ["sing-box", "version"]:
+        return None
+    parts = words[2].split(".")
+    if len(parts) < 2 or not (parts[0].isdigit() and parts[1].isdigit()):
+        return None
+    return int(parts[0]), int(parts[1])
+
+
+def _fit_to_singbox(doc, ver):
+    """Drop what the installed sing-box build no longer needs: today, only
+    dns.independent_cache.
+
+    From 1.14 the DNS cache key always includes the server's tag (dns/client.go,
+    dnsCacheKey.transportTag), so every server's cache is independent with or without the
+    option, which 1.14 deprecates and 1.16 removes. Emitting it there buys nothing but a
+    WARN on every `sing-box check`, and a hard failure once 1.16 lands. On 1.13 (and when
+    the version is unknown) it is still what keeps each server's cache separate, so it
+    stays. Called BEFORE the user's override is merged, so an override still has the last
+    word.
+    """
+    if ver is not None and ver >= (1, 14):
+        doc["dns"].pop("independent_cache", None)
 
 
 def _compose(overlays):
@@ -2305,6 +2353,7 @@ def generate_config():
     # call buys is provenance: two failure sources now have two code sites.
     config = _compose([_runtime_overlay(nodes, active, report),
                        _dns_overlay(), _telemetry_overlay()])
+    _fit_to_singbox(config, _singbox_minor())
     # THE region: from the override document's bytes to the emitted document's bytes.
     # Every step inside it has override-supplied content among its inputs, so a failure
     # at ANY of them is a failure to produce a configuration from this document — one
